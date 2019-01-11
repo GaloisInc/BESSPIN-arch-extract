@@ -11,6 +11,7 @@ import Language.Clafer
 
 import BESSPIN.ArchExtract.Verilog
 import BESSPIN.ArchExtract.Gen.Clafer
+import BESSPIN.ArchExtract.Gen.Graphviz
 
 
 main = do
@@ -18,6 +19,7 @@ main = do
     let (extra, v) = case deserialiseFromBytes (decodeListOf decodeModule) bs of
                 Left errs -> error $ show errs
                 Right x -> x
-    case compiled $ genClafer v of
-        Left errs -> mapM_ print errs
-        Right outs -> mapM_ (putStrLn . outputCode) outs
+    putStrLn $ printGraphviz $ genGraphviz v
+    --case compiled $ genClafer v of
+    --    Left errs -> mapM_ print errs
+    --    Right outs -> mapM_ (putStrLn . outputCode) outs
