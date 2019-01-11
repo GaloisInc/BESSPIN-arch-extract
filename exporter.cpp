@@ -83,7 +83,7 @@ struct Encoder {
     }
 
     void string(const std::string& value) {
-        cbor_check(cbor_encode_byte_string(ce.get(), (const uint8_t*)value.data(), value.size()));
+        cbor_check(cbor_encode_text_string(ce.get(), value.data(), value.size()));
     }
 
     void null() {
