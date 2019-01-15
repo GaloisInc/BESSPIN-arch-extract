@@ -51,10 +51,10 @@ genClafer v = C.Module noSpan $ map (ElementDecl noSpan) $ map go v ++ [root]
   where
     modMap = M.fromList [(moduleId m, m) | m <- v]
 
-    go (m@V.Module {}) = cfrModule (moduleName m) (concatMap goItem $ moduleItems m)
-    goItem (mi@ModInst {}) = case M.lookup (modInstModId mi) modMap of
-        Just m -> [cfrModInst (moduleName m) (modInstName mi)]
-        Nothing -> trace ("warning: mod ref to unknown ID " ++ show (modInstModId mi)) []
+    go (m@ModuleDecl {}) = cfrModule (moduleName m) (concatMap goItem $ moduleItems m)
+    goItem (mi@Instance {}) = case M.lookup (instanceModId mi) modMap of
+        Just m -> [cfrModInst (moduleName m) (instanceName mi)]
+        Nothing -> trace ("warning: mod ref to unknown ID " ++ show (instanceModId mi)) []
 
     root = cfrModInst (T.pack "leg") (T.pack "root")
 

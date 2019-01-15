@@ -15,6 +15,7 @@
 #include <VeriMisc.h>
 #include <VeriModule.h>
 #include <VeriStatement.h>
+#include <VeriScope.h>
 
 #include <tinycbor/cbor.h>
 
@@ -82,6 +83,11 @@ struct Encoder {
         cbor_check(cbor_encode_int(ce.get(), value));
     }
 
+    void double_(double value) {
+        cbor_check(cbor_encode_floating_point(
+                    ce.get(), CborDoubleType, (const void*)&value));
+    }
+
     void string(const std::string& value) {
         cbor_check(cbor_encode_text_string(ce.get(), value.data(), value.size()));
     }
@@ -124,6 +130,10 @@ struct AstEncoder {
 }
 */
 
+// Cast `ptr` from `U*` to `T*` only if the dynamic type of `*ptr` is exactly
+// `T`.  We use this in `encode_tree_node` to ensure we don't accidentally
+// interpret an object as an instance of its superclass (losing information in
+// any additional fields).
 template<typename T, typename U>
 T* exact_cast(U* ptr) {
     if (typeid(*ptr) == typeid(T)) {
@@ -138,6 +148,10 @@ bool array_empty(Array* a) {
 }
 
 void encode_tree_nodes(IdMap<VeriTreeNode>& ids, Encoder& enc, Array* a);
+void encode_scope(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriScope* s);
+void encode_scope_map(IdMap<VeriTreeNode>& ids, Encoder& enc, Map* m);
+
+static size_t num_unsupported = 0;
 
 void encode_tree_node(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriTreeNode* x) {
     if (x == nullptr) {
@@ -154,21 +168,221 @@ void encode_tree_node(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriTreeNode* x) {
     if (auto m = exact_cast<VeriModule>(x)) {
         subenc.string(m->Name());
         encode_tree_node(ids, subenc, m->GetId());
-        //encode_tree_nodes(ids, subenc, m->GetPorts());
-        //encode_tree_nodes(ids, subenc, m->GetParameters());
+        encode_tree_nodes(ids, subenc, m->GetPorts());
+        encode_tree_nodes(ids, subenc, m->GetParameters());
         encode_tree_nodes(ids, subenc, m->GetItems());
-        //encode_tree_nodes(ids, subenc, m->GetPortConnects());
-        //encode_tree_nodes(ids, subenc, m->GetParameterConnects());
-        //encode_tree_nodes(ids, subenc, m->GetPackageImportDecls());
-    } else if (auto mi = dynamic_cast<VeriModuleInstantiation*>(x)) {
+        encode_tree_nodes(ids, subenc, m->GetPortConnects());
+        encode_tree_nodes(ids, subenc, m->GetParameterConnects());
+        encode_tree_nodes(ids, subenc, m->GetPackageImportDecls());
+    } else if (auto mi = exact_cast<VeriModuleInstantiation>(x)) {
         subenc.uint(ids.map(mi->GetInstantiatedModule()));
-        //encode_tree_nodes(ids, subenc, mi->GetParamValues());
+        encode_tree_nodes(ids, subenc, mi->GetParamValues());
         encode_tree_nodes(ids, subenc, mi->GetInstances());
-    } else if (auto ii = dynamic_cast<VeriInstId*>(x)) {
+    } else if (auto ii = exact_cast<VeriInstId>(x)) {
         subenc.string(ii->Name());
         encode_tree_nodes(ids, subenc, ii->GetPortConnects());
+    } else if (auto dd = exact_cast<VeriDataDecl>(x)) {
+        subenc.uint(dd->GetDeclType());
+        subenc.uint(dd->GetDir());
+        encode_tree_node(ids, subenc, dd->GetDataType());
+        encode_tree_nodes(ids, subenc, dd->GetIds());
+        assert(dd->GetResolutionFunction() == nullptr);
+    } else if (auto nd = exact_cast<VeriNetDecl>(x)) {
+        subenc.uint(nd->GetDeclType());
+        subenc.uint(nd->GetDir());
+        encode_tree_node(ids, subenc, nd->GetDataType());
+        assert(nd->GetResolutionFunction() == nullptr);
+        encode_tree_node(ids, subenc, nd->GetStrength());
+        //encode_tree_nodes(ids, subenc, nd->GetDelay());
+        encode_tree_nodes(ids, subenc, nd->GetIds());
+    } else if (auto dt = exact_cast<VeriDataType>(x)) {
+        subenc.uint(dt->GetType());
+        subenc.uint(dt->GetSigning());
+        encode_tree_node(ids, subenc, dt->GetDimensions());
+    } else if (auto r = exact_cast<VeriRange>(x)) {
+        encode_tree_node(ids, subenc, r->GetLeft());
+        encode_tree_node(ids, subenc, r->GetRight());
+        subenc.uint(r->GetPartSelectToken());
+        subenc.uint(r->IsUnpacked());
+        subenc.uint(r->LeftRangeBound());
+        subenc.uint(r->RightRangeBound());
+        encode_tree_node(ids, subenc, r->GetNext());
+    } else if (auto cv = exact_cast<VeriConstVal>(x)) {
+        subenc.string(cv->Image());
+        subenc.uint(cv->Size(nullptr));
+        subenc.uint(cv->Sign());
+    } else if (auto iv = exact_cast<VeriIntVal>(x)) {
+        subenc.string(iv->Image());
+        subenc.uint(iv->Size(nullptr));
+        subenc.uint(iv->Sign());
+        subenc.int_(iv->GetNum());
+    } else if (auto rv = exact_cast<VeriRealVal>(x)) {
+        subenc.string(rv->Image());
+        subenc.uint(rv->Size(nullptr));
+        subenc.uint(rv->Sign());
+        subenc.double_(rv->GetNum());
+    } else if (auto v = exact_cast<VeriVariable>(x)) {
+        subenc.string(v->Name());
+        encode_tree_node(ids, subenc, v->GetDataType());
+        encode_tree_node(ids, subenc, v->GetDimensions());
+        encode_tree_node(ids, subenc, v->GetInitialValue());
+        subenc.uint(v->Dir());
+    } else if (auto uo = exact_cast<VeriUnaryOperator>(x)) {
+        subenc.uint(uo->OperType());
+        encode_tree_node(ids, subenc, uo->GetArg());
+    } else if (auto bo = exact_cast<VeriBinaryOperator>(x)) {
+        subenc.uint(bo->OperType());
+        encode_tree_node(ids, subenc, bo->GetLeft());
+        encode_tree_node(ids, subenc, bo->GetRight());
+    } else if (auto ca = exact_cast<VeriContinuousAssign>(x)) {
+        encode_tree_node(ids, subenc, ca->GetStrength());
+        encode_tree_nodes(ids, subenc, ca->GetNetAssigns());
+    } else if (auto nra = exact_cast<VeriNetRegAssign>(x)) {
+        encode_tree_node(ids, subenc, nra->GetLValExpr());
+        encode_tree_node(ids, subenc, nra->GetRValExpr());
+    } else if (auto ir = exact_cast<VeriIdRef>(x)) {
+        subenc.uint(ids.map(ir->GetId()));
+    } else if (auto mi = exact_cast<VeriModuleId>(x)) {
+        subenc.uint(ids.map(mi->GetModule()));
+    } else if (auto ii = exact_cast<VeriIndexedId>(x)) {
+        encode_tree_node(ids, subenc, ii->GetPrefix());
+        encode_tree_node(ids, subenc, ii->GetIndexExpr());
+        subenc.uint(ids.map(ii->GetId()));
+    } else if (auto ac = exact_cast<VeriAlwaysConstruct>(x)) {
+        encode_tree_node(ids, subenc, ac->GetStmt());
+    } else if (auto ecs = exact_cast<VeriEventControlStatement>(x)) {
+        encode_tree_nodes(ids, subenc, ecs->GetAt());
+        encode_tree_node(ids, subenc, ecs->GetStmt());
+    } else if (auto ee = exact_cast<VeriEventExpression>(x)) {
+        subenc.uint(ee->GetEdgeToken());
+        encode_tree_node(ids, subenc, ee->GetExpr());
+        encode_tree_node(ids, subenc, ee->GetIffCondition());
+    } else if (auto cs = exact_cast<VeriCaseStatement>(x)) {
+        subenc.uint(cs->GetCaseStyle());
+        subenc.uint(cs->GetCaseType());
+        encode_tree_node(ids, subenc, cs->GetCondition());
+        encode_tree_nodes(ids, subenc, cs->GetCaseItems());
+    } else if (auto ci = exact_cast<VeriCaseItem>(x)) {
+        encode_tree_nodes(ids, subenc, ci->GetConditions());
+        encode_tree_node(ids, subenc, ci->GetStmt());
+    } else if (auto ba = exact_cast<VeriBlockingAssign>(x)) {
+        encode_tree_node(ids, subenc, ba->GetLVal());
+        //encode_tree_node(ids, subenc, ba->GetControl());
+        encode_tree_node(ids, subenc, ba->GetValue());
+    } else if (auto nba = exact_cast<VeriNonBlockingAssign>(x)) {
+        encode_tree_node(ids, subenc, nba->GetLVal());
+        //encode_tree_node(ids, subenc, nba->GetControl());
+        encode_tree_node(ids, subenc, nba->GetValue());
+    } else if (auto cs = exact_cast<VeriConditionalStatement>(x)) {
+        encode_tree_node(ids, subenc, cs->GetIfExpr());
+        encode_tree_node(ids, subenc, cs->GetThenStmt());
+        encode_tree_node(ids, subenc, cs->GetElseStmt());
+    } else if (auto qc = exact_cast<VeriQuestionColon>(x)) {
+        encode_tree_node(ids, subenc, qc->GetIfExpr());
+        encode_tree_node(ids, subenc, qc->GetThenExpr());
+        encode_tree_node(ids, subenc, qc->GetElseExpr());
+    } else if (auto sb = exact_cast<VeriSeqBlock>(x)) {
+        encode_tree_node(ids, subenc, sb->GetLabel());
+        encode_tree_nodes(ids, subenc, sb->GetDeclItems());
+        encode_tree_nodes(ids, subenc, sb->GetStatements());
+    } else if (auto c = exact_cast<VeriConcat>(x)) {
+        encode_tree_nodes(ids, subenc, c->GetExpressions());
+    } else if (auto mc = exact_cast<VeriMultiConcat>(x)) {
+        encode_tree_node(ids, subenc, mc->GetRepeat());
+        encode_tree_nodes(ids, subenc, mc->GetExpressions());
+    } else if (auto map = exact_cast<VeriMultiAssignmentPattern>(x)) {
+        encode_tree_node(ids, subenc, map->GetTargetType());
+        encode_tree_node(ids, subenc, map->GetRepeat());
+        encode_tree_nodes(ids, subenc, map->GetExpressions());
+    } else if (auto sc = exact_cast<VeriStreamingConcat>(x)) {
+        subenc.uint(sc->OperType());
+        encode_tree_nodes(ids, subenc, sc->GetExpressions());
+        encode_tree_node(ids, subenc, sc->GetSliceSize());
+    } else if (auto pc = exact_cast<VeriPortConnect>(x)) {
+        subenc.string(pc->NamedFormal());
+        encode_tree_node(ids, subenc, pc->GetConnection());
+    } else if (auto tr = exact_cast<VeriTypeRef>(x)) {
+        subenc.uint(ids.map(tr->GetId()));
+    } else if (auto tr = exact_cast<VeriTypeId>(x)) {
+        subenc.uint(ids.map(tr->GetModuleItem()));
+    } else if (auto ds = exact_cast<VeriDotStar>(x)) {
+        encode_scope(ids, subenc, ds->GetDotStarScope());
+    } else if (auto e = exact_cast<VeriEnum>(x)) {
+        encode_tree_node(ids, subenc, e->GetBaseType());
+        encode_scope_map(ids, subenc, e->GetEnumLiterals());
+    } else if (auto pi = exact_cast<VeriParamId>(x)) {
+        encode_tree_node(ids, subenc, pi->GetDataType());
+        encode_tree_node(ids, subenc, pi->GetInitialValue());
+        subenc.uint(pi->ParamType());
+        encode_tree_node(ids, subenc, pi->GetDimensions());
+        encode_tree_node(ids, subenc, pi->GetActual());
+    } else if (auto sn = exact_cast<VeriSelectedName>(x)) {
+        subenc.uint(ids.map(sn->GetPrefixId()));
+        subenc.string(sn->GetSuffix());
+        subenc.uint(ids.map(sn->FullId()));
+    } else if (auto f = exact_cast<VeriFor>(x)) {
+        encode_tree_nodes(ids, subenc, f->GetInitials());
+        encode_tree_node(ids, subenc, f->GetCondition());
+        encode_tree_nodes(ids, subenc, f->GetRepetitions());
+        encode_tree_node(ids, subenc, f->GetStmt());
+    } else if (auto imi = exact_cast<VeriIndexedMemoryId>(x)) {
+        encode_tree_node(ids, subenc, imi->GetPrefix());
+        encode_tree_nodes(ids, subenc, imi->GetIndexes());
+    } else if (auto ic = exact_cast<VeriInitialConstruct>(x)) {
+        encode_tree_node(ids, subenc, ic->GetStmt());
+    } else if (auto fd = exact_cast<VeriFunctionDecl>(x)) {
+        encode_tree_node(ids, subenc, fd->GetId());
+        encode_tree_node(ids, subenc, fd->GetDataType());
+        encode_tree_nodes(ids, subenc, fd->GetAnsiIOList());
+        encode_tree_nodes(ids, subenc, fd->GetDeclarations());
+        encode_tree_nodes(ids, subenc, fd->GetStatements());
+        encode_tree_nodes(ids, subenc, fd->GetPorts());
+    } else if (auto fi = exact_cast<VeriFunctionId>(x)) {
+        subenc.uint(ids.map(fi->GetModuleItem()));
+    } else if (auto fc = exact_cast<VeriFunctionCall>(x)) {
+        subenc.uint(ids.map(fc->GetId()));
+        encode_tree_nodes(ids, subenc, fc->GetArgs());
+    } else if (auto apd = exact_cast<VeriAnsiPortDecl>(x)) {
+        subenc.uint(apd->GetDir());
+        encode_tree_node(ids, subenc, apd->GetDataType());
+        encode_tree_nodes(ids, subenc, apd->GetIds());
+    } else if (auto d = exact_cast<VeriDollar>(x)) {
+        subenc.string(d->Image());
+    } else if (auto dcs = exact_cast<VeriDelayControlStatement>(x)) {
+        encode_tree_node(ids, subenc, dcs->GetDelay());
+        encode_tree_node(ids, subenc, dcs->GetStmt());
+    } else if (auto ns = exact_cast<VeriNullStatement>(x)) {
+    } else if (auto po = exact_cast<VeriPortOpen>(x)) {
+    } else if (auto c = exact_cast<VeriCast>(x)) {
+        encode_tree_node(ids, subenc, c->GetTargetType());
+        encode_tree_node(ids, subenc, c->GetExpr());
+
+    // Explicitly unsupported nodes
+    } else if (auto ste = exact_cast<VeriSystemTaskEnable>(x)) {
+    } else if (auto sfc = exact_cast<VeriSystemFunctionCall>(x)) {
+    } else if (auto te = exact_cast<VeriTaskEnable>(x)) {
+
     } else {
         std::cerr << "unsupported AST node: " << typeid(*x).name() << "\n";
+        ++num_unsupported;
+    }
+}
+
+void encode_scope(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriScope* s) {
+    encode_scope_map(ids, enc, s->GetThisScope());
+}
+
+void encode_scope_map(IdMap<VeriTreeNode>& ids, Encoder& enc, Map* m) {
+    SubEncoder entries(enc.array(m->Size()));
+
+    MapIter map_iter;
+    const char* name = nullptr;
+    VeriIdDef* id_def = nullptr;
+
+    FOREACH_MAP_ITEM(m, map_iter, &name, &id_def) {
+        SubEncoder entry(entries.array(2));
+        entry.string(name);
+        entry.uint(ids.map(id_def));
     }
 }
 
@@ -385,17 +599,26 @@ int main(int argc, char **argv) {
     Encoder enc;
 
     size_t len = 1024 * 1024;
-    uint8_t* buf = (uint8_t*)malloc(len);
+    uint8_t* buf = new uint8_t[len];
     cbor_encoder_init(enc.ce.get(), buf, len, 0);
-    size_t init_used = cbor_encoder_get_buffer_size(enc.ce.get(), buf);
-    std::cout << "initial: " << init_used << " bytes\n";
     encode_project(ids, enc);
+
+    size_t more = cbor_encoder_get_extra_bytes_needed(enc.ce.get());
+    if (more > 0) {
+        len += more;
+        delete[] buf;
+        buf = new uint8_t[len];
+        cbor_encoder_init(enc.ce.get(), buf, len, 0);
+        encode_project(ids, enc);
+    }
 
     std::ofstream out("out.cbor", std::ofstream::binary);
     size_t used = cbor_encoder_get_buffer_size(enc.ce.get(), buf);
     std::cout << "generated " << used << " bytes\n";
     out.write((const char*)buf, used);
     assert(out);
+
+    std::cout << num_unsupported << " unsupported nodes\n";
 
     return 0;
 

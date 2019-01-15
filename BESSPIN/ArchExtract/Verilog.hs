@@ -6,100 +6,99 @@ import Control.Monad
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Codec.CBOR.Decoding
-import Codec.CBOR.Term
-
 
 -- Verilog AST
 
 type NodeId = Word
 
-data Module = Module
+data ModuleDecl = ModuleDecl
     { moduleId :: NodeId
     , moduleName :: Text
+    , moduleParams :: [ParamDecl]
+    , modulePorts :: [PortDecl]
     , moduleItems :: [ModItem]
     }
     deriving (Show)
 
 data ModItem =
-    ModInst
+    Instance
     { modItemId :: NodeId
-    , modInstModId :: NodeId
-    , modInstName :: Text
+    , instanceModId :: NodeId
+    , instanceName :: Text
+    } |
+    VarDecl
+    { modItemId :: NodeId
+    , varDeclName :: Text
+    , varDeclDir :: Integer
+    } |
+    ContAssign
+    { modItemId :: NodeId
+    } |
+    Always
+    { alwaysStmt :: Stmt
+    } |
+    Initial
+    { initialStmt :: Stmt
     }
     deriving (Show)
 
+data Stmt =
+    Block
+    { blockStmts :: [Stmt]
+    } |
+    If
+    { ifCond :: Expr
+    , ifThenBody :: Stmt
+    , ifElseBody :: Maybe Stmt
+    } |
+    Case
+    { caseCond :: Expr
+    , caseCases :: [([Expr], Stmt)]
+    } |
+    For
+    { forBody :: Stmt
+    } |
+    NonBlockingAssign
+    { nonBlockingAssignLval :: Expr
+    , nonBlockingAssignRval :: Expr
+    } |
+    BlockingAssign
+    { blockingAssignLval :: Expr
+    , blockingAssignRval :: Expr
+    } |
+    UnknownStmt
+    deriving (Show)
 
--- Internal types, used only during CBOR parsing
+data Expr =
+    Var
+    { varDefId :: NodeId
+    } |
+    Index
+    { indexBase :: Expr
+    , indexIndex :: Expr
+    } |
+    Const
+    { constText :: Text
+    } |
+    Concat
+    { concatExprs :: [Expr]
+    } |
+    IfExpr
+    { ifExprCond :: Expr
+    , ifExprThen :: Expr
+    , ifExprElse :: Expr
+    } |
+    UnknownExpr
+    deriving (Show)
 
-data InstId = InstId
-    { instIdName :: Text
+data ParamDecl = ParamDecl
+    { paramDeclId :: NodeId
     }
     deriving (Show)
 
-
--- Parsing helpers
-
-decodeListOf :: Decoder s a -> Decoder s [a]
-decodeListOf a = do
-    mLen <- decodeListLenOrIndef
-    case mLen of
-        Nothing -> do
-            let go = do
-                    stop <- decodeBreakOr
-                    if stop then return [] else (:) <$> a <*> go
-            go
-        Just n -> replicateM n a
-
-decodeFlatListOf :: Decoder s [a] -> Decoder s [a]
-decodeFlatListOf a = do
-    mLen <- decodeListLenOrIndef
-    case mLen of
-        Nothing -> do
-            let go = do
-                    stop <- decodeBreakOr
-                    if stop then return [] else (++) <$> a <*> go
-            go
-        Just n -> concat <$> replicateM n a
-
-skipNode = decodeTerm >> return ()
-
-
--- Verilog AST parsing from CBOR
-
-decodeNodeId = decodeWord
-
-decodeNode :: (NodeId -> String -> Decoder s a) -> Decoder s a
-decodeNode f = do
-    mLen <- decodeListLenOrIndef
-    id <- decodeNodeId
-    clsName <- T.unpack <$> decodeString
-    node <- f id clsName
-    case mLen of
-        Nothing -> do
-            ok <- decodeBreakOr
-            when (not ok) $ error $ "expected end of " ++ clsName ++ " node"
-        Just _ -> return ()
-    return node
-
-decodeModule = decodeNode $ \id clsName -> do
-    name <- decodeString
-    skipNode -- GetId()
-    items <- decodeFlatListOf decodeModItems
-    return $ Module id name items
-
--- Returns a list because we flatten some kinds of items during decoding
-decodeModItems :: Decoder s [ModItem]
-decodeModItems = decodeNode $ \id clsName -> do
-    case clsName of
-        "N7Verific23VeriModuleInstantiationE" -> do
-            modId <- decodeNodeId
-            insts <- decodeListOf decodeInstId
-            return $ map (\i -> ModInst id modId (instIdName i)) insts
-        _ -> return []
-
-decodeInstId :: Decoder s InstId
-decodeInstId = decodeNode $ \id clsName -> do
-    name <- decodeString
-    skipNode -- GetPortConnects
-    return $ InstId name
+data PortDecl = PortDecl
+    { portDeclId :: NodeId
+    , portDeclName :: Text
+    , portDeclDir :: Integer
+    }
+    deriving (Show)
