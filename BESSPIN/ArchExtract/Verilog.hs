@@ -25,14 +25,20 @@ data ModItem =
     { modItemId :: NodeId
     , instanceModId :: NodeId
     , instanceName :: Text
+    , instanceParamVals :: [Expr]
+    , instancePortConns :: [PortConn]
     } |
     VarDecl
     { modItemId :: NodeId
     , varDeclName :: Text
+    , varDeclDims :: Maybe Index
     , varDeclDir :: Integer
+    , varDeclInit :: Maybe Expr
     } |
     ContAssign
     { modItemId :: NodeId
+    , contAssignLval :: Expr
+    , contAssignRval :: Expr
     } |
     Always
     { alwaysStmt :: Stmt
@@ -56,7 +62,10 @@ data Stmt =
     , caseCases :: [([Expr], Stmt)]
     } |
     For
-    { forBody :: Stmt
+    { forInits :: [Stmt]
+    , forCond :: Expr
+    , forSteps :: [Stmt]
+    , forBody :: Stmt
     } |
     NonBlockingAssign
     { nonBlockingAssignLval :: Expr
@@ -66,6 +75,11 @@ data Stmt =
     { blockingAssignLval :: Expr
     , blockingAssignRval :: Expr
     } |
+    BlockingUpdate
+    { blockingUpdateLval :: Expr
+    , blockingUpdateOper :: Integer
+    } |
+    NullStmt |
     UnknownStmt
     deriving (Show)
 
@@ -75,7 +89,11 @@ data Expr =
     } |
     Index
     { indexBase :: Expr
-    , indexIndex :: Expr
+    , indexIndex :: Index
+    } |
+    MemIndex
+    { memIndexBase :: Expr
+    , memIndexIndexes :: [Index]
     } |
     Const
     { constText :: Text
@@ -83,22 +101,55 @@ data Expr =
     Concat
     { concatExprs :: [Expr]
     } |
+    MultiConcat
+    { multiConcatRep :: Expr
+    , multiConcatExprs :: [Expr]
+    } |
     IfExpr
     { ifExprCond :: Expr
     , ifExprThen :: Expr
     , ifExprElse :: Expr
     } |
+    Unary
+    { unaryOper :: Integer
+    , unaryArg :: Expr
+    } |
+    Binary
+    { binaryOper :: Integer
+    , binaryLeft :: Expr
+    , binaryRight :: Expr
+    } |
+    Field
+    { fieldBase :: Expr
+    , fieldName :: Text
+    } |
+    AssignPat
+    { assignPatRepeat :: Expr
+    , assignPatExprs :: [Expr]
+    } |
     UnknownExpr
+    deriving (Show)
+
+data Index = ISingle Expr | IRange Expr Expr
     deriving (Show)
 
 data ParamDecl = ParamDecl
     { paramDeclId :: NodeId
+    , paramDeclDims :: MaybeIndex
+    , paramDeclInit :: Maybe Expr
     }
     deriving (Show)
 
 data PortDecl = PortDecl
     { portDeclId :: NodeId
     , portDeclName :: Text
+    , portDeclDims :: Maybe Index
     , portDeclDir :: Integer
     }
+    deriving (Show)
+
+data PortConn =
+    PCPositional Expr |
+    PCNamed Text Expr |
+    PCGlob
     deriving (Show)

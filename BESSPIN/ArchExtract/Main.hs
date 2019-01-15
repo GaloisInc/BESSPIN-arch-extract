@@ -15,9 +15,11 @@ import BESSPIN.ArchExtract.Gen.Graphviz
 
 main = do
     bs <- BS.readFile "out.cbor"
-    let v = case D.deserialize (D.listOf D.moduleDecl) bs of
-                Left errs -> error $ show errs
-                Right x -> x
+    v <- case D.deserialize (D.listOf D.moduleDecl) bs of
+            Left errs -> do
+                putStrLn ("error decoding verilog AST:\n" ++ errs)
+                error $ "decoding error"
+            Right x -> return x
     print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v
     --case compiled $ genClafer v of

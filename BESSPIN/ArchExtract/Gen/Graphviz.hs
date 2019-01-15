@@ -24,7 +24,7 @@ genGraphviz v = DotGraph False True Nothing (S.fromList $ stmts)
     rootModId = moduleId $ head [m | m <- v, T.unpack (moduleName m) == "leg"]
     modMap = M.fromList [(moduleId m, m) | m <- v]
 
-    stmts = go T.empty $ Instance 0 rootModId (T.pack "root")
+    stmts = go T.empty $ Instance 0 rootModId (T.pack "root") [] []
 
     mkLabel name ty = Label $ StrLabel $ TL.fromStrict $ name <> T.pack "\\n" <> ty
 

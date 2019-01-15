@@ -119,6 +119,11 @@ integer = match $ \t -> case t of
 word :: DecodeM Word
 word = fromInteger <$> integer
 
+null_ :: DecodeM ()
+null_ = match $ \t -> case t of
+    CBOR.TNull -> return ()
+    t -> Left $ "expected null, but got " ++ describe t
+
 list f = do
     pushList
     x <- f
@@ -126,7 +131,7 @@ list f = do
     return x
 
 traceScope :: Show b => b -> DecodeM a -> DecodeM a
-traceScope loc m = mapErr (\err -> "at " ++ show loc ++ ", " ++ err) m
+traceScope loc m = mapErr (\err -> "at " ++ show loc ++ ":\n" ++ err) m
 
 -- Check if we're at the end of the current list.
 eol :: DecodeM Bool
@@ -203,10 +208,10 @@ sourceModItems = node $ \id cls -> case cls of
             "N7Verific12VeriVariableE" -> do
                 name <- text
                 skip    -- GetDataType()
-                skip    -- GetDimensions()
-                skip    -- GetInitialValue()
+                dims <- optional index
+                init <- optional expr
                 dir' <- integer
-                return [SMINormal $ VarDecl id' name dir]
+                return [SMINormal $ VarDecl id' name dims dir init]
             "N7Verific10VeriTypeIdE" -> skipRest >> return []
             "N7Verific11VeriParamIdE" -> do
                 pd <- paramIdParts id'
@@ -215,12 +220,12 @@ sourceModItems = node $ \id cls -> case cls of
 
     "N7Verific23VeriModuleInstantiationE" -> do
         modId <- nodeId
-        skip    -- GetParamValues
+        paramVals <- listOf expr
         flatListOf $ node $ \id' cls' -> case cls' of
             "N7Verific10VeriInstIdE" -> do
                 name <- text
-                skip    -- GetPortConnects
-                return [SMINormal $ Instance id' modId name]
+                portConns <- listOf portConn
+                return [SMINormal $ Instance id' modId name paramVals portConns]
             _ -> trace ("ModuleInstantiation.ids: unknown class " ++ cls') $ skipRest >> return []
 
     "N7Verific11VeriNetDeclE" -> do
@@ -232,18 +237,18 @@ sourceModItems = node $ \id cls -> case cls of
             "N7Verific12VeriVariableE" -> do
                 name <- text
                 skip    -- GetDataType()
-                skip    -- GetDimensions()
-                skip    -- GetInitialValue()
+                dims <- optional index
+                init <- optional expr
                 dir' <- integer
-                return [SMINormal $ VarDecl id' name dir]
+                return [SMINormal $ VarDecl id' name dims dir init]
             _ -> trace ("NetDecl.ids: unknown class " ++ cls') $ skipRest >> return []
 
     "N7Verific20VeriContinuousAssignE" -> do
         skip    -- Strength
         listOf $ nodeCls "N7Verific16VeriNetRegAssignE" $ \id' -> do
-            skip    -- LValExpr
-            skip    -- RValExpr
-            return $ SMINormal $ ContAssign id'
+            lval <- expr
+            rval <- expr
+            return $ SMINormal $ ContAssign id' lval rval
 
     "N7Verific19VeriAlwaysConstructE" -> do
         s <- stmt
@@ -260,10 +265,10 @@ portDecls = node $ \id cls -> case cls of
     "N7Verific12VeriVariableE" -> do
         name <- text
         skip    -- GetDataType()
-        skip    -- GetDimensions()
-        skip    -- GetInitialValue()
+        dims <- optional index
+        null_   -- InitialValue - should always be null for port declarations
         dir <- integer
-        return [PortDecl id name dir]
+        return [PortDecl id name dims dir]
     _ -> trace ("portDecls: unknown class " ++ cls) $ skipRest >> return []
 
 paramDecls :: DecodeM [ParamDecl]
@@ -273,11 +278,11 @@ paramDecls = node $ \id cls -> case cls of
 
 paramIdParts id = do
     skip    -- DataType
-    skip    -- InitialValue
+    init <- optional expr
     skip    -- ParamType
-    skip    -- Dimensions
+    dims <- optional index
     skip    -- Actual
-    return $ ParamDecl id
+    return $ ParamDecl id dims init
 
 dataDeclId :: DecodeM ()
 dataDeclId = node $ \id cls -> trace cls $ skipRest
@@ -313,11 +318,11 @@ stmt = node $ \id cls -> case cls of
         return $ Case cond items
 
     "N7Verific7VeriForE" -> do
-        skip    -- Initials
-        skip    -- Condition
-        skip    -- Repetitions
+        inits <- listOf stmt
+        cond <- expr
+        steps <- listOf stmt
         body <- stmt
-        return $ For body
+        return $ For inits cond steps body
 
     "N7Verific21VeriNonBlockingAssignE" -> do
         lval <- expr
@@ -326,21 +331,40 @@ stmt = node $ \id cls -> case cls of
 
     "N7Verific18VeriBlockingAssignE" -> do
         lval <- expr
-        rval <- expr
-        return $ BlockingAssign lval rval
+        rval <- optional expr
+        oper <- integer
+        case (oper, rval) of
+            (413, Just rval) -> return $ BlockingAssign lval rval
+            (498, Nothing) -> return $ BlockingUpdate lval oper
+            (499, Nothing) -> return $ BlockingUpdate lval oper
+
+    "N7Verific25VeriDelayControlStatementE" -> do
+        skip    -- delay
+        s <- stmt
+        return s
+
+    "N7Verific17VeriNullStatementE" -> do
+        return NullStmt
 
     _ -> trace ("stmt: unknown class " ++ cls) $ skipRest >> return UnknownStmt
 
-expr = node $ \id cls -> case cls of
+expr = node exprParts
+
+exprParts id cls = case cls of
     "N7Verific9VeriIdRefE" -> do
         defId <- nodeId
         return $ Var defId
 
     "N7Verific13VeriIndexedIdE" -> do
         base <- expr
-        index <- expr
+        ix <- index
         skip    -- Id
-        return $ Index base index
+        return $ Index base ix
+
+    "N7Verific19VeriIndexedMemoryIdE" -> do
+        base <- expr
+        ixs <- listOf index
+        return $ MemIndex base ixs
 
     "N7Verific12VeriConstValE" -> do
         t <- text
@@ -366,14 +390,71 @@ expr = node $ \id cls -> case cls of
         es <- listOf expr
         return $ Concat es
 
+    "N7Verific15VeriMultiConcatE" -> do
+        rep <- expr
+        es <- listOf expr
+        return $ MultiConcat rep es
+
     "N7Verific17VeriQuestionColonE" -> do
         cond <- expr
         then_ <- expr
         else_ <- expr
         return $ IfExpr cond then_ else_
 
+    "N7Verific17VeriUnaryOperatorE" -> do
+        oper <- integer
+        arg <- expr
+        return $ Unary oper arg
+
+    "N7Verific18VeriBinaryOperatorE" -> do
+        oper <- integer
+        left <- expr
+        right <- expr
+        return $ Binary oper left right
+
+    --"N7Verific9VeriRangeE" -> Ranges <$> rangesParts id
+    "N7Verific9VeriRangeE" -> fail "ranges here!!"
+
+    "N7Verific16VeriSelectedNameE" -> do
+        base <- expr
+        name <- text
+        skip    -- FullId
+        return $ Field base name
+
+    "N7Verific26VeriMultiAssignmentPatternE" -> do
+        skip    -- TargetType
+        repeat <- expr
+        exprs <- listOf expr
+        return $ AssignPat repeat exprs
 
     _ -> trace ("expr: unknown class " ++ cls) $ skipRest >> return UnknownExpr
+
+index = node $ \id cls -> case cls of
+    "N7Verific9VeriRangeE" -> do
+        left <- expr
+        -- For `x[$]`, `right` can be null.
+        right <- optional expr
+        skip    -- PartSelectToken
+        skip    -- IsUnpacked
+        skip    -- LeftRangeBound
+        skip    -- RightRangeBound
+        -- Ranges can theoretically be chained as linked lists, but in practice
+        -- that never seems to happen.
+        null_   -- Next
+        case right of
+            Nothing -> return $ ISingle left
+            Just right -> return $ IRange left right
+    _ -> ISingle <$> exprParts id cls
+
+portConn = node $ \id cls -> case cls of
+    "N7Verific15VeriPortConnectE" -> do
+        name <- text
+        val <- expr
+        return $ PCNamed name val
+    "N7Verific11VeriDotStarE" -> do
+        skip    -- DotStarScope
+        return $ PCGlob
+    _ -> PCPositional <$> exprParts id cls
 
 
 

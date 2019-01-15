@@ -269,6 +269,7 @@ void encode_tree_node(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriTreeNode* x) {
         encode_tree_node(ids, subenc, ba->GetLVal());
         //encode_tree_node(ids, subenc, ba->GetControl());
         encode_tree_node(ids, subenc, ba->GetValue());
+        subenc.uint(ba->OperType());
     } else if (auto nba = exact_cast<VeriNonBlockingAssign>(x)) {
         encode_tree_node(ids, subenc, nba->GetLVal());
         //encode_tree_node(ids, subenc, nba->GetControl());
@@ -317,7 +318,7 @@ void encode_tree_node(IdMap<VeriTreeNode>& ids, Encoder& enc, VeriTreeNode* x) {
         encode_tree_node(ids, subenc, pi->GetDimensions());
         encode_tree_node(ids, subenc, pi->GetActual());
     } else if (auto sn = exact_cast<VeriSelectedName>(x)) {
-        subenc.uint(ids.map(sn->GetPrefixId()));
+        encode_tree_node(ids, subenc, sn->GetPrefix());
         subenc.string(sn->GetSuffix());
         subenc.uint(ids.map(sn->FullId()));
     } else if (auto f = exact_cast<VeriFor>(x)) {
