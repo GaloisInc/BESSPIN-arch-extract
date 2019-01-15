@@ -120,16 +120,6 @@ SubEncoder Encoder::array(size_t len) {
     return subenc;
 }
 
-/*
-struct AstEncoder {
-    IdMap<VeriTreeNode> ids;
-    Encoder enc;
-
-    void encode(VeriTreeNode* n) {
-    }
-}
-*/
-
 // Cast `ptr` from `U*` to `T*` only if the dynamic type of `*ptr` is exactly
 // `T`.  We use this in `encode_tree_node` to ensure we don't accidentally
 // interpret an object as an instance of its superclass (losing information in
@@ -415,179 +405,6 @@ void encode_project(IdMap<VeriTreeNode>& ids, Encoder& enc) {
     }
 }
 
-// Scan the entire AST, 
-
-/*
-void scan_project(Ids& ids);
-void scan_module_item(Ids& ids, VeriModuleItem* x);
-void scan_module_items(Ids& ids, Array* a);
-void scan_expression(Ids& ids, VeriExpression* x);
-void scan_expressions(Ids& ids, Array* a);
-void scan_id_def(Ids& ids, VeriIdDef* x);
-void scan_id_defs(Ids& ids, Array* a);
-void scan_misc(Ids& ids, VeriTreeNode* x);
-void scan_miscs(Ids& ids, Array* a);
-
-void scan_project(Ids& ids) {
-    MapIter map_iter;
-    VeriModule* module = nullptr;
-    FOREACH_VERILOG_MODULE(map_iter, module) {
-        scan_module_item(ids, module);
-    }
-}
-
-void scan_module_item(Ids& ids, VeriModuleItem* x) {
-    if (!ids.module_items.record(x)) {
-        // Recurse into this module only the first time we see it, to avoid
-        // duplicating work.  
-        return;
-    }
-
-    if (auto m = dynamic_cast<VeriModule*>(x)) {
-        scan_id_defs(ids, m->GetPorts());
-        scan_id_defs(ids, m->GetParameters());
-        scan_module_items(ids, m->GetParameterConnects());
-        scan_expressions(ids, m->GetPortConnects());
-        scan_module_items(ids, m->GetModuleItems());
-        scan_module_items(ids, m->GetPackageImportDecls());
-    } else if (auto mi = dynamic_cast<VeriModuleInstantiation*>(x)) {
-        scan_expressions(ids, mi->GetParamValues());
-        scan_id_defs(ids, mi->GetInstances());
-    } else if (auto dd = dynamic_cast<VeriDataDecl*>(x)) {
-        scan_id_defs(ids, dd->GetIds());
-    } else if (auto ca = dynamic_cast<VeriContinuousAssign*>(x)) {
-        scan_expressions(ids, ca->GetDelay());
-        scan_miscs(ids, ca->GetNetAssigns());
-    } else if (auto ac = dynamic_cast<VeriAlwaysConstruct*>(x)) {
-        scan_module_item(ids, ac->GetStmt());
-    } else {
-        std::cerr << "unsupported ModuleItem: " << typeid(*x).name() << "\n";
-    }
-}
-
-void scan_module_items(Ids& ids, Array* a) {
-    size_t i;
-    VeriModuleItem* x;
-    FOREACH_ARRAY_ITEM(a, i, x) {
-        scan_module_item(ids, x);
-    }
-}
-
-void scan_expression(Ids& ids, VeriExpression* x) {
-    if (!ids.expressions.record(x)) {
-        return;
-    }
-
-    if (auto apd = dynamic_cast<VeriAnsiPortDecl*>(x)) {
-        scan_id_defs(ids, apd->GetIds());
-    } else if (auto ir = dynamic_cast<VeriIdRef*>(x)) {
-        scan_id_def(ids, ir->GetId());
-    } else if (auto bo = dynamic_cast<VeriBinaryOperator*>(x)) {
-        scan_expression(ids, bo->GetLeft());
-        scan_expression(ids, bo->GetRight());
-    } else if (auto ii = dynamic_cast<VeriIndexedId*>(x)) {
-        scan_id_def(ids, ii->GetId());
-        scan_expression(ids, ii->GetIndexExpr());
-    } else if (auto iv = dynamic_cast<VeriIntVal*>(x)) {
-    } else if (auto iv = dynamic_cast<VeriConstVal*>(x)) {
-    } else if (auto pc = dynamic_cast<VeriPortConnect*>(x)) {
-        scan_expression(ids, pc->GetConnection());
-    } else if (auto pc = dynamic_cast<VeriUnaryOperator*>(x)) {
-        scan_expression(ids, pc->GetArg());
-    } else if (auto r = dynamic_cast<VeriRange*>(x)) {
-        scan_expression(ids, r->GetLeft());
-        scan_expression(ids, r->GetRight());
-        scan_expression(ids, r->GetNext());
-    } else if (auto r = dynamic_cast<VeriConcat*>(x)) {
-        scan_expression(ids, r->GetCycleDelayRange());
-    } else {
-        std::cerr << "unsupported Expression: " << typeid(*x).name() << "\n";
-    }
-}
-
-void scan_expressions(Ids& ids, Array* a) {
-    size_t i;
-    VeriExpression* x;
-    FOREACH_ARRAY_ITEM(a, i, x) {
-        scan_expression(ids, x);
-    }
-}
-
-void scan_id_def(Ids& ids, VeriIdDef* x) {
-    if (!ids.id_defs.record(x)) {
-        return;
-    }
-
-    if (auto v = dynamic_cast<VeriVariable*>(x)) {
-        // It's okay if `GetInitialValue` returns null: the `IdMap` constructor
-        // inserts a mapping from `nullptr` to `0`, so null is always
-        // considered "already seen".
-        scan_expression(ids, v->GetInitialValue());
-        scan_expression(ids, v->GetDimensions());
-    } else if (auto ii = dynamic_cast<VeriInstId*>(x)) {
-        scan_expressions(ids, ii->GetPortConnects());
-    } else if (auto pi = dynamic_cast<VeriParamId*>(x)) {
-        scan_expression(ids, pi->GetInitialValue());
-        scan_expression(ids, pi->GetDimensions());
-    } else {
-        std::cerr << "unsupported IdDef: " << typeid(*x).name() << "\n";
-    }
-}
-
-void scan_id_defs(Ids& ids, Array* a) {
-    size_t i;
-    VeriIdDef* x;
-    FOREACH_ARRAY_ITEM(a, i, x) {
-        scan_id_def(ids, x);
-    }
-}
-
-void scan_misc(Ids& ids, VeriTreeNode* x) {
-    if (!ids.miscs.record(x)) {
-        return;
-    }
-
-    if (auto nra = dynamic_cast<VeriNetRegAssign*>(x)) {
-        scan_expression(ids, nra->GetLValExpr());
-        scan_expression(ids, nra->GetRValExpr());
-    } else {
-        std::cerr << "unsupported TreeNode: " << typeid(*x).name() << "\n";
-    }
-}
-
-void scan_miscs(Ids& ids, Array* a) {
-    size_t i;
-    VeriIdDef* x;
-    FOREACH_ARRAY_ITEM(a, i, x) {
-        scan_misc(ids, x);
-    }
-}
-*/
-
-/*
-
-void encode_project(CborEncoder* ce) {
-    Ids ids;
-
-    encode_modules(ce, ids);
-}
-
-void encode_modules(CborEncoder* ce, Ids& ids) {
-    MapIter map_iter;
-    VeriModule* module = nullptr;
-
-    FOREACH_VERILOG_MODULE(map_iter, module) {
-
-
-
-        Array* items = module->GetModuleItems();
-        std::cout << "module " << module->GetName() << ": " <<
-            items->Size() << " items\n";
-
-    }
-}
-*/
-
 int main(int argc, char **argv) {
     for (uint32_t idx = 1; idx < argc; idx += 1) {
         if (!veri_file::Analyze(argv[idx], veri_file::SYSTEM_VERILOG)) {
@@ -621,31 +438,9 @@ int main(int argc, char **argv) {
 
     std::cout << num_unsupported << " unsupported nodes\n";
 
-    return 0;
-
-    /*
-    size_t len = 1024 * 1024;
-    uint8_t* buf = malloc(len);
-    assert(buf);
-    CborEncoder ce;
-    cbor_encoder_init(&ce, buf, 1024, 0);
-    encode_project(&ce);
-
-    size_t more = cbor_encoder_get_extra_bytes_needed(&ce);
-    while (more > 0) {
-        // Ran out of space in the buffer.  With `more` additional bytes, the
-        // encoding would succeed.  Extend the buffer and try again.
-        len += more;
-        std::cout << "buffer too small - reallocating to " << len << "\n";
-        buf = malloc(len);
-        assert(buf);
-        cbor_encoder_init(&ce, buf, 1024, 0);
-        encode_project(&ce);
-
-        more = cbor_encoder_get_extra_bytes_needed(&ce);
-    }
-
+    // TODO: Check if there are nodes in `ids.obj_ids` that aren't in
+    // `ids.seen`.  If this happens, it means there was a reference to the
+    // object, but we never actually encoded it during our tree traversal.
 
     return 0;
-    */
 }

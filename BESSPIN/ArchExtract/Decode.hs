@@ -17,7 +17,6 @@ import qualified Codec.CBOR.Term as CBOR
 import BESSPIN.ArchExtract.Verilog
 
 
-
 type Stack = [[CBOR.Term]]
 
 newtype DecodeM a = DecodeM { runDecodeM :: Stack -> Either String (a, Stack) }
@@ -39,23 +38,28 @@ instance Functor DecodeM where
 
 -- Primitive `DecodeM` operations
 
+-- Apply `f` to the next term, either parsing it as an `a` or raising an error.
 match :: (CBOR.Term -> Either String a) -> DecodeM a
 match f = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
     [] : _ -> Left "read past end of list"
     (x : terms) : stk -> f x >>= \x' -> Right (x', terms : stk)
 
+-- Discard the next term.
 skip :: DecodeM ()
 skip = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
     [] : _ -> Left "read past end of list"
     (x : terms) : stk -> Right ((), terms : stk)
 
+-- Discard all remaining terms in the current list.
 skipRest :: DecodeM ()
 skipRest = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
     _ : stk -> Right ((), [] : stk)
 
+-- Parse the next term as a list, and "enter" it by pusngh its list of subterms
+-- onto the stack.
 pushList :: DecodeM ()
 pushList = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
@@ -65,18 +69,24 @@ pushList = DecodeM $ \stk -> case stk of
         CBOR.TListI ts -> Right ((), (ts : terms : stk))
         _ -> Left $ "expected list, but got " ++ describe t
 
+-- "Exit" the current list by popping it from the stack.  Raises an error if
+-- the current list is not empty, as this usually indicates that the parsing
+-- code is incomplete.
 popList :: DecodeM ()
 popList = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
     [] : stk -> Right ((), stk)
     terms : stk -> Left $ show (length terms) ++ " unparsed items at end of list"
 
+-- Return the next term without consuming it.  Returns `Nothing` when at the
+-- end of the current list.
 peek :: DecodeM (Maybe CBOR.Term)
 peek = DecodeM $ \stk -> case stk of
     [] -> Left "empty stack"
     [] : _ -> Right (Nothing, stk)
     (x : _) : _ -> Right (Just x, stk)
 
+-- Run `m`, mapping `f` over any error it raises.
 mapErr :: (String -> String) -> DecodeM a -> DecodeM a
 mapErr f m = DecodeM $ \stk -> case runDecodeM m stk of
     Left err -> Left $ f err
@@ -124,12 +134,16 @@ null_ = match $ \t -> case t of
     CBOR.TNull -> return ()
     t -> Left $ "expected null, but got " ++ describe t
 
-list f = do
+-- Parse the contents of the next term, which must be a list, using `m`.
+list :: DecodeM a -> DecodeM a
+list m = do
     pushList
-    x <- f
+    x <- m
     popList
     return x
 
+-- Run `m` in a scope described by `loc`.  If `m` raises an error, `traceScope`
+-- will extend the error message with "backtrace" information including `loc`.
 traceScope :: Show b => b -> DecodeM a -> DecodeM a
 traceScope loc m = mapErr (\err -> "at " ++ show loc ++ ":\n" ++ err) m
 
@@ -140,23 +154,24 @@ eol = (== Nothing) <$> peek
 
 -- Helpers
 
-
+-- Parse each remaining term in the current list using `m`.
 listOf :: DecodeM a -> DecodeM [a]
-listOf f = list go
+listOf m = list go
   where go = do
             atEol <- eol
-            if atEol then return [] else (:) <$> f <*> go
+            if atEol then return [] else (:) <$> m <*> go
 
 flatListOf :: DecodeM [a] -> DecodeM [a]
-flatListOf f = concat <$> listOf f
+flatListOf m = concat <$> listOf m
 
+-- Parse the next term using `m`, unless the next term is null.
 optional :: DecodeM a -> DecodeM (Maybe a)
-optional f = do
+optional m = do
     tok <- peek
     case tok of
         Nothing -> fail "read past end of list"
         Just CBOR.TNull -> skip >> return Nothing
-        _ -> Just <$> f
+        _ -> Just <$> m
 
 
 -- Verilog AST decoding
@@ -164,6 +179,8 @@ optional f = do
 nodeId :: DecodeM NodeId
 nodeId = word
 
+-- Parse a list term as a node using `f`.  `node` consumes the initial node ID
+-- and class terms, and expects `f` to consume the remaining terms of the list.
 node :: (NodeId -> String -> DecodeM a) -> DecodeM a
 node f = do
     (id, cls) <- traceScope "(node header)" $ do
@@ -176,6 +193,7 @@ node f = do
         popList
         return x
 
+-- Parse a list term as a node of class `expectCls`, using `f`.
 nodeCls :: String -> (NodeId -> DecodeM a) -> DecodeM a
 nodeCls expectCls f = node $ \id cls ->
     if cls == expectCls then
@@ -196,7 +214,6 @@ moduleDecl = nodeCls "N7Verific10VeriModuleE" $ \id -> do
     skip    -- GetPackageImportDecls()
     let (items, params') = partitionSourceModItems sourceItems
     return $ ModuleDecl id name (params ++ params') ports items
-
 
 sourceModItems :: DecodeM [SourceModItem]
 sourceModItems = node $ \id cls -> case cls of
@@ -283,9 +300,6 @@ paramIdParts id = do
     dims <- optional index
     skip    -- Actual
     return $ ParamDecl id dims init
-
-dataDeclId :: DecodeM ()
-dataDeclId = node $ \id cls -> trace cls $ skipRest
 
 stmt = node $ \id cls -> case cls of
     "N7Verific12VeriSeqBlockE" -> do
@@ -412,9 +426,6 @@ exprParts id cls = case cls of
         right <- expr
         return $ Binary oper left right
 
-    --"N7Verific9VeriRangeE" -> Ranges <$> rangesParts id
-    "N7Verific9VeriRangeE" -> fail "ranges here!!"
-
     "N7Verific16VeriSelectedNameE" -> do
         base <- expr
         name <- text
@@ -457,13 +468,7 @@ portConn = node $ \id cls -> case cls of
     _ -> PCPositional <$> exprParts id cls
 
 
-
-deserialize :: DecodeM a -> BS.ByteString -> Either String a
-deserialize d bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
-    Left cborErr -> Left $ show cborErr
-    Right (_, term) -> fst <$> runDecodeM d [[term]]
-
-
+-- Helper types
 
 -- Source-level mod items include a few additional types that we don't include
 -- in the ModItem data type.
@@ -474,3 +479,11 @@ partitionSourceModItems xs = go xs
   where go [] = ([], [])
         go (SMINormal x : xs) = let (a, b) = go xs in (x : a, b)
         go (SMIParam x : xs) = let (a, b) = go xs in (a, x : b)
+
+
+-- Bytestring deserialization
+
+deserialize :: DecodeM a -> BS.ByteString -> Either String a
+deserialize d bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
+    Left cborErr -> Left $ show cborErr
+    Right (_, term) -> fst <$> runDecodeM d [[term]]

@@ -135,7 +135,7 @@ data Index = ISingle Expr | IRange Expr Expr
 
 data ParamDecl = ParamDecl
     { paramDeclId :: NodeId
-    , paramDeclDims :: MaybeIndex
+    , paramDeclDims :: Maybe Index
     , paramDeclInit :: Maybe Expr
     }
     deriving (Show)
