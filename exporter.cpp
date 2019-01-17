@@ -25,8 +25,9 @@ template<typename T>
 struct IdMap {
     std::map<const T*, uint32_t> obj_ids;
     std::set<const T*> seen;
+    uint32_t next_id;
 
-    IdMap() : obj_ids() {
+    IdMap() : obj_ids(), seen(), next_id(1) {
         obj_ids.emplace(nullptr, 0);
     }
 
@@ -35,7 +36,7 @@ struct IdMap {
         if (iter != obj_ids.end()) {
             return iter->second;
         } else {
-            uint32_t id = obj_ids.size();
+            uint32_t id = fresh();
             obj_ids.insert(std::make_pair(ptr, id));
             return id;
         }
@@ -48,6 +49,10 @@ struct IdMap {
         seen.insert(ptr);
         return id;
     }
+
+    uint32_t fresh() {
+        return next_id++;
+    }
 };
 
 void cbor_check(CborError err) {
@@ -57,8 +62,6 @@ void cbor_check(CborError err) {
     std::cerr << "encoding error: " << err << "\n";
     abort();
 }
-
-struct SubEncoder;
 
 // An `Encoder` writes terms sequentially into a CBOR array.  
 struct Encoder {
@@ -75,8 +78,14 @@ struct Encoder {
     Encoder(Encoder&& other) : ids(other.ids), ce(std::move(other.ce)), parent(other.parent) {}
     Encoder& operator=(const Encoder&) = delete;
     ~Encoder() {
+        close();
+    }
+
+    void close() {
         if (ce && parent) {
             cbor_check(cbor_encoder_close_container(parent, ce.get()));
+            ce.reset(nullptr);
+            parent = nullptr;
         }
     }
 
@@ -137,6 +146,10 @@ struct Encoder {
     // Encode a single tree node, as a list `[id, cls, ...]`.  Encodes null if
     // the `x` pointer is null.
     void tree_node(VeriTreeNode* x);
+
+    // Helper function to resolve and emit the list of port connections for a
+    // module instantiation.
+    void mod_inst_ports(VeriInstId* ii);
 
     // Encode an array of tree nodes.  Encodes an empty list if the `a` pointer
     // is null.
@@ -213,11 +226,12 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.tree_nodes(m->GetPackageImportDecls());
     } else if (auto mi = exact_cast<VeriModuleInstantiation>(x)) {
         sub.uint(ids.map(mi->GetInstantiatedModule()));
+        // TODO: handle params like InstId ports
         sub.tree_nodes(mi->GetParamValues());
         sub.tree_nodes(mi->GetInstances());
     } else if (auto ii = exact_cast<VeriInstId>(x)) {
         sub.string(ii->Name());
-        sub.tree_nodes(ii->GetPortConnects());
+        sub.mod_inst_ports(ii);
     } else if (auto dd = exact_cast<VeriDataDecl>(x)) {
         sub.uint(dd->GetDeclType());
         sub.uint(dd->GetDir());
@@ -278,6 +292,8 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.tree_node(nra->GetLValExpr());
         sub.tree_node(nra->GetRValExpr());
     } else if (auto ir = exact_cast<VeriIdRef>(x)) {
+        // NB: If you change the encoding of `VeriIdRef`s, also update
+        // `mod_inst_ports` to generate the new encoding.
         sub.uint(ids.map(ir->GetId()));
     } else if (auto mi = exact_cast<VeriModuleId>(x)) {
         sub.uint(ids.map(mi->GetModule()));
@@ -349,6 +365,7 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.tree_node(e->GetBaseType());
         sub.scope_map(e->GetEnumLiterals());
     } else if (auto pi = exact_cast<VeriParamId>(x)) {
+        sub.string(pi->Name());
         sub.tree_node(pi->GetDataType());
         sub.tree_node(pi->GetInitialValue());
         sub.uint(pi->ParamType());
@@ -403,6 +420,35 @@ void Encoder::tree_node(VeriTreeNode* x) {
     } else {
         std::cerr << "unsupported AST node: " << typeid(*x).name() << "\n";
         ++num_unsupported;
+    }
+}
+
+void Encoder::mod_inst_ports(VeriInstId* ii) {
+    // We want to encode an array of the actual ports that matches the order of
+    // the corresponding formal ports.  Verific provides a function for
+    // obtaining the actual parameter corresponding to a formal, but that
+    // function dosen't handle `.*`.
+
+    // Walk over the formals, encoding each corresponding actual.  If the
+    // lookup of the actual returns either .* or NULL, we look in the enclosing
+    // scope for an identifier with a matching name.
+    Array* formal_ports = ii->GetInstantiatedModule()->GetPorts();
+    Encoder sub(this->array(formal_ports->Size()));
+    size_t i;
+    VeriIdDef* formal;
+    FOREACH_ARRAY_ITEM(formal_ports, i, formal) {
+        VeriExpression* actual = ii->GetActualExpression(formal);
+        if (actual != nullptr && typeid(*actual) != typeid(VeriDotStar)) {
+            sub.tree_node(actual);
+        } else {
+            VeriIdDef* actual_id = ii->GetOwningScope()->Find(formal->Name());
+            // This is a bit ugly - we emit a fake VeriIdRef "by hand".
+            Encoder fake_ref(sub.array());
+            fake_ref.uint(ids.fresh());
+            fake_ref.string(typeid(VeriIdRef).name());
+            fake_ref.uint(ids.map(actual_id));
+            fake_ref.close();
+        }
     }
 }
 

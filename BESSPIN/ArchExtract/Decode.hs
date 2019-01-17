@@ -219,7 +219,7 @@ sourceModItems :: DecodeM [SourceModItem]
 sourceModItems = node $ \id cls -> case cls of
     "N7Verific12VeriDataDeclE" -> do
         skip    -- GetDeclType
-        dir <- integer
+        dir <- optPortDir
         skip    -- GetDataType
         flatListOf $ node $ \id' cls' -> case cls' of
             "N7Verific12VeriVariableE" -> do
@@ -227,7 +227,8 @@ sourceModItems = node $ \id cls -> case cls of
                 skip    -- GetDataType()
                 dims <- optional index
                 init <- optional expr
-                dir' <- integer
+                dir' <- optPortDir
+                when (dir /= dir') $ traceShow ("dir1", dir, "dir2", dir') $ return ()
                 return [SMINormal $ VarDecl id' name dims dir init]
             "N7Verific10VeriTypeIdE" -> skipRest >> return []
             "N7Verific11VeriParamIdE" -> do
@@ -241,13 +242,13 @@ sourceModItems = node $ \id cls -> case cls of
         flatListOf $ node $ \id' cls' -> case cls' of
             "N7Verific10VeriInstIdE" -> do
                 name <- text
-                portConns <- listOf portConn
+                portConns <- listOf expr
                 return [SMINormal $ Instance id' modId name paramVals portConns]
             _ -> trace ("ModuleInstantiation.ids: unknown class " ++ cls') $ skipRest >> return []
 
     "N7Verific11VeriNetDeclE" -> do
         skip    -- DeclType
-        dir <- integer
+        dir <- optPortDir
         skip    -- DataType
         skip    -- Strength
         flatListOf $ node $ \id' cls' -> case cls' of
@@ -256,7 +257,8 @@ sourceModItems = node $ \id cls -> case cls of
                 skip    -- GetDataType()
                 dims <- optional index
                 init <- optional expr
-                dir' <- integer
+                dir' <- optPortDir
+                when (dir /= dir') $ traceShow ("dir1", dir, "dir2", dir') $ return ()
                 return [SMINormal $ VarDecl id' name dims dir init]
             _ -> trace ("NetDecl.ids: unknown class " ++ cls') $ skipRest >> return []
 
@@ -284,9 +286,22 @@ portDecls = node $ \id cls -> case cls of
         skip    -- GetDataType()
         dims <- optional index
         null_   -- InitialValue - should always be null for port declarations
-        dir <- integer
+        dir <- portDir
         return [PortDecl id name dims dir]
     _ -> trace ("portDecls: unknown class " ++ cls) $ skipRest >> return []
+
+portDir :: DecodeM PortDir
+portDir = optPortDir >>= \x -> case x of
+    Nothing -> fail "expected port direction"
+    Just d -> return d
+
+optPortDir :: DecodeM (Maybe PortDir)
+optPortDir = integer >>= \x -> case x of
+    0 -> return Nothing
+    329 -> return $ Just InOut
+    330 -> return $ Just Input
+    346 -> return $ Just Output
+    _ -> fail $ "unknown PortDir enum: " ++ show x
 
 paramDecls :: DecodeM [ParamDecl]
 paramDecls = node $ \id cls -> case cls of
@@ -294,12 +309,13 @@ paramDecls = node $ \id cls -> case cls of
     _ -> trace ("paramDecls: unknown class " ++ cls) $ skipRest >> return []
 
 paramIdParts id = do
+    name <- text
     skip    -- DataType
     init <- optional expr
     skip    -- ParamType
     dims <- optional index
     skip    -- Actual
-    return $ ParamDecl id dims init
+    return $ ParamDecl id name dims init
 
 stmt = node $ \id cls -> case cls of
     "N7Verific12VeriSeqBlockE" -> do
@@ -456,16 +472,6 @@ index = node $ \id cls -> case cls of
             Nothing -> return $ ISingle left
             Just right -> return $ IRange left right
     _ -> ISingle <$> exprParts id cls
-
-portConn = node $ \id cls -> case cls of
-    "N7Verific15VeriPortConnectE" -> do
-        name <- text
-        val <- expr
-        return $ PCNamed name val
-    "N7Verific11VeriDotStarE" -> do
-        skip    -- DotStarScope
-        return $ PCGlob
-    _ -> PCPositional <$> exprParts id cls
 
 
 -- Helper types

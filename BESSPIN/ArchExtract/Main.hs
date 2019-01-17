@@ -8,6 +8,8 @@ import Data.Word
 import Language.Clafer
 
 import BESSPIN.ArchExtract.Verilog
+import BESSPIN.ArchExtract.Architecture
+import BESSPIN.ArchExtract.Extract
 import qualified BESSPIN.ArchExtract.Decode as D
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
@@ -20,6 +22,7 @@ main = do
                 putStrLn ("error decoding verilog AST:\n" ++ errs)
                 error $ "decoding error"
             Right x -> return x
+    print $ extractArch v
     print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v
     --case compiled $ genClafer v of

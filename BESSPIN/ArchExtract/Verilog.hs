@@ -26,13 +26,13 @@ data ModItem =
     , instanceModId :: NodeId
     , instanceName :: Text
     , instanceParamVals :: [Expr]
-    , instancePortConns :: [PortConn]
+    , instancePortConns :: [Expr]
     } |
     VarDecl
     { modItemId :: NodeId
     , varDeclName :: Text
     , varDeclDims :: Maybe Index
-    , varDeclDir :: Integer
+    , varDeclDir :: Maybe PortDir
     , varDeclInit :: Maybe Expr
     } |
     ContAssign
@@ -135,6 +135,7 @@ data Index = ISingle Expr | IRange Expr Expr
 
 data ParamDecl = ParamDecl
     { paramDeclId :: NodeId
+    , paramDeclName :: Text
     , paramDeclDims :: Maybe Index
     , paramDeclInit :: Maybe Expr
     }
@@ -144,12 +145,9 @@ data PortDecl = PortDecl
     { portDeclId :: NodeId
     , portDeclName :: Text
     , portDeclDims :: Maybe Index
-    , portDeclDir :: Integer
+    , portDeclDir :: PortDir
     }
     deriving (Show)
 
-data PortConn =
-    PCPositional Expr |
-    PCNamed Text Expr |
-    PCGlob
-    deriving (Show)
+data PortDir = Input | Output | InOut
+    deriving (Show, Eq)
