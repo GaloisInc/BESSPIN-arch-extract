@@ -1,6 +1,7 @@
 module BESSPIN.ArchExtract.Main where
 
 import qualified Data.ByteString.Lazy as BS
+import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word
@@ -22,8 +23,10 @@ main = do
                 putStrLn ("error decoding verilog AST:\n" ++ errs)
                 error $ "decoding error"
             Right x -> return x
-    print $ extractArch v
-    print $ "parsed " ++ show (length v) ++ " modules"
+    let arch = extractArch v
+    let g = graphModule arch T.empty (designMods arch `S.index` 2)
+    putStrLn $ printGraphviz g
+    --print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v
     --case compiled $ genClafer v of
     --    Left errs -> mapM_ print errs
