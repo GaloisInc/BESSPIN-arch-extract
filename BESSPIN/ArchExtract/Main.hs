@@ -24,7 +24,7 @@ main = do
                 error $ "decoding error"
             Right x -> return x
     let arch = extractArch v
-    let g = graphModule arch T.empty (designMods arch `S.index` 2)
+    let g = graphModule arch T.empty (designMods arch `S.index` 0)
     putStrLn $ printGraphviz g
     --print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v

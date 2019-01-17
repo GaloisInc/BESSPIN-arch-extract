@@ -3,6 +3,7 @@ module BESSPIN.ArchExtract.Extract where
 import Control.Monad
 import Control.Monad.ST
 import Data.Array.ST
+import Data.Generics
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
@@ -11,6 +12,7 @@ import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.UnionFind.ST as UF
 
 import Debug.Trace
 
@@ -25,8 +27,12 @@ extractArch vMods = A.Design $ S.fromList $ map (extractMod interMap) vMods
   where
     interMap = buildInterMap vMods
 
+traceNets desc mod = trace (" ==== " ++ desc ++ " nets ====\n" ++ s) mod
+  where
+    s = concat $ map (\x -> show x ++ "\n") $ foldr (:) [] $ modDeclNets mod
+
 extractMod :: InterMap -> V.ModuleDecl -> A.ModDecl
-extractMod interMap vMod = reconnectNets $
+extractMod interMap vMod = traceNets "after" $ mergeAliasedNets $ traceNets "before" $ reconnectNets $
     A.ModDecl (moduleName vMod) inputs outputs insts logics nets
   where
     instMap = buildInstMap interMap (moduleItems vMod)
@@ -77,6 +83,7 @@ buildInstMap interMap items = M.fromList $ mapMaybe go items
 -- Info used to build a `Net` and its corresponding `NetMap` entry.
 data NetParts = NetParts
     { netPartsName :: Text
+    , netPartsNamePriority :: Int
     , netPartsOrigin :: NetOrigin
     }
     deriving (Show)
@@ -89,13 +96,17 @@ type NetMap = Map NetOrigin NetId
 buildNets :: [NetParts] -> (Seq A.Net, NetMap)
 buildNets nps = foldl f (S.empty, M.empty) nps
   where
-    f (nets, netMap) (NetParts name origin) =
-        let netId = S.length nets in
-        (nets |> Net name S.empty S.empty,
+    f (nets, netMap) (NetParts name prio origin) =
+        let netId = NetId $ S.length nets in
+        (nets |> Net name prio S.empty S.empty,
             M.insert origin netId netMap)
 
+prioExtPort = 3
+prioInstPort = 2
+prioWire = 1
+
 portNet :: V.PortDecl -> NetParts
-portNet (V.PortDecl id name _ _) = NetParts name (NoDef id)
+portNet (V.PortDecl id name _ _) = NetParts name prioExtPort (NoDef id)
 
 itemNets :: InstMap -> V.ModItem -> [NetParts]
 itemNets instMap (Instance instId _ name _ _) = zipWith f (modInterPorts inter) [0..]
@@ -103,8 +114,9 @@ itemNets instMap (Instance instId _ name _ _) = zipWith f (modInterPorts inter) 
     inter = instMap M.! instId
     f port idx = NetParts
         (name <> T.pack "." <> V.portDeclName port)
+        prioInstPort
         (NoInstPort instId idx)
-itemNets _ (VarDecl id name _ _ _) = [NetParts name (NoDef id)]
+itemNets _ (VarDecl id name _ _ _) = [NetParts name prioWire (NoDef id)]
 itemNets _ _ = []
 
 moduleNets :: InstMap -> V.ModuleDecl -> [NetParts]
@@ -163,7 +175,7 @@ convModuleInsts instMap netMap vMod =
 -- Logic element handling.  Includes logic statements, variable initializers,
 -- and port connection expressions.
 
--- Get the def IDs of all wires/ports/etc used in `e`.
+-- Get the origin info for every net used in `e`.
 exprVars :: Expr -> Seq NetOrigin
 exprVars e = go e
   where
@@ -183,8 +195,13 @@ exprVars e = go e
     goIdx (ISingle e) = go e
     goIdx (IRange l r) = go l <> go r
 
-mkLogic :: NetMap -> Seq NetOrigin -> Seq NetOrigin -> Logic
-mkLogic netMap ins outs = Logic (foldMap f ins) (foldMap f outs)
+-- Get the `LogicKind` for an rvalue expression.
+rvalKind :: Expr -> LogicKind
+rvalKind (Var defId) = LkNetAlias
+rvalKind _ = LkOther
+
+mkLogic :: NetMap -> LogicKind -> Seq NetOrigin -> Seq NetOrigin -> Logic
+mkLogic netMap kind ins outs = Logic kind (foldMap f ins) (foldMap f outs)
   where
     f def = case M.lookup def netMap of
         Nothing -> S.empty
@@ -211,13 +228,13 @@ stmtLogic netMap s = go S.empty s
         mconcat (map (go imp') steps) <>
         go imp' body
     go imp (NonBlockingAssign lval rval) =
-        S.singleton $ mkLogic netMap (imp <> exprVars rval) (exprVars lval)
+        S.singleton $ mkLogic netMap LkOther (imp <> exprVars rval) (exprVars lval)
     go imp (BlockingAssign lval rval) =
-        S.singleton $ mkLogic netMap (imp <> exprVars rval) (exprVars lval)
+        S.singleton $ mkLogic netMap LkOther (imp <> exprVars rval) (exprVars lval)
     go imp (BlockingUpdate lval _) =
         -- Something like `i++`, where the "lvalue" is also used as part of the
         -- "rvalue".
-        S.singleton $ mkLogic netMap (imp <> exprVars lval) (exprVars lval)
+        S.singleton $ mkLogic netMap LkOther (imp <> exprVars lval) (exprVars lval)
     go imp NullStmt = S.empty
     go imp UnknownStmt = S.empty
 
@@ -227,13 +244,14 @@ itemLogic netMap i = go i
     go (Instance instId _ _ _ portConns) =
         S.fromList $ zipWith f portConns [0..]
       where
-        f conn idx = mkLogic netMap (exprVars conn) (S.singleton $ NoInstPort instId idx)
+        f conn idx = mkLogic netMap
+            (rvalKind conn) (exprVars conn) (S.singleton $ NoInstPort instId idx)
     go (VarDecl id _ _ _ init) = case init of
         Nothing -> S.empty
         Just e -> S.singleton $
-            mkLogic netMap (exprVars e) (S.singleton $ NoDef id)
+            mkLogic netMap (rvalKind e) (exprVars e) (S.singleton $ NoDef id)
     go (ContAssign _ lval rval) = S.singleton $
-        mkLogic netMap (exprVars rval) (exprVars lval)
+        mkLogic netMap (rvalKind rval) (exprVars rval) (exprVars lval)
     go (Always s) = stmtLogic netMap s
     go (Initial s) = stmtLogic netMap s
 
@@ -246,8 +264,8 @@ convModuleLogic netMap vMod = mconcat $ map (itemLogic netMap) $ moduleItems vMo
 -- all its `ModInst`s and `Logic`s.
 reconnectNets :: A.ModDecl -> A.ModDecl
 reconnectNets mod = runST $ do
-    sources <- newArray (0, S.length (modDeclNets mod) - 1) S.empty
-    sinks <- newArray (0, S.length (modDeclNets mod) - 1) S.empty
+    sources <- newArray (NetId 0, NetId $ S.length (modDeclNets mod) - 1) S.empty
+    sinks <- newArray (NetId 0, NetId $ S.length (modDeclNets mod) - 1) S.empty
 
     connect (modDeclInputs mod) portDeclNet sources ExtPort
     connect (modDeclOutputs mod) portDeclNet sinks ExtPort
@@ -259,8 +277,8 @@ reconnectNets mod = runST $ do
         connect (logicOutputs inst) id sources (LogicPort i)
 
     nets' <- flip S.traverseWithIndex (modDeclNets mod) $ \i net -> do
-        netSources <- readArray sources i
-        netSinks <- readArray sinks i
+        netSources <- readArray sources (NetId i)
+        netSinks <- readArray sinks (NetId i)
         return $ net { netSources = netSources, netSinks = netSinks }
     return $ mod { modDeclNets = nets' }
 
@@ -272,3 +290,80 @@ reconnectNets mod = runST $ do
             conns <- readArray netConns netId
             let conns' = conns |> mkConn i
             writeArray netConns netId conns'
+
+-- Rewrite all `NetId`s in the tree using the provided function.
+mapNetIds :: (NetId -> NetId) -> A.ModDecl -> A.ModDecl
+mapNetIds f mod = everywhere (mkT f) mod
+
+-- Delete all `Net`s that fail the predicate `f`.  This changes the contents of
+-- `modDeclNets`, so `NetId`s may change.  Raises an error if any of the
+-- deleted nets is currently in use.
+filterNets :: (NetId -> Net -> Bool) -> A.ModDecl -> A.ModDecl
+filterNets f mod = mod' { modDeclNets = nets' }
+  where
+    -- Compute the new list of nets, along with the mapping from old `NetId`s
+    -- to new ones.
+    (nets', idMap) = S.foldlWithIndex g (S.empty, M.empty) (modDeclNets mod)
+      where
+        g (nets, idMap) idx net =
+            if f (NetId idx) net then
+                (nets |> net, M.insert (NetId idx) (NetId (S.length nets)) idMap)
+            else
+                (nets, idMap)
+
+    mod' = flip mapNetIds mod $ \netId -> case M.lookup netId idMap of
+        Just newId -> newId
+        Nothing ->
+            let name = netName $ modDeclNets mod `S.index` unwrapNetId netId in
+            error $ "net " ++ show (T.unpack name) ++
+                " (" ++ show netId ++ ") was deleted while still in use"
+
+-- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
+-- nets with the other.
+mergeAliasedNets :: A.ModDecl -> A.ModDecl
+mergeAliasedNets mod =
+    reconnectNets $
+    filterNets (\netId net -> substMap M.! netId == netId) $
+    mapNetIds (\netId -> substMap M.! netId) $
+    mod { modDeclLogics = logics' }
+  where
+    logics' = S.filter (\l -> logicKind l /= LkNetAlias) $ modDeclLogics mod
+
+    nets = modDeclNets mod
+
+    -- Map each net's ID to the ID of its replacement.  For nets that aren't
+    -- connected to any `LkNetAlias`es, this maps the ID to itself.
+    substMap :: Map NetId NetId
+    substMap = runST $ do
+        -- Build an array, containing one union-find "point" for each net.
+        arr <- newArray_ (NetId 0, NetId $ S.length (modDeclNets mod) - 1)
+            :: ST s (STArray s NetId (UF.Point s (NetId, Net)))
+        (lo, hi) <- getBounds arr
+        forM_ [lo .. hi] $ \netId -> do
+            let net = modDeclNets mod `S.index` unwrapNetId netId
+            pt <- UF.fresh (netId, net)
+            writeArray arr netId pt
+
+        -- Union together nets that are connected by `LkNetAlias`es.  When
+        -- unioning, we keep the net with the higher `netNamePriority`, or the
+        -- net with the lower ID in case of a tie.
+        let unionTwo id1 id2 = do
+                pt1 <- readArray arr id1
+                pt2 <- readArray arr id2
+                UF.union' pt1 pt2 (\x1@(_, net1) x2@(_, net2) ->
+                    let k1 = (netNamePriority net1, - unwrapNetId id1) in
+                    let k2 = (netNamePriority net2, - unwrapNetId id2) in
+                    return $ if k1 > k2 then x1 else x2)
+        let unionAll ids = case S.viewl ids of
+                S.EmptyL -> return ()
+                id1 S.:< ids -> forM_ ids $ \id2 -> unionTwo id1 id2
+        forM_ (modDeclLogics mod) $ \l -> do
+            when (logicKind l == LkNetAlias) $ do
+                unionAll $ logicInputs l <> logicOutputs l
+
+        -- Build a map from each net to its union-find representative.
+        M.fromList <$> forM [lo .. hi] (\oldId -> do
+            pt <- readArray arr oldId
+            (newId, _) <- UF.descriptor pt
+            return (oldId, newId))
+

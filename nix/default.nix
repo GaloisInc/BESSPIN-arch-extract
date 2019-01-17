@@ -15,6 +15,7 @@ let pkgs = import <nixpkgs> {};
       [ (pkgs.callPackage ./clafer.nix {})
       cborg
       diagrams graphviz diagrams-graphviz
+      syb union-find
       ]);
 
 

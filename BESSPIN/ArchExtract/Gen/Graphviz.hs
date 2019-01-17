@@ -24,8 +24,6 @@ tSink = T.pack "sink"
 tInputs = T.pack "Inputs"
 tOutputs = T.pack "Outputs"
 
-tLogic = T.pack "(logic)"
-
 
 joinKey parts = T.intercalate (T.singleton '$') parts
 joinGraphId parts = Str $ TL.fromStrict $ joinKey parts
@@ -38,8 +36,8 @@ connKey prefix side (LogicPort i _) =
     --joinKey [prefix, T.pack "logic", T.pack (show i), side, T.pack (show j)]
     logicKey prefix i
 
-netKey prefix netId =
-    joinKey [prefix, T.pack "net", T.pack (show netId)]
+netKey prefix idx =
+    joinKey [prefix, T.pack "net", T.pack (show idx)]
 
 logicKey prefix idx =
     joinKey [prefix, T.pack "logic", T.pack (show idx)]
@@ -60,13 +58,16 @@ portCluster prefix side label ports =
         let label = name in
         DN $ DotNode key [mkLabel label]
 
-netNode :: Text -> NetId -> Net -> DotStatement Text
-netNode prefix netId net =
-    DN $ DotNode (netKey prefix netId) [mkLabel $ netName net]
+netNode :: Text -> Int -> Net -> DotStatement Text
+netNode prefix idx net =
+    DN $ DotNode (netKey prefix idx) [mkLabel $ netName net]
 
-logicNode :: Text -> Int -> DotStatement Text
-logicNode prefix idx =
-    DN $ DotNode (logicKey prefix idx) [mkLabel tLogic]
+logicLabel LkOther = T.pack "(logic)"
+logicLabel LkNetAlias = T.pack "(net alias)"
+
+logicNode :: Text -> Int -> Logic -> DotStatement Text
+logicNode prefix idx logic =
+    DN $ DotNode (logicKey prefix idx) [mkLabel $ logicLabel $ logicKind logic]
 
 instCluster :: Design -> Text -> Int -> ModInst -> Seq (DotStatement Text)
 instCluster _ _ _ inst | modInstId inst == -1 = S.empty
@@ -86,10 +87,10 @@ instCluster design prefix instIdx inst =
 
 edgeStmt k1 k2 = DE $ DotEdge k1 k2 [] 
 
-netEdges :: Text -> NetId -> Net -> Seq (DotStatement Text)
-netEdges prefix netId net =
-    fmap (\conn -> edgeStmt (connKey prefix tSource conn) (netKey prefix netId)) (netSources net) <>
-    fmap (\conn -> edgeStmt (netKey prefix netId) (connKey prefix tSink conn)) (netSinks net)
+netEdges :: Text -> Int -> Net -> Seq (DotStatement Text)
+netEdges prefix idx net =
+    fmap (\conn -> edgeStmt (connKey prefix tSource conn) (netKey prefix idx)) (netSources net) <>
+    fmap (\conn -> edgeStmt (netKey prefix idx) (connKey prefix tSink conn)) (netSinks net)
 
 
 graphModule' :: Design -> Text -> ModDecl -> Seq (DotStatement Text)
@@ -97,7 +98,7 @@ graphModule' design prefix mod =
     portCluster prefix tSource tInputs (modDeclInputs mod) <|
     portCluster prefix tSink tOutputs (modDeclOutputs mod) <|
     S.mapWithIndex (netNode prefix) (modDeclNets mod) <>
-    S.fromList (map (logicNode prefix) [0 .. S.length (modDeclLogics mod) - 1]) <>
+    S.mapWithIndex (logicNode prefix) (modDeclLogics mod) <>
     join (S.mapWithIndex (netEdges prefix) (modDeclNets mod)) <>
     join (S.mapWithIndex (instCluster design prefix) (modDeclInsts mod))
 
