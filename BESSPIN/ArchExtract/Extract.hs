@@ -26,10 +26,14 @@ import qualified BESSPIN.ArchExtract.Verilog as V
 
 extractArch :: [V.ModuleDecl] -> A.Design
 extractArch vMods =
-    mapMods (\mod -> filterInsts (\_ i ->
-        not $ modDeclName (designMods d `S.index` modInstId i)
-            --`elem` map T.pack ["mux2", "eqcmp", "flopenr"]) mod) $
-            `elem` map T.pack ["adder"]) mod) $
+    mapMods (\mod ->
+        --filterInsts (\_ i ->
+            --not $ modInstName i `elem` map T.pack ["ra1reg"]) $
+        filterInsts (\_ i ->
+            not $ modDeclName (designMods d `S.index` modInstId i)
+                `elem` map T.pack ["mux2", "eqcmp", "flopenrc", "flopenr"]) $
+            --`elem` map T.pack ["adder"]) mod) $
+        mod) $
     d
   where
     interMap = buildInterMap vMods
@@ -43,6 +47,9 @@ extractMod :: InterMap -> V.ModuleDecl -> A.ModDecl
 extractMod interMap vMod =
     --mergeAliasedNets $
     filterLogics (\_ _ -> False) $
+    disconnect (\_ _ _ net ->
+        let baseName = last $ T.splitOn (T.singleton '.') (netName net) in
+        not $ baseName `elem` map T.pack ["clock", "clk", "reset"]) $
     reconnectNets $
     A.ModDecl (moduleName vMod) inputs outputs insts logics nets
   where
@@ -117,6 +124,7 @@ buildNets nps = foldl f (S.empty, M.empty) nps
 prioExtPort = 3
 prioInstPort = 2
 prioWire = 1
+prioDcNet = -1
 
 portNet :: V.PortDecl -> NetParts
 portNet (V.PortDecl id name _ _) = NetParts name prioExtPort (NoDef id)
@@ -361,7 +369,80 @@ filterInsts f mod =
     act = do
         void $ flip S.traverseWithIndex (modDeclInsts mod) $ \idx inst -> do
             when (not $ f idx inst) $ do
-                mergeNetSeq $ modInstInputs inst <> modInstOutputs inst
+                traceShow ("merge nets",
+                    fmap (\id -> T.unpack $ netName $ modDeclNets mod `S.index` unwrapNetId id) $
+                        modInstInputs inst <> modInstOutputs inst) $
+                    mergeNetSeq $ modInstInputs inst <> modInstOutputs inst
+
+
+-- Disconnect all connection points selected by predicate `f` from their
+-- current nets.  Since each connection point must be connected to some net,
+-- this function adds a new, otherwise-empty net for each disconnected `Conn`.
+disconnect :: (Conn -> Side -> NetId -> Net -> Bool) -> A.ModDecl -> A.ModDecl
+disconnect f mod = reconnectNets $ mod' { modDeclNets = nets' }
+  where
+    nets = modDeclNets mod
+    (mod', nets') = runState (goMod mod) nets
+
+    goMod :: A.ModDecl -> NetM A.ModDecl
+    goMod (ModDecl name ins outs insts logics nets) =
+        ModDecl <$> pure name <*> goPorts Source ins <*> goPorts Sink outs <*>
+            goInsts insts <*> goLogics logics <*> pure nets
+
+    goPorts side ports = S.traverseWithIndex (goPort side) ports
+    goPort side idx (A.PortDecl name netId) =
+        A.PortDecl <$> pure name <*>
+            goNet (ExtPort idx) side netId (extPortName side name idx netId)
+
+    goInsts :: Seq A.ModInst -> NetM (Seq A.ModInst)
+    goInsts insts = S.traverseWithIndex goInst insts
+    goInst idx (A.ModInst modId name ins outs) =
+        A.ModInst <$> pure modId <*> pure name <*>
+            goItemPorts Sink (InstPort idx) (instPortName name) ins <*>
+            goItemPorts Source (InstPort idx) (instPortName name) outs
+    goLogics :: Seq A.Logic -> NetM (Seq A.Logic)
+    goLogics logics = S.traverseWithIndex goLogic logics
+    goLogic idx (A.Logic kind ins outs) =
+        A.Logic <$> pure kind <*>
+            goItemPorts Sink (LogicPort idx) logicPortName ins <*>
+            goItemPorts Source (LogicPort idx) logicPortName outs
+
+    -- Handles both ModInst and Logic ports.
+    goItemPorts :: Side -> (Int -> Conn) -> (Side -> Int -> NetId -> Text) ->
+        Seq NetId -> NetM (Seq NetId)
+    goItemPorts side mkConn mkName netIds =
+        S.traverseWithIndex (goItemPort side mkConn mkName) netIds
+    goItemPort side mkConn mkName idx netId =
+        let conn = mkConn idx in
+        let name = mkName side idx netId in
+        goNet conn side netId name
+
+    goNet conn side netId name =
+        if f conn side netId (nets `S.index` unwrapNetId netId) then
+            return netId
+        else
+            traceShow ("replace net", netName $ nets `S.index` unwrapNetId netId,
+                netId, "with", name, "at", conn, side) $
+            mkNet name prioDcNet
+
+    dcName netId base = T.pack "dc$" <> base <> T.singleton '$' <>
+        T.pack (show $ unwrapNetId netId)
+    dotted parts = T.intercalate (T.singleton '.') parts
+    extPortName side name idx netId =
+        dcName netId $ dotted [T.pack "ext", T.pack $ show side, T.pack $ show idx, name]
+    instPortName instName side portIdx netId =
+        dcName netId $ dotted [instName, T.pack $ show side, T.pack $ show portIdx]
+    logicPortName side portIdx netId =
+        dcName netId $ dotted [T.pack "logic", T.pack $ show side, T.pack $ show portIdx]
+
+
+
+type NetM a = State (Seq Net) a
+
+mkNet :: Text -> Int -> NetM NetId
+mkNet name prio = state $ \nets ->
+    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty)
+    
 
 
 type NetMergeM s a = StateT (STArray s NetId (UF.Point s (Int, NetId))) (ST s) a

@@ -29,13 +29,14 @@ main = do
             (defaultCfg
                 { cfgDrawNets = True
                 , cfgDrawOnesidedNets = False
-                , cfgHideNamedNets = Set.fromList
+                {- , cfgHideNamedNets = Set.fromList
                     [ T.pack "clock"
                     , T.pack "clk"
                     , T.pack "reset"
                     ]
+                    -}
                 })
-            (designMods arch `S.index` 0)
+            (designMods arch `S.index` 3)
     putStrLn $ printGraphviz g
     --print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v

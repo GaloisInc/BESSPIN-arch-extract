@@ -146,7 +146,11 @@ graphModule' design cfg mod =
 
 graphModule :: Design -> Cfg -> ModDecl -> DotGraph Text
 graphModule design cfg mod = traceShow mod $
-    DotGraph False True Nothing (graphModule' design cfg mod |> labelStmt (modDeclName mod))
+    DotGraph False True Nothing 
+        ( graphModule' design cfg mod
+        |> labelStmt (modDeclName mod)
+        |> GA (GraphAttrs [RankDir FromLeft])
+        )
 
 printGraphviz :: DotGraph Text -> String
 printGraphviz g = TL.unpack $ printDotGraph g
