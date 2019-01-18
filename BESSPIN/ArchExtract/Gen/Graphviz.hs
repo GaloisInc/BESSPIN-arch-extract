@@ -5,6 +5,8 @@ import qualified Data.Map as M
 import Data.Monoid
 import Data.Sequence (Seq, (|>), (<|))
 import qualified Data.Sequence as S
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -28,12 +30,28 @@ tOutputs = T.pack "Outputs"
 data Cfg = Cfg
     { cfgPrefix :: Text
     , cfgDrawNets :: Bool
+    , cfgDrawOnesidedNets :: Bool
+    , cfgHideNamedNets :: Set Text
     }
 
 defaultCfg = Cfg
     { cfgPrefix = T.empty
     , cfgDrawNets = True
+    , cfgDrawOnesidedNets = True
+    , cfgHideNamedNets = Set.empty
     }
+
+drawNetNode cfg net =
+    -- Note that `netEdges` assumes that `drawNetNode` implies `drawNetEdges`
+    drawNetEdges cfg net &&
+    cfgDrawNets cfg &&
+    (not onesided || cfgDrawOnesidedNets cfg)
+  where
+    onesided = S.null (netSources net) || S.null (netSinks net)
+
+drawNetEdges cfg net =
+    (not $ last (T.splitOn (T.singleton '.') (netName net))
+        `Set.member` cfgHideNamedNets cfg)
 
 
 joinKey parts = T.intercalate (T.singleton '$') parts
@@ -100,7 +118,9 @@ edgeStmt k1 k2 = DE $ DotEdge k1 k2 []
 
 netEdges :: Cfg -> Int -> Net -> Seq (DotStatement Text)
 netEdges cfg idx net =
-    if cfgDrawNets cfg then drawDirect else drawSkip
+    if drawNetNode cfg net then drawDirect
+    else if drawNetEdges cfg net then drawSkip
+    else S.empty
   where
     drawDirect =
         fmap (\conn -> edgeStmt (connKey cfg tSource conn) (netKey cfg idx)) (netSources net) <>
@@ -117,10 +137,9 @@ graphModule' :: Design -> Cfg -> ModDecl -> Seq (DotStatement Text)
 graphModule' design cfg mod =
     portCluster cfg tSource tInputs (modDeclInputs mod) <|
     portCluster cfg tSink tOutputs (modDeclOutputs mod) <|
-    (if cfgDrawNets cfg then
-        S.mapWithIndex (netNode cfg) (modDeclNets mod)
-    else
-        S.empty) <>
+    S.foldMapWithIndex (\idx net ->
+        if drawNetNode cfg net then S.singleton $ netNode cfg idx net else S.empty)
+        (modDeclNets mod) <>
     S.mapWithIndex (logicNode cfg) (modDeclLogics mod) <>
     join (S.mapWithIndex (netEdges cfg) (modDeclNets mod)) <>
     join (S.mapWithIndex (instCluster design cfg) (modDeclInsts mod))

@@ -25,9 +25,15 @@ import qualified BESSPIN.ArchExtract.Verilog as V
 
 
 extractArch :: [V.ModuleDecl] -> A.Design
-extractArch vMods = A.Design $ S.fromList $ map (extractMod interMap) vMods
+extractArch vMods =
+    mapMods (\mod -> filterInsts (\_ i ->
+        not $ modDeclName (designMods d `S.index` modInstId i)
+            --`elem` map T.pack ["mux2", "eqcmp", "flopenr"]) mod) $
+            `elem` map T.pack ["adder"]) mod) $
+    d
   where
     interMap = buildInterMap vMods
+    d = A.Design $ S.fromList $ map (extractMod interMap) vMods
 
 traceNets desc mod = trace (" ==== " ++ desc ++ " nets ====\n" ++ s) mod
   where
@@ -47,6 +53,8 @@ extractMod interMap vMod =
     insts = convModuleInsts instMap netMap vMod
     logics = convModuleLogic netMap vMod
 
+mapMods :: (A.ModDecl -> A.ModDecl) -> A.Design -> A.Design
+mapMods f d = Design $ fmap f $ designMods d
 
 
 
@@ -336,10 +344,24 @@ filterLogics f mod =
     runNetMerge act (mod { modDeclLogics = logics' })
   where
     logics' = filterWithIndex f $ modDeclLogics mod
-    act = do 
+    act = do
         void $ flip S.traverseWithIndex (modDeclLogics mod) $ \idx l -> do
             when (not $ f idx l) $ do
                 mergeNetSeq $ logicInputs l <> logicOutputs l
+
+-- Delete module instantiations rejected by predicate `f`.  When an
+-- instantiation is deleted, all of its input and output nets are merged into a
+-- single net, indicating that data can flow freely from any input to any
+-- output.
+filterInsts :: (Int -> ModInst -> Bool) -> A.ModDecl -> A.ModDecl
+filterInsts f mod =
+    runNetMerge act (mod { modDeclInsts = insts' })
+  where
+    insts' = filterWithIndex f $ modDeclInsts mod
+    act = do
+        void $ flip S.traverseWithIndex (modDeclInsts mod) $ \idx inst -> do
+            when (not $ f idx inst) $ do
+                mergeNetSeq $ modInstInputs inst <> modInstOutputs inst
 
 
 type NetMergeM s a = StateT (STArray s NetId (UF.Point s (Int, NetId))) (ST s) a

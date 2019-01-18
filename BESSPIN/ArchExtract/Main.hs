@@ -2,6 +2,7 @@ module BESSPIN.ArchExtract.Main where
 
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Sequence as S
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word
@@ -25,8 +26,16 @@ main = do
             Right x -> return x
     let arch = extractArch v
     let g = graphModule arch
-            (defaultCfg { cfgDrawNets = True })
-            (designMods arch `S.index` 2)
+            (defaultCfg
+                { cfgDrawNets = True
+                , cfgDrawOnesidedNets = False
+                , cfgHideNamedNets = Set.fromList
+                    [ T.pack "clock"
+                    , T.pack "clk"
+                    , T.pack "reset"
+                    ]
+                })
+            (designMods arch `S.index` 0)
     putStrLn $ printGraphviz g
     --print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v
