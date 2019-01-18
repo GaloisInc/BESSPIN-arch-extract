@@ -29,9 +29,12 @@ extractArch vMods =
     mapMods (\mod ->
         --filterInsts (\_ i ->
             --not $ modInstName i `elem` map T.pack ["ra1reg"]) $
-        filterInsts (\_ i ->
+        --filterInsts (\_ i ->
+        --    not $ modDeclName (designMods d `S.index` modInstId i)
+        --        `elem` map T.pack ["mux2", "eqcmp"]) $
+        filterInstsToLogic (\_ i ->
             not $ modDeclName (designMods d `S.index` modInstId i)
-                `elem` map T.pack ["mux2", "eqcmp", "flopenrc", "flopenr"]) $
+                `elem` map T.pack ["mux2", "eqcmp"]) $
             --`elem` map T.pack ["adder"]) mod) $
         mod) $
     d
@@ -46,7 +49,8 @@ traceNets desc mod = trace (" ==== " ++ desc ++ " nets ====\n" ++ s) mod
 extractMod :: InterMap -> V.ModuleDecl -> A.ModDecl
 extractMod interMap vMod =
     --mergeAliasedNets $
-    filterLogics (\_ _ -> False) $
+    --filterLogics (\_ _ -> False) $
+    filterLogics (\_ l -> logicKind l /= LkNetAlias) $
     disconnect (\_ _ _ net ->
         let baseName = last $ T.splitOn (T.singleton '.') (netName net) in
         not $ baseName `elem` map T.pack ["clock", "clk", "reset"]) $
@@ -373,6 +377,22 @@ filterInsts f mod =
                     fmap (\id -> T.unpack $ netName $ modDeclNets mod `S.index` unwrapNetId id) $
                         modInstInputs inst <> modInstOutputs inst) $
                     mergeNetSeq $ modInstInputs inst <> modInstOutputs inst
+
+
+-- Remove module instantiations rejected by predicate `f`, replacing them with
+-- `Logic`s connected to the same nets.
+filterInstsToLogic :: (Int -> ModInst -> Bool) -> A.ModDecl -> A.ModDecl
+filterInstsToLogic f mod =
+    reconnectNets $ mod { modDeclInsts = insts', modDeclLogics = logics' }
+  where
+    (insts', rejectedInsts) = S.foldMapWithIndex (\idx inst ->
+            if f idx inst then
+                (S.singleton inst, S.empty)
+            else
+                (S.empty, S.singleton inst))
+        (modDeclInsts mod)
+    logics' = modDeclLogics mod <> fmap instToLogic rejectedInsts
+    instToLogic (A.ModInst _ _ ins outs) = Logic LkOther ins outs
 
 
 -- Disconnect all connection points selected by predicate `f` from their

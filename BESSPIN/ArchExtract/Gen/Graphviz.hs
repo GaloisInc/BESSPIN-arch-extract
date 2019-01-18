@@ -149,7 +149,7 @@ graphModule design cfg mod = traceShow mod $
     DotGraph False True Nothing 
         ( graphModule' design cfg mod
         |> labelStmt (modDeclName mod)
-        |> GA (GraphAttrs [RankDir FromLeft])
+        |> GA (GraphAttrs [RankDir FromLeft, RankSep [2.0]])
         )
 
 printGraphviz :: DotGraph Text -> String
