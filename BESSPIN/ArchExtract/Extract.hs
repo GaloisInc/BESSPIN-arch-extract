@@ -1,7 +1,9 @@
+{-# LANGUAGE RankNTypes #-}
 module BESSPIN.ArchExtract.Extract where
 
 import Control.Monad
 import Control.Monad.ST
+import Control.Monad.State
 import Data.Array.ST
 import Data.Generics
 import Data.Map (Map)
@@ -32,7 +34,10 @@ traceNets desc mod = trace (" ==== " ++ desc ++ " nets ====\n" ++ s) mod
     s = concat $ map (\x -> show x ++ "\n") $ foldr (:) [] $ modDeclNets mod
 
 extractMod :: InterMap -> V.ModuleDecl -> A.ModDecl
-extractMod interMap vMod = traceNets "after" $ mergeAliasedNets $ traceNets "before" $ reconnectNets $
+extractMod interMap vMod =
+    --mergeAliasedNets $
+    filterLogics (\_ _ -> False) $
+    reconnectNets $
     A.ModDecl (moduleName vMod) inputs outputs insts logics nets
   where
     instMap = buildInstMap interMap (moduleItems vMod)
@@ -321,49 +326,69 @@ filterNets f mod = mod' { modDeclNets = nets' }
 -- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
 -- nets with the other.
 mergeAliasedNets :: A.ModDecl -> A.ModDecl
-mergeAliasedNets mod =
+mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
+
+-- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
+-- all of its input and output nets are merged into a single net, indicating
+-- that data can flow freely from any input to any output.
+filterLogics :: (Int -> Logic -> Bool) -> A.ModDecl -> A.ModDecl
+filterLogics f mod =
+    runNetMerge act (mod { modDeclLogics = logics' })
+  where
+    logics' = filterWithIndex f $ modDeclLogics mod
+    act = do 
+        void $ flip S.traverseWithIndex (modDeclLogics mod) $ \idx l -> do
+            when (not $ f idx l) $ do
+                mergeNetSeq $ logicInputs l <> logicOutputs l
+
+
+type NetMergeM s a = StateT (STArray s NetId (UF.Point s (Int, NetId))) (ST s) a
+
+mergeNets :: NetId -> NetId -> NetMergeM s ()
+mergeNets id1 id2 = do
+    arr <- get
+    pt1 <- lift $ readArray arr id1
+    pt2 <- lift $ readArray arr id2
+    lift $ UF.union' pt1 pt2 (\a b -> return $ min a b)
+
+mergeNetSeq :: Seq NetId -> NetMergeM s ()
+mergeNetSeq ids = case S.viewl ids of
+    S.EmptyL -> return ()
+    id1 S.:< ids -> forM_ ids $ \id2 -> mergeNets id1 id2
+
+runNetMerge :: (forall s. NetMergeM s ()) -> A.ModDecl -> A.ModDecl
+runNetMerge m mod =
     reconnectNets $
     filterNets (\netId net -> substMap M.! netId == netId) $
     mapNetIds (\netId -> substMap M.! netId) $
-    mod { modDeclLogics = logics' }
+    mod
   where
-    logics' = S.filter (\l -> logicKind l /= LkNetAlias) $ modDeclLogics mod
-
-    nets = modDeclNets mod
-
-    -- Map each net's ID to the ID of its replacement.  For nets that aren't
-    -- connected to any `LkNetAlias`es, this maps the ID to itself.
+    -- Map each net's ID to the ID of its replacement.  For nets that haven't
+    -- been merged with anything, this maps the ID to itself.
     substMap :: Map NetId NetId
     substMap = runST $ do
-        -- Build an array, containing one union-find "point" for each net.
+        -- Build an array, containing one union-find "point" for each net.  The
+        -- point descriptors are (-prio, id), so that taking the `min` of two
+        -- descriptors gives the higher-priority one, or (in case of a tie) the
+        -- one with higher ID.
         arr <- newArray_ (NetId 0, NetId $ S.length (modDeclNets mod) - 1)
-            :: ST s (STArray s NetId (UF.Point s (NetId, Net)))
+            :: ST s (STArray s NetId (UF.Point s (Int, NetId)))
         (lo, hi) <- getBounds arr
         forM_ [lo .. hi] $ \netId -> do
             let net = modDeclNets mod `S.index` unwrapNetId netId
-            pt <- UF.fresh (netId, net)
+            pt <- UF.fresh (- netNamePriority net, netId)
             writeArray arr netId pt
 
-        -- Union together nets that are connected by `LkNetAlias`es.  When
-        -- unioning, we keep the net with the higher `netNamePriority`, or the
-        -- net with the lower ID in case of a tie.
-        let unionTwo id1 id2 = do
-                pt1 <- readArray arr id1
-                pt2 <- readArray arr id2
-                UF.union' pt1 pt2 (\x1@(_, net1) x2@(_, net2) ->
-                    let k1 = (netNamePriority net1, - unwrapNetId id1) in
-                    let k2 = (netNamePriority net2, - unwrapNetId id2) in
-                    return $ if k1 > k2 then x1 else x2)
-        let unionAll ids = case S.viewl ids of
-                S.EmptyL -> return ()
-                id1 S.:< ids -> forM_ ids $ \id2 -> unionTwo id1 id2
-        forM_ (modDeclLogics mod) $ \l -> do
-            when (logicKind l == LkNetAlias) $ do
-                unionAll $ logicInputs l <> logicOutputs l
+        -- Run user action to merge some nets together.
+        evalStateT m arr
 
         -- Build a map from each net to its union-find representative.
         M.fromList <$> forM [lo .. hi] (\oldId -> do
             pt <- readArray arr oldId
-            (newId, _) <- UF.descriptor pt
+            (_, newId) <- UF.descriptor pt
             return (oldId, newId))
 
+
+filterWithIndex :: (Int -> a -> Bool) -> Seq a -> Seq a
+filterWithIndex f s =
+    S.foldMapWithIndex (\i x -> if f i x then S.singleton x else S.empty) s
