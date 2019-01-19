@@ -170,16 +170,32 @@ struct Encoder {
 
     // Encode a `VeriScope` as a map from names to nodes.
     void scope(VeriScope* s) {
-        this->scope_map(s->GetThisScope());
+        this->ref_map(s->GetThisScope());
     }
 
-    // Encode a `VeriScope`-style `Map` from names to `VeriTreeNode`s.
-    void scope_map(Map* m) {
+    // Encode a `Map` from names to `VeriTreeNode`s, recording each node object
+    // inline.
+    void node_map(Map* m) {
         Encoder sub(this->map(m->Size()));
 
         MapIter map_iter;
         const char* name = nullptr;
-        VeriIdDef* id_def = nullptr;
+        VeriTreeNode* node = nullptr;
+
+        FOREACH_MAP_ITEM(m, map_iter, &name, &node) {
+            sub.string(name);
+            sub.tree_node(node);
+        }
+    }
+
+    // Encode a `Map` from names to `VeriTreeNode`s, recording only a reference
+    // (numeric ID) to each node.
+    void ref_map(Map* m) {
+        Encoder sub(this->map(m->Size()));
+
+        MapIter map_iter;
+        const char* name = nullptr;
+        VeriTreeNode* id_def = nullptr;
 
         FOREACH_MAP_ITEM(m, map_iter, &name, &id_def) {
             sub.string(name);
@@ -363,10 +379,10 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.scope(ds->GetDotStarScope());
     } else if (auto e = exact_cast<VeriEnum>(x)) {
         sub.tree_node(e->GetBaseType());
-        sub.scope_map(e->GetEnumLiterals());
+        sub.node_map(e->GetEnumLiterals());
     } else if (auto pi = exact_cast<VeriParamId>(x)) {
         sub.string(pi->Name());
-        sub.tree_node(pi->GetDataType());
+        sub.uint(ids.map(pi->GetDataType()));
         sub.tree_node(pi->GetInitialValue());
         sub.uint(pi->ParamType());
         sub.tree_node(pi->GetDimensions());
@@ -499,9 +515,19 @@ int main(int argc, char **argv) {
 
     std::cout << num_unsupported << " unsupported nodes\n";
 
-    // TODO: Check if there are nodes in `ids.obj_ids` that aren't in
-    // `ids.seen`.  If this happens, it means there was a reference to the
-    // object, but we never actually encoded it during our tree traversal.
+    size_t num_undefined = 0;
+    for (auto& entry : ids.obj_ids) {
+        if (entry.first == nullptr) {
+            continue;
+        }
+        if (ids.seen.count(entry.first) == 0) {
+            std::cout << typeid(*entry.first).name() << " #" << entry.second
+                << " referenced but not defined\n";
+            ++num_undefined;
+        }
+    }
+
+    std::cout << num_undefined << " undefined references\n";
 
     return 0;
 }

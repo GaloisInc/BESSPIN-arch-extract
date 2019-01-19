@@ -32,9 +32,9 @@ extractArch vMods =
         --filterInsts (\_ i ->
         --    not $ modDeclName (designMods d `S.index` modInstId i)
         --        `elem` map T.pack ["mux2", "eqcmp"]) $
-        filterInstsToLogic (\_ i ->
-            not $ modDeclName (designMods d `S.index` modInstId i)
-                `elem` map T.pack ["mux2", "eqcmp"]) $
+        --filterInstsToLogic (\_ i ->
+        --    not $ modDeclName (designMods d `S.index` modInstId i)
+        --        `elem` map T.pack ["mux2", "eqcmp"]) $
             --`elem` map T.pack ["adder"]) mod) $
         mod) $
     d
@@ -62,7 +62,7 @@ extractMod interMap vMod =
     (nets, netMap) = buildNets netParts
     (inputs, outputs) = convModulePorts netMap vMod
     insts = convModuleInsts instMap netMap vMod
-    logics = convModuleLogic netMap vMod
+    logics = convModuleLogic instMap netMap vMod
 
 mapMods :: (A.ModDecl -> A.ModDecl) -> A.Design -> A.Design
 mapMods f d = Design $ fmap f $ designMods d
@@ -263,14 +263,23 @@ stmtLogic netMap s = go S.empty s
     go imp NullStmt = S.empty
     go imp UnknownStmt = S.empty
 
-itemLogic :: NetMap -> ModItem -> Seq Logic
-itemLogic netMap i = go i
+itemLogic :: InstMap -> NetMap -> ModItem -> Seq Logic
+itemLogic instMap netMap i = go i
   where
     go (Instance instId _ _ _ portConns) =
-        S.fromList $ zipWith f portConns [0..]
+        mconcat $ zipWith3 f portConns portDecls [0..]
       where
-        f conn idx = mkLogic netMap
-            (rvalKind conn) (exprVars conn) (S.singleton $ NoInstPort instId idx)
+        portDecls = modInterPorts $ instMap M.! instId
+        f :: V.Expr -> V.PortDecl -> Int -> Seq Logic
+        f conn decl idx =
+            let portNet = S.singleton $ NoInstPort instId idx
+                connNets = exprVars conn in
+            (if V.portDeclDir decl `elem` [V.Input, V.InOut] then
+                S.singleton $ mkLogic netMap (rvalKind conn) connNets portNet
+             else S.empty) <>
+            (if V.portDeclDir decl `elem` [V.Output, V.InOut] then
+                S.singleton $ mkLogic netMap LkNetAlias portNet connNets
+             else S.empty)
     go (VarDecl id _ _ _ init) = case init of
         Nothing -> S.empty
         Just e -> S.singleton $
@@ -280,8 +289,9 @@ itemLogic netMap i = go i
     go (Always s) = stmtLogic netMap s
     go (Initial s) = stmtLogic netMap s
 
-convModuleLogic :: NetMap -> V.ModuleDecl -> Seq Logic
-convModuleLogic netMap vMod = mconcat $ map (itemLogic netMap) $ moduleItems vMod
+convModuleLogic :: InstMap -> NetMap -> V.ModuleDecl -> Seq Logic
+convModuleLogic instMap netMap vMod =
+    mconcat $ map (itemLogic instMap netMap) $ moduleItems vMod
 
 
 -- Rebuild the `netSources` and `netSinks` connection lists for all nets in

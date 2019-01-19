@@ -1,5 +1,6 @@
 module BESSPIN.ArchExtract.Main where
 
+import Control.Monad
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Sequence as S
 import qualified Data.Set as Set
@@ -25,19 +26,22 @@ main = do
                 error $ "decoding error"
             Right x -> return x
     let arch = extractArch v
-    let g = graphModule arch
-            (defaultCfg
-                { cfgDrawNets = True
-                , cfgDrawOnesidedNets = False
-                {- , cfgHideNamedNets = Set.fromList
-                    [ T.pack "clock"
-                    , T.pack "clk"
-                    , T.pack "reset"
-                    ]
-                    -}
-                })
-            (designMods arch `S.index` 3)
-    putStrLn $ printGraphviz g
+    forM_ (designMods arch) $ \mod -> do
+        let g = graphModule arch
+                (defaultCfg
+                    { cfgDrawNets = True
+                    , cfgDrawOnesidedNets = False
+                    {- , cfgHideNamedNets = Set.fromList
+                        [ T.pack "clock"
+                        , T.pack "clk"
+                        , T.pack "reset"
+                        ]
+                        -}
+                    , cfgPrefix = modDeclName mod
+                    })
+                mod
+        putStrLn $ T.unpack $ modDeclName mod
+        writeFile ("out/" ++ T.unpack (modDeclName mod) ++ ".dot") $ printGraphviz g
     --print $ "parsed " ++ show (length v) ++ " modules"
     --putStrLn $ printGraphviz $ genGraphviz v
     --case compiled $ genClafer v of

@@ -146,7 +146,7 @@ graphModule' design cfg mod =
 
 graphModule :: Design -> Cfg -> ModDecl -> DotGraph Text
 graphModule design cfg mod = traceShow mod $
-    DotGraph False True Nothing 
+    DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
         ( graphModule' design cfg mod
         |> labelStmt (modDeclName mod)
         |> GA (GraphAttrs [RankDir FromLeft, RankSep [2.0]])
