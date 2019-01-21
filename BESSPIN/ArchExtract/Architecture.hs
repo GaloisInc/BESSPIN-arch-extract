@@ -74,10 +74,10 @@ data Net = Net
 -- this `Conn` is on the `netSinks` side of the `Net`, `Outputs` if it's on the
 -- `netSources` side.)
 data Conn = ExtPort Int | InstPort Int Int | LogicPort Int Int
-    deriving (Show, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)
 
 -- Enum for indicating a side of a net, inst, or logic.  For clarity, these are
 -- named `Source` and `Sink` instead of `Input` and `Output` because
 -- `Input`/`Output` have opposite meanings on external ports vs. logic/insts.
 data Side = Source | Sink
-    deriving (Show, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)

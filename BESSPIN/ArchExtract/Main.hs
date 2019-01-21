@@ -31,6 +31,8 @@ main = do
                 (defaultCfg
                     { cfgDrawNets = True
                     , cfgDrawOnesidedNets = False
+                    , cfgDrawLogics = False
+                    , cfgDedupEdges = True
                     {- , cfgHideNamedNets = Set.fromList
                         [ T.pack "clock"
                         , T.pack "clk"
