@@ -10,6 +10,8 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Monoid
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
@@ -475,14 +477,16 @@ mkNet name prio = state $ \nets ->
     
 
 
-type NetMergeM s a = StateT (STArray s NetId (UF.Point s (Int, NetId))) (ST s) a
+type NetMergeLabel = Set (Int, NetId)
+type NetMergePoint s = UF.Point s NetMergeLabel
+type NetMergeM s a = StateT (STArray s NetId (NetMergePoint s)) (ST s) a
 
 mergeNets :: NetId -> NetId -> NetMergeM s ()
 mergeNets id1 id2 = do
     arr <- get
     pt1 <- lift $ readArray arr id1
     pt2 <- lift $ readArray arr id2
-    lift $ UF.union' pt1 pt2 (\a b -> return $ min a b)
+    lift $ UF.union' pt1 pt2 (\a b -> return $ a <> b)
 
 mergeNetSeq :: Seq NetId -> NetMergeM s ()
 mergeNetSeq ids = case S.viewl ids of
@@ -493,33 +497,62 @@ runNetMerge :: (forall s. NetMergeM s ()) -> A.ModDecl -> A.ModDecl
 runNetMerge m mod =
     reconnectNets $
     filterNets (\netId net -> substMap M.! netId == netId) $
+    renameNets $
     mapNetIds (\netId -> substMap M.! netId) $
     mod
   where
     -- Map each net's ID to the ID of its replacement.  For nets that haven't
     -- been merged with anything, this maps the ID to itself.
     substMap :: Map NetId NetId
-    substMap = runST $ do
+    -- Map from each non-replaced net's ID to its new name.
+    nameMap :: Map NetId Text
+    (substMap, nameMap) = runST $ do
         -- Build an array, containing one union-find "point" for each net.  The
         -- point descriptors are (-prio, id), so that taking the `min` of two
         -- descriptors gives the higher-priority one, or (in case of a tie) the
         -- one with higher ID.
         arr <- newArray_ (NetId 0, NetId $ S.length (modDeclNets mod) - 1)
-            :: ST s (STArray s NetId (UF.Point s (Int, NetId)))
+            :: ST s (STArray s NetId (NetMergePoint s))
         (lo, hi) <- getBounds arr
         forM_ [lo .. hi] $ \netId -> do
             let net = modDeclNets mod `S.index` unwrapNetId netId
-            pt <- UF.fresh (- netNamePriority net, netId)
+            pt <- UF.fresh $ Set.singleton (- netNamePriority net, netId)
             writeArray arr netId pt
 
         -- Run user action to merge some nets together.
         evalStateT m arr
 
         -- Build a map from each net to its union-find representative.
-        M.fromList <$> forM [lo .. hi] (\oldId -> do
+        substMap <- M.fromList <$> forM [lo .. hi] (\oldId -> do
             pt <- readArray arr oldId
-            (_, newId) <- UF.descriptor pt
+            desc <- UF.descriptor pt
+            let newId = snd $ Set.findMin desc
             return (oldId, newId))
+
+        nameMap <- mconcat <$> forM [lo .. hi] (\oldId -> do
+            pt <- readArray arr oldId
+            desc <- UF.descriptor pt
+            let newId = snd $ Set.findMin desc
+            if newId == oldId then
+                let newName = T.unlines $
+                        map (\(_,id) -> netName $
+                            modDeclNets mod `S.index` unwrapNetId id) $
+                        Set.toList desc in
+                return $ M.singleton newId newName
+            else
+                return M.empty
+            )
+
+        return (substMap, nameMap)
+
+    renameNet idx n =
+        let newName = case M.lookup (NetId idx) nameMap of
+                Nothing -> netName n
+                Just name -> name
+        in
+        n { netName = newName }
+
+    renameNets mod = mod { modDeclNets = S.mapWithIndex renameNet $ modDeclNets mod }
 
 
 filterWithIndex :: (Int -> a -> Bool) -> Seq a -> Seq a

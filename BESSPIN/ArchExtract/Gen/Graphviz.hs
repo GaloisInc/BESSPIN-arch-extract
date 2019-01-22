@@ -184,6 +184,7 @@ nodeIdKey cfg (NNet idx) = netKey cfg idx
 nodeIdKey cfg (NLogic idx) = logicKey cfg idx
 
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
+mkTooltip name = Tooltip $ TL.fromStrict name
 
 labelStmt name = GA $ GraphAttrs [mkLabel name]
 
@@ -201,14 +202,24 @@ portCluster cfg side label ports =
 
 netNode :: Cfg -> Int -> Net -> DotStatement Text
 netNode cfg idx net =
-    DN $ DotNode (netKey cfg idx) [mkLabel $ netName net]
+    let name = netName net in
+    let names = T.lines name in
+    let suffix =
+            if length names > 1 then
+                T.pack " (+" <> T.pack (show $ length names) <> T.pack " more)"
+            else T.empty in
+    let shortName = head (T.lines name) <> suffix in
+
+    DN $ DotNode (netKey cfg idx) [mkLabel shortName, mkTooltip name]
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 
 logicNode :: Cfg -> Int -> Logic -> DotStatement Text
 logicNode cfg idx logic =
-    DN $ DotNode (logicKey cfg idx) [mkLabel $ logicLabel $ logicKind logic]
+    DN $ DotNode (logicKey cfg idx)
+        [ mkLabel $ logicLabel $ logicKind logic
+        , Shape BoxShape ]
 
 instCluster :: Design -> Cfg -> Int -> ModInst -> Seq (DotStatement Text)
 instCluster _ _ _ inst | modInstId inst == -1 = S.empty
