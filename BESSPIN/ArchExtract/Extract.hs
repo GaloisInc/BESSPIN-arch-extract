@@ -53,9 +53,14 @@ extractMod interMap vMod =
     --mergeAliasedNets $
     --filterLogics (\_ _ -> False) $
     filterLogics (\_ l -> logicKind l /= LkNetAlias) $
+    -- Break up "uninteresting" nets early, before they can get merged with
+    -- other nets.
     disconnect (\_ _ _ net ->
         let baseName = last $ T.splitOn (T.singleton '.') (netName net) in
         not $ baseName `elem` map T.pack ["clock", "clk", "reset"]) $
+    -- Convert instantiations of undefined modules to logic.  (Otherwise we hit
+    -- errors when trying to look up the port definitions.)
+    filterInstsToLogic (\_ i -> modInstId i /= -1) $
     reconnectNets $
     A.ModDecl (moduleName vMod) inputs outputs insts logics nets
   where
@@ -101,7 +106,8 @@ buildInstMap interMap items = M.fromList $ mapMaybe go items
             Nothing ->
                 trace ("no declaration found for module instantiation " ++ T.unpack name ++
                     " (node " ++ show vModId ++ ")") $
-                Just (instId, ModInter (-1) [])
+                Just (instId,
+                    ModInter (-1) (repeat $ V.PortDecl 0 (T.pack "_unknown") Nothing InOut))
             Just inter -> Just (instId, inter)
     go _ = Nothing
 
@@ -136,7 +142,8 @@ portNet :: V.PortDecl -> NetParts
 portNet (V.PortDecl id name _ _) = NetParts name prioExtPort (NoDef id)
 
 itemNets :: InstMap -> V.ModItem -> [NetParts]
-itemNets instMap (Instance instId _ name _ _) = zipWith f (modInterPorts inter) [0..]
+itemNets instMap (Instance instId _ name _ portConns) =
+    zipWith f (modInterPorts inter) [0 .. length portConns - 1]
   where
     inter = instMap M.! instId
     f port idx = NetParts

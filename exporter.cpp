@@ -445,10 +445,40 @@ void Encoder::mod_inst_ports(VeriInstId* ii) {
     // obtaining the actual parameter corresponding to a formal, but that
     // function dosen't handle `.*`.
 
+    VeriModule* module = ii->GetInstantiatedModule();
+
+    if (module == nullptr) {
+        VeriModuleInstantiation* mi = ii->GetModuleInstance();
+        std::cerr << "warning: module instantiation " << ii->Name()
+            << " references undefined module "
+            << (mi ? mi->GetModuleName() : "(null)")
+            << "\n";
+
+        Array* conns = ii->GetPortConnects();
+        // Indefinite array length since we may skip over some elements
+        // (namely, any `DotStar`s).
+        Encoder sub(this->array());
+        size_t i;
+        VeriExpression* e;
+        FOREACH_ARRAY_ITEM(conns, i, e) {
+            if (auto pc = exact_cast<VeriPortConnect>(e)) {
+                e = pc->GetConnection();
+            }
+            if (typeid(*e) == typeid(VeriDotStar)) {
+                std::cerr << "warning: module instantiation " << ii->Name()
+                    << " uses `.*`, but module declaration port list is unavailable\n";
+                continue;
+            }
+            sub.tree_node(e);
+        }
+        return;
+    }
+
     // Walk over the formals, encoding each corresponding actual.  If the
     // lookup of the actual returns either .* or NULL, we look in the enclosing
     // scope for an identifier with a matching name.
-    Array* formal_ports = ii->GetInstantiatedModule()->GetPorts();
+
+    Array* formal_ports = module->GetPorts();
     Encoder sub(this->array(formal_ports->Size()));
     size_t i;
     VeriIdDef* formal;
