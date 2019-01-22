@@ -150,7 +150,11 @@ itemNets instMap (Instance instId _ name _ portConns) =
         (name <> T.pack "." <> V.portDeclName port)
         prioInstPort
         (NoInstPort instId idx)
-itemNets _ (VarDecl id name _ _ _) = [NetParts name prioWire (NoDef id)]
+-- `VarDecl` `ModItem`s with a dir are actually just specifying the
+-- type/direction of a port.  But Verific already included that info in the
+-- module's port list, so we can simply ignore the item.
+itemNets _ (VarDecl _ _ _ (Just _dir) _) = []
+itemNets _ (VarDecl id name _ Nothing _) = [NetParts name prioWire (NoDef id)]
 itemNets _ _ = []
 
 moduleNets :: InstMap -> V.ModuleDecl -> [NetParts]
@@ -169,23 +173,13 @@ convPort netMap (V.PortDecl id name _ dir) =
         Output -> (S.empty, S.singleton port)
         InOut -> (S.singleton port, S.singleton port)
 
-convPortVar :: NetMap -> V.ModItem -> (Seq A.PortDecl, Seq A.PortDecl)
-convPortVar netMap (V.VarDecl id name _ dir _) =
-    let port = A.PortDecl name (netMap M.! NoDef id) in
-    case dir of
-        Just Input -> (S.singleton port, S.empty)
-        Just Output -> (S.empty, S.singleton port)
-        Just InOut -> (S.singleton port, S.singleton port)
-        Nothing -> (S.empty, S.empty)
-convPortVar _ _ = (S.empty, S.empty)
-
 convModulePorts :: NetMap -> V.ModuleDecl -> (Seq A.PortDecl, Seq A.PortDecl)
 convModulePorts netMap vMod =
-    mconcat (map (convPort netMap) $ modulePorts vMod) <>
-    mconcat (map (convPortVar netMap) $ moduleItems vMod)
+    mconcat (map (convPort netMap) $ modulePorts vMod)
 
 
--- Module instantiation handling (`ModInst` only, no `Logic`)
+-- Module instantiation handling.  Generates only the module itself, not the
+-- `Logic` items for its port connections.
 
 convInst :: InstMap -> NetMap -> V.ModItem -> Maybe A.ModInst
 convInst instMap netMap (Instance instId _ name _ portConns) =
