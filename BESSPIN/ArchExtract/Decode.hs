@@ -3,6 +3,10 @@ module BESSPIN.ArchExtract.Decode where
 
 import Control.Monad
 import qualified Data.ByteString.Lazy as BS
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Sequence (Seq, (<|), (|>))
+import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
@@ -14,19 +18,24 @@ import qualified Codec.CBOR.Decoding as CBOR
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
 
-import BESSPIN.ArchExtract.Verilog
+import BESSPIN.ArchExtract.Verilog.Raw
+
+import qualified BESSPIN.ArchExtract.Verilog.FromRaw as X
 
 
-type Stack = [[CBOR.Term]]
+data S = S
+    { sStack :: [[CBOR.Term]]
+    , sNodes :: Map NodeId Node
+    }
 
-newtype DecodeM a = DecodeM { runDecodeM :: Stack -> Either String (a, Stack) }
+newtype DecodeM a = DecodeM { runDecodeM :: S -> Either String (a, S) }
 
 instance Monad DecodeM where
-    f >>= k = DecodeM $ \stk -> do
-        (x, stk') <- runDecodeM f stk
-        runDecodeM (k x) stk'
-    return x = DecodeM $ \stk -> Right (x, stk)
-    fail msg = DecodeM $ \stk -> Left msg
+    f >>= k = DecodeM $ \s -> do
+        (x, s') <- runDecodeM f s
+        runDecodeM (k x) s'
+    return x = DecodeM $ \s -> Right (x, s)
+    fail msg = DecodeM $ \s -> Left msg
 
 instance Applicative DecodeM where
     pure = return
@@ -39,56 +48,58 @@ instance Functor DecodeM where
 -- Primitive `DecodeM` operations
 
 -- Apply `f` to the next term, either parsing it as an `a` or raising an error.
-match :: (CBOR.Term -> Either String a) -> DecodeM a
-match f = DecodeM $ \stk -> case stk of
+match' :: (CBOR.Term -> DecodeM a) -> DecodeM a
+match' f = DecodeM $ \s -> case sStack s of
     [] -> Left "empty stack"
     [] : _ -> Left "read past end of list"
-    (x : terms) : stk -> f x >>= \x' -> Right (x', terms : stk)
+    (x : terms) : stk -> runDecodeM (f x) (s { sStack = terms : stk })
+
+-- Apply `f` to the next term, either parsing it as an `a` or raising an error.
+match :: (CBOR.Term -> Either String a) -> DecodeM a
+match f = match' $ \t -> case f t of
+    Left err -> fail err
+    Right x -> return x
 
 -- Discard the next term.
 skip :: DecodeM ()
-skip = DecodeM $ \stk -> case stk of
-    [] -> Left "empty stack"
-    [] : _ -> Left "read past end of list"
-    (x : terms) : stk -> Right ((), terms : stk)
+skip = match' $ const $ return ()
 
 -- Discard all remaining terms in the current list.
 skipRest :: DecodeM ()
-skipRest = DecodeM $ \stk -> case stk of
+skipRest = DecodeM $ \s -> case sStack s of
     [] -> Left "empty stack"
-    _ : stk -> Right ((), [] : stk)
+    _ : stk -> Right ((), s { sStack = [] : stk })
 
--- Parse the next term as a list, and "enter" it by pusngh its list of subterms
+record :: NodeId -> Node -> DecodeM ()
+record nodeId n = DecodeM $ \s ->
+    let s' = s { sNodes = M.insert nodeId n $ sNodes s } in
+    Right ((), s')
+
+-- Parse the next term as a list, and "enter" it by pushing its list of subterms
 -- onto the stack.
-pushList :: DecodeM ()
-pushList = DecodeM $ \stk -> case stk of
-    [] -> Left "empty stack"
-    [] : _ -> Left "read past end of list"
-    (t : terms) : stk -> case t of
-        CBOR.TList ts -> Right ((), (ts : terms : stk))
-        CBOR.TListI ts -> Right ((), (ts : terms : stk))
-        _ -> Left $ "expected list, but got " ++ describe t
+pushList :: [CBOR.Term] -> DecodeM ()
+pushList ts = DecodeM $ \s -> Right ((), s { sStack = ts : sStack s })
 
 -- "Exit" the current list by popping it from the stack.  Raises an error if
 -- the current list is not empty, as this usually indicates that the parsing
 -- code is incomplete.
 popList :: DecodeM ()
-popList = DecodeM $ \stk -> case stk of
+popList = DecodeM $ \s -> case sStack s of
     [] -> Left "empty stack"
-    [] : stk -> Right ((), stk)
+    [] : stk -> Right ((), s { sStack = stk })
     terms : stk -> Left $ show (length terms) ++ " unparsed items at end of list"
 
 -- Return the next term without consuming it.  Returns `Nothing` when at the
 -- end of the current list.
 peek :: DecodeM (Maybe CBOR.Term)
-peek = DecodeM $ \stk -> case stk of
+peek = DecodeM $ \s -> case sStack s of
     [] -> Left "empty stack"
-    [] : _ -> Right (Nothing, stk)
-    (x : _) : _ -> Right (Just x, stk)
+    [] : _ -> Right (Nothing, s)
+    (x : _) : _ -> Right (Just x, s)
 
 -- Run `m`, mapping `f` over any error it raises.
 mapErr :: (String -> String) -> DecodeM a -> DecodeM a
-mapErr f m = DecodeM $ \stk -> case runDecodeM m stk of
+mapErr f m = DecodeM $ \s -> case runDecodeM m s of
     Left err -> Left $ f err
     Right x -> Right x
 
@@ -137,19 +148,54 @@ null_ = match $ \t -> case t of
 -- Parse the contents of the next term, which must be a list, using `m`.
 list :: DecodeM a -> DecodeM a
 list m = do
-    pushList
+    ts <- match' $ \t -> case t of
+        CBOR.TList ts -> return ts
+        CBOR.TListI ts -> return ts
+        t -> fail $ "expected list, but got " ++ describe t
+    pushList ts
     x <- m
     popList
     return x
+
+-- Check if we're at the end of the current list.
+eol :: DecodeM Bool
+eol = (== Nothing) <$> peek
 
 -- Run `m` in a scope described by `loc`.  If `m` raises an error, `traceScope`
 -- will extend the error message with "backtrace" information including `loc`.
 traceScope :: Show b => b -> DecodeM a -> DecodeM a
 traceScope loc m = mapErr (\err -> "at " ++ show loc ++ ":\n" ++ err) m
 
--- Check if we're at the end of the current list.
-eol :: DecodeM Bool
-eol = (== Nothing) <$> peek
+nodeId :: DecodeM NodeId
+nodeId = NodeId <$> fromIntegral <$> integer
+
+-- Parse a node (using `m`), a CBOR NodeId, or null, returning the parsed
+-- NodeId.
+optNodeWith :: (Text -> DecodeM Node) -> DecodeM (Maybe NodeId)
+optNodeWith f = match' $ \t -> case t of
+    CBOR.TNull -> return Nothing
+    CBOR.TInt i -> return $ Just $ NodeId $ fromIntegral i
+    CBOR.TInteger i -> return $ Just $ NodeId $ fromIntegral i
+    CBOR.TList ts -> Just <$> go ts
+    CBOR.TListI ts -> Just <$> go ts
+    t -> fail $ "expected list, integer, or null, but got " ++ describe t
+  where
+    go ts = do
+        id_ <- traceScope "node header" $ do
+            pushList ts
+            nodeId
+        cls <- traceScope ("node", id_, "header") $ do
+            text
+        traceScope (cls, id_) $ do
+            n <- f cls
+            popList
+            record id_ n
+        return id_
+
+nodeWith :: (Text -> DecodeM Node) -> DecodeM NodeId
+nodeWith f = optNodeWith f >>= \x -> case x of
+    Nothing -> fail "expected node, but got null"
+    Just x -> return x
 
 
 -- Helpers
@@ -164,6 +210,18 @@ listOf m = list go
 flatListOf :: DecodeM [a] -> DecodeM [a]
 flatListOf m = concat <$> listOf m
 
+mapOf :: Ord k => DecodeM k -> DecodeM v -> DecodeM (Map k v)
+mapOf mk mv = match' $ \t -> case t of
+    CBOR.TMap m -> go m
+    CBOR.TMapI m -> go m
+  where
+    go m = M.fromList <$> mapM (\(kt,vt) -> do
+        pushList [kt, vt]
+        k <- mk
+        v <- mv
+        popList
+        return (k, v)) m
+
 -- Parse the next term using `m`, unless the next term is null.
 optional :: DecodeM a -> DecodeM (Maybe a)
 optional m = do
@@ -176,119 +234,264 @@ optional m = do
 
 -- Verilog AST decoding
 
-nodeId :: DecodeM NodeId
-nodeId = word
+node = nodeWith clsNode
+optNode = optNodeWith clsNode
+nodes = listOf node
 
--- Parse a list term as a node using `f`.  `node` consumes the initial node ID
--- and class terms, and expects `f` to consume the remaining terms of the list.
-node :: (NodeId -> String -> DecodeM a) -> DecodeM a
-node f = do
-    (id, cls) <- traceScope "(node header)" $ do
-        pushList
-        id <- nodeId
-        cls <- string
-        return (id, cls)
-    traceScope (cls, id) $ do
-        x <- f id cls
-        popList
-        return x
+nodeMap = mapOf text node
 
--- Parse a list term as a node of class `expectCls`, using `f`.
-nodeCls :: String -> (NodeId -> DecodeM a) -> DecodeM a
-nodeCls expectCls f = node $ \id cls ->
-    if cls == expectCls then
-        f id
-    else
-        error $ "expected " ++ expectCls ++ ", but got " ++ cls
+clsNode :: Text -> DecodeM Node
+clsNode cls = case T.unpack cls of
+    "N7Verific10VeriModuleE" -> do
+        name <- text
+        traceShow ("in module", name) $ return ()
+        node    -- Id()
+        ports <- nodes
+        params <- nodes
+        items <- nodes
+        nodes   -- PortConnects()
+        nodes   -- ParameterConnects()
+        nodes   -- PackageImportDecls()
+        return $ Module name ports params items
 
-moduleDecl :: DecodeM ModuleDecl
-moduleDecl = nodeCls "N7Verific10VeriModuleE" $ \id -> do
-    name <- text
-    traceShow ("in module", name) $ return ()
-    skip    -- GetId()
-    ports <- flatListOf portDecls
-    params <- flatListOf paramDecls
-    sourceItems <- flatListOf sourceModItems
-    skip    -- GetPortConnects()
-    skip    -- GetParameterConnects()
-    skip    -- GetPackageImportDecls()
-    let (items, params') = partitionSourceModItems sourceItems
-    return $ ModuleDecl id name (params ++ params') ports items
-
-sourceModItems :: DecodeM [SourceModItem]
-sourceModItems = node $ \id cls -> case cls of
     "N7Verific12VeriDataDeclE" -> do
-        skip    -- GetDeclType
-        dir <- optPortDir
-        skip    -- GetDataType
-        flatListOf $ node $ \id' cls' -> case cls' of
-            "N7Verific12VeriVariableE" -> do
-                name <- text
-                skip    -- GetDataType()
-                dims <- optional index
-                init <- optional expr
-                dir' <- optPortDir
-                when (dir /= dir') $ traceShow ("dir1", dir, "dir2", dir') $ return ()
-                return [SMINormal $ VarDecl id' name dims dir init]
-            "N7Verific10VeriTypeIdE" -> skipRest >> return []
-            "N7Verific11VeriParamIdE" -> do
-                pd <- paramIdParts id'
-                return [SMIParam pd]
-            _ -> trace ("DataDecl.ids: unknown class " ++ cls') $ skipRest >> return []
-
-    "N7Verific23VeriModuleInstantiationE" -> do
-        modId <- nodeId
-        paramVals <- listOf expr
-        flatListOf $ node $ \id' cls' -> case cls' of
-            "N7Verific10VeriInstIdE" -> do
-                name <- text
-                portConns <- listOf expr
-                return [SMINormal $ Instance id' modId name paramVals portConns]
-            _ -> trace ("ModuleInstantiation.ids: unknown class " ++ cls') $ skipRest >> return []
-
-    "N7Verific11VeriNetDeclE" -> do
+        -- All DataDecl info is also available directly on the `ids`.
         skip    -- DeclType
-        dir <- optPortDir
-        skip    -- DataType
-        skip    -- Strength
-        flatListOf $ node $ \id' cls' -> case cls' of
-            "N7Verific12VeriVariableE" -> do
-                name <- text
-                skip    -- GetDataType()
-                dims <- optional index
-                init <- optional expr
-                dir' <- optPortDir
-                when (dir /= dir') $ traceShow ("dir1", dir, "dir2", dir') $ return ()
-                return [SMINormal $ VarDecl id' name dims dir init]
-            _ -> trace ("NetDecl.ids: unknown class " ++ cls') $ skipRest >> return []
+        skip    -- Dir
+        optNode -- DataType
+        ids <- nodes
+        return $ DataDecl ids
 
-    "N7Verific20VeriContinuousAssignE" -> do
-        skip    -- Strength
-        listOf $ nodeCls "N7Verific16VeriNetRegAssignE" $ \id' -> do
-            lval <- expr
-            rval <- expr
-            return $ SMINormal $ ContAssign id' lval rval
-
-    "N7Verific19VeriAlwaysConstructE" -> do
-        s <- stmt
-        return [SMINormal $ Always s]
-
-    "N7Verific20VeriInitialConstructE" -> do
-        s <- stmt
-        return [SMINormal $ Initial s]
-
-    _ -> trace ("modItems: unknown class " ++ cls) $ skipRest >> return []
-
-portDecls :: DecodeM [PortDecl]
-portDecls = node $ \id cls -> case cls of
     "N7Verific12VeriVariableE" -> do
         name <- text
-        skip    -- GetDataType()
-        dims <- optional index
-        null_   -- InitialValue - should always be null for port declarations
-        dir <- portDir
-        return [PortDecl id name dims dir]
-    _ -> trace ("portDecls: unknown class " ++ cls) $ skipRest >> return []
+        optNode -- DataType - null for implicitly declared vars
+        dims <- optNode
+        init <- optNode
+        dir <- optPortDir
+        return $ Variable name dims init dir
+
+    "N7Verific10VeriTypeIdE" -> do
+        node    -- ModuleItem
+        return $ TypeId
+
+    "N7Verific12VeriDataTypeE" -> do
+        skip    -- Type
+        skip    -- Signing
+        dims <- optNode
+        return $ DataType dims
+
+    "N7Verific11VeriParamIdE" -> do
+        name <- text
+        optNode -- DataType
+        init <- optNode
+        skip    -- ParamType
+        dims <- optNode
+        optNode -- Actual
+        return $ ParamId name init dims
+
+    "N7Verific8VeriEnumE" -> do
+        base <- optNode
+        variants <- nodeMap
+        return $ Enum base variants
+
+    "N7Verific23VeriModuleInstantiationE" -> do
+        mod <- node
+        paramVals <- nodes
+        ids <- nodes
+        return $ ModuleInstantiation mod paramVals ids
+
+    "N7Verific10VeriInstIdE" -> do
+        parent <- node
+        name <- text
+        portConns <- nodes
+        return $ InstId parent name portConns
+
+    "N7Verific11VeriNetDeclE" -> do
+        node    -- DeclType
+        skip    -- Dir
+        node    -- DataType
+        optNode -- Strength
+        ids <- nodes
+        return $ NetDecl ids
+
+    "N7Verific20VeriContinuousAssignE" -> do
+        optNode -- Strength
+        assigns <- nodes
+        return $ ContinuousAssign assigns
+
+    "N7Verific16VeriNetRegAssignE" -> do
+        lval <- node
+        rval <- node
+        return $ NetRegAssign lval rval
+
+    "N7Verific19VeriAlwaysConstructE" -> do
+        s <- node
+        return $ AlwaysConstruct s
+
+    "N7Verific20VeriInitialConstructE" -> do
+        s <- node
+        return $ InitialConstruct s
+
+    -- Statements
+
+    "N7Verific12VeriSeqBlockE" -> do
+        skip    -- Label
+        decls <- nodes
+        ss <- nodes
+        return $ SeqBlock decls ss
+
+    -- TODO: flatten EventControl.At into Always
+    "N7Verific25VeriEventControlStatementE" -> do
+        nodes   -- At
+        s <- node
+        return $ EventControlStatement s
+
+    "N7Verific24VeriConditionalStatementE" -> do
+        cond <- node
+        then_ <- node
+        else_ <- optNode
+        return $ ConditionalStatement cond then_ else_
+
+    "N7Verific17VeriCaseStatementE" -> do
+        skip    -- CaseStyle
+        skip    -- CaseType
+        cond <- node
+        items <- nodes
+        return $ CaseStatement cond items
+
+    "N7Verific12VeriCaseItemE" -> do
+        es <- nodes
+        s <- node
+        return $ CaseItem es s
+
+    "N7Verific7VeriForE" -> do
+        inits <- nodes
+        cond <- node
+        steps <- nodes
+        body <- node
+        return $ For inits cond steps body
+
+    "N7Verific21VeriNonBlockingAssignE" -> do
+        lval <- node
+        optNode -- Control
+        rval <- node
+        return $ NonBlockingAssign lval rval
+
+    "N7Verific18VeriBlockingAssignE" -> do
+        lval <- node
+        optNode -- Control
+        rval <- optNode
+        oper <- integer
+        case (oper, rval) of
+            (413, Just rval) -> return $ BlockingAssign lval rval
+            (498, Nothing) -> return $ BlockingAssignInPlace lval
+            (499, Nothing) -> return $ BlockingAssignInPlace lval
+
+    "N7Verific25VeriDelayControlStatementE" -> do
+        node    -- delay
+        s <- node
+        return $ DelayControlStatement s
+
+    "N7Verific17VeriNullStatementE" -> do
+        return NullStatement
+
+    -- Expressions
+
+    "N7Verific9VeriIdRefE" -> do
+        def <- node
+        return $ IdRef def
+
+    "N7Verific13VeriIndexedIdE" -> do
+        base <- node
+        ix <- node
+        node    -- Id
+        return $ IndexedId base ix
+
+    "N7Verific19VeriIndexedMemoryIdE" -> do
+        base <- node
+        ixs <- nodes
+        return $ IndexedMemoryId base ixs
+
+    "N7Verific12VeriConstValE" -> do
+        t <- text
+        skip    -- Size
+        skip    -- Sign
+        return $ ConstVal t
+
+    "N7Verific10VeriIntValE" -> do
+        t <- text
+        skip    -- Size
+        skip    -- Sign
+        skip    -- Num
+        return $ IntVal t
+
+    "N7Verific11VeriRealValE" -> do
+        t <- text
+        skip    -- Size
+        skip    -- Sign
+        skip    -- Num
+        return $ RealVal t
+
+    "N7Verific10VeriConcatE" -> do
+        es <- nodes
+        return $ Concat es
+
+    "N7Verific15VeriMultiConcatE" -> do
+        rep <- node
+        es <- nodes
+        return $ MultiConcat rep es
+
+    "N7Verific17VeriQuestionColonE" -> do
+        cond <- node
+        then_ <- node
+        else_ <- node
+        return $ QuestionColon cond then_ else_
+
+    "N7Verific17VeriUnaryOperatorE" -> do
+        oper <- integer
+        arg <- node
+        return $ UnaryOperator arg
+
+    "N7Verific18VeriBinaryOperatorE" -> do
+        oper <- integer
+        left <- node
+        right <- node
+        return $ BinaryOperator left right
+
+    "N7Verific16VeriSelectedNameE" -> do
+        base <- node
+        name <- text
+        optNode -- FullId
+        return $ SelectedName base name
+
+    "N7Verific26VeriMultiAssignmentPatternE" -> do
+        optNode -- TargetType
+        repeat <- node
+        exprs <- nodes
+        return $ MultiAssignmentPattern repeat exprs
+
+    "N7Verific9VeriRangeE" -> do
+        left <- node
+        -- For `x[$]`, `right` can be null.
+        right <- optNode
+        skip    -- PartSelectToken
+        skip    -- IsUnpacked
+        skip    -- LeftRangeBound
+        skip    -- RightRangeBound
+        -- Ranges can theoretically be chained as linked lists, but in practice
+        -- that never seems to happen.
+        null_   -- Next
+        return $ Range left right
+
+
+    _ -> unknown cls
+
+ignored cls = skipRest >> return (Ignored cls)
+unknown cls = skipRest >> return (Unknown cls)
+
+
+-- Token parsing.  Verific uses raw token numbers from their lexer for a
+-- variety of purposes.
 
 portDir :: DecodeM PortDir
 portDir = optPortDir >>= \x -> case x of
@@ -303,193 +506,12 @@ optPortDir = integer >>= \x -> case x of
     346 -> return $ Just Output
     _ -> fail $ "unknown PortDir enum: " ++ show x
 
-paramDecls :: DecodeM [ParamDecl]
-paramDecls = node $ \id cls -> case cls of
-    "N7Verific11VeriParamIdE" -> (:[]) <$> paramIdParts id
-    _ -> trace ("paramDecls: unknown class " ++ cls) $ skipRest >> return []
-
-paramIdParts id = do
-    name <- text
-    skip    -- DataType
-    init <- optional expr
-    skip    -- ParamType
-    dims <- optional index
-    skip    -- Actual
-    return $ ParamDecl id name dims init
-
-stmt = node $ \id cls -> case cls of
-    "N7Verific12VeriSeqBlockE" -> do
-        skip    -- Label
-        decls <- flatListOf $ node $ \id' cls' -> case cls' of
-            _ -> trace ("SeqBlock.declItems: unknown class " ++ cls') $ skipRest >> return []
-        ss <- listOf stmt
-        return $ Block ss
-
-    -- TODO: flatten EventControl.At into Always
-    "N7Verific25VeriEventControlStatementE" -> do
-        skip    -- At
-        s <- stmt
-        return s
-
-    "N7Verific24VeriConditionalStatementE" -> do
-        cond <- expr
-        then_ <- stmt
-        else_ <- optional stmt
-        return $ If cond then_ else_
-
-    "N7Verific17VeriCaseStatementE" -> do
-        skip    -- CaseStyle
-        skip    -- CaseType
-        cond <- expr
-        items <- listOf $ nodeCls "N7Verific12VeriCaseItemE" $ \id -> do
-            es <- listOf expr
-            s <- stmt
-            return (es, s)
-        return $ Case cond items
-
-    "N7Verific7VeriForE" -> do
-        inits <- listOf stmt
-        cond <- expr
-        steps <- listOf stmt
-        body <- stmt
-        return $ For inits cond steps body
-
-    "N7Verific21VeriNonBlockingAssignE" -> do
-        lval <- expr
-        rval <- expr
-        return $ NonBlockingAssign lval rval
-
-    "N7Verific18VeriBlockingAssignE" -> do
-        lval <- expr
-        rval <- optional expr
-        oper <- integer
-        case (oper, rval) of
-            (413, Just rval) -> return $ BlockingAssign lval rval
-            (498, Nothing) -> return $ BlockingUpdate lval oper
-            (499, Nothing) -> return $ BlockingUpdate lval oper
-
-    "N7Verific25VeriDelayControlStatementE" -> do
-        skip    -- delay
-        s <- stmt
-        return s
-
-    "N7Verific17VeriNullStatementE" -> do
-        return NullStmt
-
-    _ -> trace ("stmt: unknown class " ++ cls) $ skipRest >> return UnknownStmt
-
-expr = node exprParts
-
-exprParts id cls = case cls of
-    "N7Verific9VeriIdRefE" -> do
-        defId <- nodeId
-        return $ Var defId
-
-    "N7Verific13VeriIndexedIdE" -> do
-        base <- expr
-        ix <- index
-        skip    -- Id
-        return $ Index base ix
-
-    "N7Verific19VeriIndexedMemoryIdE" -> do
-        base <- expr
-        ixs <- listOf index
-        return $ MemIndex base ixs
-
-    "N7Verific12VeriConstValE" -> do
-        t <- text
-        skip    -- Size
-        skip    -- Sign
-        return $ Const t
-
-    "N7Verific10VeriIntValE" -> do
-        t <- text
-        skip    -- Size
-        skip    -- Sign
-        skip    -- Num
-        return $ Const t
-
-    "N7Verific11VeriRealValE" -> do
-        t <- text
-        skip    -- Size
-        skip    -- Sign
-        skip    -- Num
-        return $ Const t
-
-    "N7Verific10VeriConcatE" -> do
-        es <- listOf expr
-        return $ Concat es
-
-    "N7Verific15VeriMultiConcatE" -> do
-        rep <- expr
-        es <- listOf expr
-        return $ MultiConcat rep es
-
-    "N7Verific17VeriQuestionColonE" -> do
-        cond <- expr
-        then_ <- expr
-        else_ <- expr
-        return $ IfExpr cond then_ else_
-
-    "N7Verific17VeriUnaryOperatorE" -> do
-        oper <- integer
-        arg <- expr
-        return $ Unary oper arg
-
-    "N7Verific18VeriBinaryOperatorE" -> do
-        oper <- integer
-        left <- expr
-        right <- expr
-        return $ Binary oper left right
-
-    "N7Verific16VeriSelectedNameE" -> do
-        base <- expr
-        name <- text
-        skip    -- FullId
-        return $ Field base name
-
-    "N7Verific26VeriMultiAssignmentPatternE" -> do
-        skip    -- TargetType
-        repeat <- expr
-        exprs <- listOf expr
-        return $ AssignPat repeat exprs
-
-    _ -> trace ("expr: unknown class " ++ cls) $ skipRest >> return UnknownExpr
-
-index = node $ \id cls -> case cls of
-    "N7Verific9VeriRangeE" -> do
-        left <- expr
-        -- For `x[$]`, `right` can be null.
-        right <- optional expr
-        skip    -- PartSelectToken
-        skip    -- IsUnpacked
-        skip    -- LeftRangeBound
-        skip    -- RightRangeBound
-        -- Ranges can theoretically be chained as linked lists, but in practice
-        -- that never seems to happen.
-        null_   -- Next
-        case right of
-            Nothing -> return $ ISingle left
-            Just right -> return $ IRange left right
-    _ -> ISingle <$> exprParts id cls
-
-
--- Helper types
-
--- Source-level mod items include a few additional types that we don't include
--- in the ModItem data type.
-data SourceModItem = SMINormal ModItem | SMIParam ParamDecl
-  deriving (Show)
-
-partitionSourceModItems xs = go xs
-  where go [] = ([], [])
-        go (SMINormal x : xs) = let (a, b) = go xs in (x : a, b)
-        go (SMIParam x : xs) = let (a, b) = go xs in (a, x : b)
-
 
 -- Bytestring deserialization
 
-deserialize :: DecodeM a -> BS.ByteString -> Either String a
-deserialize d bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
+deserialize :: BS.ByteString -> Either String (Map NodeId Node, [NodeId])
+deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ show cborErr
-    Right (_, term) -> fst <$> runDecodeM d [[term]]
+    Right (_, term) ->
+        runDecodeM (listOf $ nodeWith clsNode) (S [[term]] M.empty) >>= \(is, s) ->
+            return (sNodes s, is)

@@ -26,31 +26,29 @@ import BESSPIN.ArchExtract.Verilog
 import qualified BESSPIN.ArchExtract.Verilog as V
 
 
-extractArch :: [V.ModuleDecl] -> A.Design
-extractArch vMods =
+extractArch :: V.Design -> A.Design
+extractArch vDes =
     mapMods (\mod ->
+        --filterLogics (\_ _ -> False) $
         --filterInsts (\_ i ->
             --not $ modInstName i `elem` map T.pack ["ra1reg"]) $
         --filterInsts (\_ i ->
         --    not $ modDeclName (designMods d `S.index` modInstId i)
         --        `elem` map T.pack ["mux2", "eqcmp"]) $
-        --filterInstsToLogic (\_ i ->
-        --    not $ modDeclName (designMods d `S.index` modInstId i)
-        --        `elem` map T.pack ["mux2", "eqcmp"]) $
+        filterInstsToLogic (\_ i ->
+            not $ modDeclName (designMods d `S.index` modInstId i)
+                --`elem` []) $
+                `elem` map T.pack ["mux2", "eqcmp"]) $
+                --`elem` map T.pack ["mux2", "eqcmp", "flopenr", "flopenrc"]) $
             --`elem` map T.pack ["adder"]) mod) $
         mod) $
     d
   where
-    interMap = buildInterMap vMods
-    d = A.Design $ S.fromList $ map (extractMod interMap) vMods
+    vMods = V.designModules vDes
+    d = A.Design $ fmap (extractMod vMods) vMods
 
-traceNets desc mod = trace (" ==== " ++ desc ++ " nets ====\n" ++ s) mod
-  where
-    s = concat $ map (\x -> show x ++ "\n") $ foldr (:) [] $ modDeclNets mod
-
-extractMod :: InterMap -> V.ModuleDecl -> A.ModDecl
-extractMod interMap vMod =
-    --mergeAliasedNets $
+extractMod :: Seq V.Module -> V.Module -> A.ModDecl
+extractMod vMods vMod =
     --filterLogics (\_ _ -> False) $
     filterLogics (\_ l -> logicKind l /= LkNetAlias) $
     -- Break up "uninteresting" nets early, before they can get merged with
@@ -64,53 +62,18 @@ extractMod interMap vMod =
     reconnectNets $
     A.ModDecl (moduleName vMod) inputs outputs insts logics nets
   where
-    instMap = buildInstMap interMap (moduleItems vMod)
-    netParts = moduleNets instMap vMod
+    --instMap = buildInstMap interMap (moduleItems vMod)
+    netParts = moduleNets vMods vMod
     (nets, netMap) = buildNets netParts
-    (inputs, outputs) = convModulePorts netMap vMod
-    insts = convModuleInsts instMap netMap vMod
-    logics = convModuleLogic instMap netMap vMod
+    (inputs, outputs) = convPorts netMap vMod
+    insts = convInsts vMods netMap vMod
+    logics = convItems vMods netMap vMod
 
 mapMods :: (A.ModDecl -> A.ModDecl) -> A.Design -> A.Design
-mapMods f d = Design $ fmap f $ designMods d
+mapMods f d = A.Design $ fmap f $ designMods d
 
 
-
--- Public interface information, used when processing `ModInst`s.
-data ModInter = ModInter
-    { modInterId :: A.ModId
-    , modInterPorts :: [V.PortDecl]
-    }
-    deriving (Show)
-
-type InterMap = Map V.NodeId ModInter
-
-buildInterMap :: [V.ModuleDecl] -> InterMap
-buildInterMap mods = M.fromList $ zipWith f [0..] mods
-  where
-    f modId vMod = (moduleId vMod, ModInter modId (modulePorts vMod))
-
-
--- Port resolution data for module instances.
-
--- A map from `Instance.modItemId` to the `ModInter` for the instantiated
--- module.  This map always includes every `Instance` in the current module.
-type InstMap = Map V.NodeId ModInter
-
-buildInstMap :: InterMap -> [V.ModItem] -> InstMap
-buildInstMap interMap items = M.fromList $ mapMaybe go items
-  where
-    go :: V.ModItem -> Maybe (V.NodeId, ModInter)
-    go (Instance instId vModId name _ _) =
-        case M.lookup vModId interMap of
-            Nothing ->
-                trace ("no declaration found for module instantiation " ++ T.unpack name ++
-                    " (node " ++ show vModId ++ ")") $
-                Just (instId,
-                    ModInter (-1) (repeat $ V.PortDecl 0 (T.pack "_unknown") Nothing InOut))
-            Just inter -> Just (instId, inter)
-    go _ = Nothing
-
+-- Building `modDeclNets` from `V.moduleDecls`
 
 -- Info used to build a `Net` and its corresponding `NetMap` entry.
 data NetParts = NetParts
@@ -120,7 +83,11 @@ data NetParts = NetParts
     }
     deriving (Show)
 
-data NetOrigin = NoDef V.NodeId | NoInstPort V.NodeId Int
+data NetOrigin =
+    NoDecl { noDeclId :: Int } |
+    -- noDeclId: index of the `InstDecl` in `moduleDecls`
+    -- noPortIdx: index of the port in the instantiated module's `modulePorts`
+    NoInstPort { noDeclId :: Int, noPortIdx :: Int }
     deriving (Show, Eq, Ord)
 
 type NetMap = Map NetOrigin NetId
@@ -135,87 +102,67 @@ buildNets nps = foldl f (S.empty, M.empty) nps
 
 prioExtPort = 3
 prioInstPort = 2
-prioWire = 1
+prioWire = 4
 prioDcNet = -1
 
-portNet :: V.PortDecl -> NetParts
-portNet (V.PortDecl id name _ _) = NetParts name prioExtPort (NoDef id)
+declNet :: Seq V.Module -> Int -> V.Decl -> [NetParts]
+declNet vMods i (V.PortDecl name _) = [NetParts name prioExtPort $ NoDecl i]
+declNet vMods i (V.ParamDecl name) = []
+declNet vMods i (V.VarDecl name) = [NetParts name prioWire $ NoDecl i]
+declNet vMods i (V.InstDecl name modId _) =
+    let vMod = vMods `S.index` modId in
+    zipWith (\j declId ->
+            let portName = V.declName $ moduleDecls vMod `S.index` declId in
+            NetParts (name <> T.pack "." <> portName) prioInstPort (NoInstPort i j))
+        [0..] (modulePorts vMod)
 
-itemNets :: InstMap -> V.ModItem -> [NetParts]
-itemNets instMap (Instance instId _ name _ portConns) =
-    zipWith f (modInterPorts inter) [0 .. length portConns - 1]
-  where
-    inter = instMap M.! instId
-    f port idx = NetParts
-        (name <> T.pack "." <> V.portDeclName port)
-        prioInstPort
-        (NoInstPort instId idx)
--- `VarDecl` `ModItem`s with a dir are actually just specifying the
--- type/direction of a port.  But Verific already included that info in the
--- module's port list, so we can simply ignore the item.
-itemNets _ (VarDecl _ _ _ (Just _dir) _) = []
-itemNets _ (VarDecl id name _ Nothing _) = [NetParts name prioWire (NoDef id)]
-itemNets _ _ = []
-
-moduleNets :: InstMap -> V.ModuleDecl -> [NetParts]
-moduleNets instMap vMod =
-    map portNet (modulePorts vMod) ++
-    concat (map (itemNets instMap) (moduleItems vMod))
+moduleNets :: Seq V.Module -> V.Module -> [NetParts]
+moduleNets vMods vMod = S.foldMapWithIndex (declNet vMods) (moduleDecls vMod)
 
 
--- Module port handling
+-- Building `modDeclInputs`, `modDeclOutputs`, and `modDeclInsts` from
+-- `V.moduleDecls`.
 
-convPort :: NetMap -> V.PortDecl -> (Seq A.PortDecl, Seq A.PortDecl)
-convPort netMap (V.PortDecl id name _ dir) =
-    let port = A.PortDecl name (netMap M.! NoDef id) in
-    case dir of
-        Input -> (S.singleton port, S.empty)
-        Output -> (S.empty, S.singleton port)
-        InOut -> (S.singleton port, S.singleton port)
+convPorts :: NetMap -> V.Module -> (Seq A.PortDecl, Seq A.PortDecl)
+convPorts netMap vMod =
+    mconcat $ map (\i ->
+        let vPort = moduleDecls vMod `S.index` i in
+        let port = A.PortDecl (V.declName vPort) (netMap M.! NoDecl i) in
+        case portDeclDir vPort of
+            V.Input -> (S.singleton port, S.empty)
+            V.Output -> (S.empty, S.singleton port)
+            V.InOut -> (S.singleton port, S.singleton port)
+        ) (modulePorts vMod)
 
-convModulePorts :: NetMap -> V.ModuleDecl -> (Seq A.PortDecl, Seq A.PortDecl)
-convModulePorts netMap vMod =
-    mconcat (map (convPort netMap) $ modulePorts vMod)
+declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq A.ModInst
+declInst vMods netMap i (V.InstDecl name modId _) =
+    let vMod = vMods `S.index` modId in
+    let ins = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
+            portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Input, V.InOut]] in
+    let outs = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
+            portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Output, V.InOut]] in
+    S.singleton $ ModInst modId name (S.fromList ins) (S.fromList outs)
+declInst _ _ _ _ = S.empty
 
-
--- Module instantiation handling.  Generates only the module itself, not the
--- `Logic` items for its port connections.
-
-convInst :: InstMap -> NetMap -> V.ModItem -> Maybe A.ModInst
-convInst instMap netMap (Instance instId _ name _ portConns) =
-    Just $ A.ModInst (modInterId inter) name inputs outputs
-  where
-    inter = instMap M.! instId
-    (inputs, outputs) = mconcat $ zipWith3 f (modInterPorts inter) portConns [0..]
-    f decl conn idx =
-        let netId = netMap M.! NoInstPort instId idx in
-        case portDeclDir decl of
-            Input -> (S.singleton netId, S.empty)
-            Output -> (S.empty, S.singleton netId)
-            InOut -> (S.singleton netId, S.singleton netId)
-convInst _ _ _ = Nothing
-
-convModuleInsts :: InstMap -> NetMap -> V.ModuleDecl -> Seq A.ModInst
-convModuleInsts instMap netMap vMod =
-    S.fromList $ mapMaybe (convInst instMap netMap) $ moduleItems vMod
+convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq A.ModInst
+convInsts vMods netMap vMod = S.foldMapWithIndex (declInst vMods netMap) (moduleDecls vMod)
 
 
--- Logic element handling.  Includes logic statements, variable initializers,
--- and port connection expressions.
+-- Building `modDeclLogics` from `V.moduleItems`
 
 -- Get the origin info for every net used in `e`.
 exprVars :: Expr -> Seq NetOrigin
 exprVars e = go e
   where
-    go (Var defId) = S.singleton $ NoDef defId
+    go (Var defId) = S.singleton $ NoDecl defId
     go (Index base idx) = go base <> goIdx idx
     go (MemIndex base idxs) = go base <> mconcat (map goIdx idxs)
     go (Const _) = S.empty
     go (Concat es) = mconcat (map go es)
     go (MultiConcat rep es) = go rep <> mconcat (map go es)
     go (IfExpr cond then_ else_) = go cond <> go then_ <> go else_
-    go (Unary _ arg) = go arg
-    go (Binary _ left right) = go left <> go right
+    go (Unary arg) = go arg
+    go (Binary left right) = go left <> go right
     go (Field base _) = go base
     go (AssignPat rep es) = go rep <> mconcat (map go es)
     go UnknownExpr = S.empty
@@ -241,60 +188,56 @@ stmtLogic netMap s = go S.empty s
     -- `imp`: Implicit inputs to any generated `Logic`s, resulting from
     -- the conditions on enclosing `if`s and such.
     go :: Seq NetOrigin -> Stmt -> Seq Logic
-    go imp (Block ss) = mconcat (map (go imp) ss)
     go imp (If cond then_ else_) =
         let imp' = imp <> exprVars cond in
-        go imp' then_ <> maybe S.empty (go imp') else_
+        foldMap (go imp') then_ <> maybe S.empty (foldMap $ go imp') else_
     go imp (Case cond cases) =
         let imp' = imp <> exprVars cond in
-        mconcat (map (go imp' . snd) cases)
+        foldMap (\(_, ss) -> foldMap (go imp') ss) cases
     go imp (For inits cond steps body) =
         -- Not sure how much of `For` we really need to handle, but here's a
         -- conservative guess...
         let imp' = imp <> exprVars cond in
-        mconcat (map (go imp') inits) <>
-        mconcat (map (go imp') steps) <>
-        go imp' body
+        foldMap (go imp) inits <>
+        foldMap (go imp') steps <>
+        foldMap (go imp') body
     go imp (NonBlockingAssign lval rval) =
         S.singleton $ mkLogic netMap LkOther (imp <> exprVars rval) (exprVars lval)
     go imp (BlockingAssign lval rval) =
         S.singleton $ mkLogic netMap LkOther (imp <> exprVars rval) (exprVars lval)
-    go imp (BlockingUpdate lval _) =
+    go imp (BlockingUpdate lval) =
         -- Something like `i++`, where the "lvalue" is also used as part of the
         -- "rvalue".
         S.singleton $ mkLogic netMap LkOther (imp <> exprVars lval) (exprVars lval)
-    go imp NullStmt = S.empty
-    go imp UnknownStmt = S.empty
 
-itemLogic :: InstMap -> NetMap -> ModItem -> Seq Logic
-itemLogic instMap netMap i = go i
+itemLogic :: Seq V.Module -> Seq V.Decl -> NetMap -> V.Item -> Seq Logic
+itemLogic vMods vDecls netMap i = go i
   where
-    go (Instance instId _ _ _ portConns) =
-        mconcat $ zipWith3 f portConns portDecls [0..]
+    go (InitVar varId e) = S.singleton $
+        mkLogic netMap (rvalKind e) (exprVars e) (S.singleton $ NoDecl varId)
+    go (InitInst i conns) = mconcat $ zipWith3 f [0..] (modulePorts vMod) conns
       where
-        portDecls = modInterPorts $ instMap M.! instId
-        f :: V.Expr -> V.PortDecl -> Int -> Seq Logic
-        f conn decl idx =
-            let portNet = S.singleton $ NoInstPort instId idx
-                connNets = exprVars conn in
-            (if V.portDeclDir decl `elem` [V.Input, V.InOut] then
-                S.singleton $ mkLogic netMap (rvalKind conn) connNets portNet
-             else S.empty) <>
-            (if V.portDeclDir decl `elem` [V.Output, V.InOut] then
-                S.singleton $ mkLogic netMap LkNetAlias portNet connNets
-             else S.empty)
-    go (VarDecl id _ _ _ init) = case init of
-        Nothing -> S.empty
-        Just e -> S.singleton $
-            mkLogic netMap (rvalKind e) (exprVars e) (S.singleton $ NoDef id)
-    go (ContAssign _ lval rval) = S.singleton $
-        mkLogic netMap (rvalKind rval) (exprVars rval) (exprVars lval)
-    go (Always s) = stmtLogic netMap s
-    go (Initial s) = stmtLogic netMap s
+        inst = vDecls `S.index` i
+        vMod = vMods `S.index` instanceModId inst
+        f j portIdx conn =
+            let portNet = S.singleton $ NoInstPort i j in
+            let connNets = exprVars conn in
+            let inLogic = S.singleton $
+                    mkLogic netMap (rvalKind conn) connNets portNet in
+            let outLogic = S.singleton $
+                    mkLogic netMap LkNetAlias portNet connNets in
+            case V.portDeclDir $ moduleDecls vMod `S.index` portIdx of
+                Input -> inLogic
+                Output -> outLogic
+                InOut -> inLogic <> outLogic
+    go (ContAssign l r) = S.singleton $
+        mkLogic netMap (rvalKind r) (exprVars r) (exprVars l)
+    go (Always ss) = foldMap (stmtLogic netMap) ss
+    go (Initial ss) = foldMap (stmtLogic netMap) ss
 
-convModuleLogic :: InstMap -> NetMap -> V.ModuleDecl -> Seq Logic
-convModuleLogic instMap netMap vMod =
-    mconcat $ map (itemLogic instMap netMap) $ moduleItems vMod
+convItems :: Seq V.Module -> NetMap -> V.Module -> Seq Logic
+convItems vMods netMap vMod =
+    mconcat $ map (itemLogic vMods (moduleDecls vMod) netMap) $ moduleItems vMod
 
 
 -- Rebuild the `netSources` and `netSinks` connection lists for all nets in

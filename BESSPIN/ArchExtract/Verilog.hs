@@ -1,71 +1,88 @@
--- Verilog AST and parsing from CBOR
-module BESSPIN.ArchExtract.Verilog where
+module BESSPIN.ArchExtract.Verilog
+    ( module BESSPIN.ArchExtract.Verilog
+    , BESSPIN.ArchExtract.Verilog.Raw.PortDir(..)
+    ) where
 
 import Control.Monad
 
+import Data.Sequence (Seq)
 import Data.Text (Text)
-import qualified Data.Text as T
+
+import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..))
 
 
--- Verilog AST
+-- Verilog AST.  This only supports the constructs we currently use for
+-- architecture extraction.  For example, it doesn't store any type
+-- information.
 
-type NodeId = Word
-
-data ModuleDecl = ModuleDecl
-    { moduleId :: NodeId
-    , moduleName :: Text
-    , moduleParams :: [ParamDecl]
-    , modulePorts :: [PortDecl]
-    , moduleItems :: [ModItem]
+data Design = Design
+    { designModules :: Seq Module
     }
     deriving (Show)
 
-data ModItem =
-    Instance
-    { modItemId :: NodeId
-    , instanceModId :: NodeId
-    , instanceName :: Text
-    , instanceParamVals :: [Expr]
-    , instancePortConns :: [Expr]
+data Module = Module
+    { moduleName :: Text
+    , moduleDecls :: Seq Decl
+    -- Indices of `PortDecl`s in `moduleDecls`
+    , modulePorts :: [Int]
+    , moduleItems :: [Item]
+    }
+    deriving (Show)
+
+data Decl =
+    PortDecl
+    { declName :: Text
+    , portDeclDir :: PortDir
+    } |
+    ParamDecl
+    { declName :: Text
     } |
     VarDecl
-    { modItemId :: NodeId
-    , varDeclName :: Text
-    , varDeclDims :: Maybe Index
-    , varDeclDir :: Maybe PortDir
-    , varDeclInit :: Maybe Expr
+    { declName :: Text
+    } |
+    InstDecl
+    { declName :: Text
+    , instanceModId :: Int
+    , instanceParamVals :: [Expr]
+    }
+    deriving (Show)
+
+data Item =
+    InitVar
+    { initVarDeclId :: Int
+    , initVarExpr :: Expr
+    } |
+    InitInst
+    { initInstDeclId :: Int
+    , initInstPortConns :: [Expr]
     } |
     ContAssign
-    { modItemId :: NodeId
-    , contAssignLval :: Expr
+    { contAssignLval :: Expr
     , contAssignRval :: Expr
     } |
     Always
-    { alwaysStmt :: Stmt
+    { alwaysBody :: [Stmt]
     } |
     Initial
-    { initialStmt :: Stmt
+    { initialBody :: [Stmt]
     }
     deriving (Show)
 
 data Stmt =
-    Block
-    { blockStmts :: [Stmt]
-    } |
     If
     { ifCond :: Expr
-    , ifThenBody :: Stmt
-    , ifElseBody :: Maybe Stmt
+    , ifThenBody :: [Stmt]
+    , ifElseBody :: Maybe [Stmt]
     } |
     Case
     { caseCond :: Expr
-    , caseCases :: [([Expr], Stmt)]
+    , caseCases :: [([Expr], [Stmt])]
     } |
     For
     { forInits :: [Stmt]
     , forCond :: Expr
     , forSteps :: [Stmt]
-    , forBody :: Stmt
+    , forBody :: [Stmt]
     } |
     NonBlockingAssign
     { nonBlockingAssignLval :: Expr
@@ -77,15 +94,12 @@ data Stmt =
     } |
     BlockingUpdate
     { blockingUpdateLval :: Expr
-    , blockingUpdateOper :: Integer
-    } |
-    NullStmt |
-    UnknownStmt
+    }
     deriving (Show)
 
 data Expr =
     Var
-    { varDefId :: NodeId
+    { varDeclId :: Int
     } |
     Index
     { indexBase :: Expr
@@ -111,12 +125,10 @@ data Expr =
     , ifExprElse :: Expr
     } |
     Unary
-    { unaryOper :: Integer
-    , unaryArg :: Expr
+    { unaryArg :: Expr
     } |
     Binary
-    { binaryOper :: Integer
-    , binaryLeft :: Expr
+    { binaryLeft :: Expr
     , binaryRight :: Expr
     } |
     Field
@@ -128,26 +140,8 @@ data Expr =
     , assignPatExprs :: [Expr]
     } |
     UnknownExpr
+    {}
     deriving (Show)
 
 data Index = ISingle Expr | IRange Expr Expr
     deriving (Show)
-
-data ParamDecl = ParamDecl
-    { paramDeclId :: NodeId
-    , paramDeclName :: Text
-    , paramDeclDims :: Maybe Index
-    , paramDeclInit :: Maybe Expr
-    }
-    deriving (Show)
-
-data PortDecl = PortDecl
-    { portDeclId :: NodeId
-    , portDeclName :: Text
-    , portDeclDims :: Maybe Index
-    , portDeclDir :: PortDir
-    }
-    deriving (Show)
-
-data PortDir = Input | Output | InOut
-    deriving (Show, Eq)
