@@ -8,7 +8,7 @@ import qualified Data.Sequence as S
 import Data.Set (Set)
 import qualified Data.Set as Set
 
-import BESSPIN.ArchExtract.Verilog
+import BESSPIN.ArchExtract.Verilog.AST
 import BESSPIN.ArchExtract.Verilog.Raw (NodeId, Node)
 import qualified BESSPIN.ArchExtract.Verilog.Raw as R
 

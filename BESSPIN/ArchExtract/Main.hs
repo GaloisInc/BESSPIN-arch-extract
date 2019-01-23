@@ -13,9 +13,9 @@ import Language.Clafer
 
 import BESSPIN.ArchExtract.Verilog.Raw
 import BESSPIN.ArchExtract.Verilog.FromRaw
+import BESSPIN.ArchExtract.Verilog.Extract
+import qualified BESSPIN.ArchExtract.Verilog.Decode as D
 import BESSPIN.ArchExtract.Architecture
-import BESSPIN.ArchExtract.Extract
-import qualified BESSPIN.ArchExtract.Decode as D
 --import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 

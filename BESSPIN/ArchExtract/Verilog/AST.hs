@@ -1,5 +1,5 @@
-module BESSPIN.ArchExtract.Verilog
-    ( module BESSPIN.ArchExtract.Verilog
+module BESSPIN.ArchExtract.Verilog.AST
+    ( module BESSPIN.ArchExtract.Verilog.AST
     , BESSPIN.ArchExtract.Verilog.Raw.PortDir(..)
     ) where
 

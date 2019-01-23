@@ -13,8 +13,8 @@ import qualified Language.Clafer.Front.AbsClafer as C
 import Language.Clafer.Front.PrintClafer
 import qualified Language.Clafer.ClaferArgs as Args
 
-import BESSPIN.ArchExtract.Verilog hiding (Module)
-import qualified BESSPIN.ArchExtract.Verilog as V
+import BESSPIN.ArchExtract.Verilog.AST hiding (Module)
+import qualified BESSPIN.ArchExtract.Verilog.AST as V
 
 convName x = T.unpack x ++ "_"
 

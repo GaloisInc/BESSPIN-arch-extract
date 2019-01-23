@@ -1,5 +1,5 @@
 {-# LANGUAGE RankNTypes #-}
-module BESSPIN.ArchExtract.Decode where
+module BESSPIN.ArchExtract.Verilog.Decode where
 
 import Control.Monad
 import qualified Data.ByteString.Lazy as BS
@@ -19,8 +19,6 @@ import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
 
 import BESSPIN.ArchExtract.Verilog.Raw
-
-import qualified BESSPIN.ArchExtract.Verilog.FromRaw as X
 
 
 data S = S
