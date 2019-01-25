@@ -133,6 +133,7 @@ data Cfg = Cfg
     , cfgDrawLogics :: Bool
     , cfgHideNamedNets :: Set Text
     , cfgDedupEdges :: Bool
+    , cfgShortenNetNames :: Bool
     , cfgInstColor :: Int -> Maybe Color
     , cfgLogicColor :: Int -> Maybe Color
     , cfgNetColor :: NetId -> Maybe Color
@@ -145,6 +146,7 @@ defaultCfg = Cfg
     , cfgDrawLogics = True
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = False
+    , cfgShortenNetNames = True
     , cfgInstColor = const Nothing
     , cfgLogicColor = const Nothing
     , cfgNetColor = const Nothing
@@ -220,9 +222,10 @@ netNode cfg idx net =
                 T.pack " (+" <> T.pack (show $ length names) <> T.pack " more)"
             else T.empty in
     let shortName = head (T.lines name) <> suffix in
+    let displayName = if cfgShortenNetNames cfg then shortName else name in
     let color = convColor $ cfgNetColor cfg $ NetId idx in
 
-    DN $ DotNode (netKey cfg idx) ([mkLabel shortName, mkTooltip name] ++ color)
+    DN $ DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"

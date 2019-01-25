@@ -108,6 +108,7 @@ main = do
                     , cfgDrawOnesidedNets = False
                     , cfgDrawLogics = False
                     , cfgDedupEdges = False
+                    , cfgShortenNetNames = False
                     , cfgPrefix = modDeclName mod
                     {- , cfgHideNamedNets = Set.fromList
                         [ T.pack "clock"
