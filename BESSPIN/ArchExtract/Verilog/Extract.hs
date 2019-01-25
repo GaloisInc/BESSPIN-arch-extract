@@ -26,7 +26,7 @@ import qualified BESSPIN.ArchExtract.Verilog.AST as V
 import BESSPIN.ArchExtract.Simplify
 
 
-extractArch :: V.Design -> A.Design
+extractArch :: V.Design -> A.Design ()
 extractArch vDes =
     mapMods (\mod ->
         --filterLogics (\_ _ -> False) $
@@ -47,7 +47,7 @@ extractArch vDes =
     vMods = V.designModules vDes
     d = A.Design $ fmap (extractMod vMods) vMods
 
-extractMod :: Seq V.Module -> V.Module -> A.Module
+extractMod :: Seq V.Module -> V.Module -> A.Module ()
 extractMod vMods vMod =
     --filterLogics (\_ _ -> False) $
     filterLogics (\_ l -> logicKind l /= LkNetAlias) $
@@ -89,12 +89,12 @@ data NetOrigin =
 
 type NetMap = Map NetOrigin NetId
 
-buildNets :: [NetParts] -> (Seq A.Net, NetMap)
+buildNets :: [NetParts] -> (Seq (A.Net ()), NetMap)
 buildNets nps = foldl f (S.empty, M.empty) nps
   where
     f (nets, netMap) (NetParts name prio origin) =
         let netId = NetId $ S.length nets in
-        (nets |> Net name prio S.empty S.empty,
+        (nets |> Net name prio S.empty S.empty (),
             M.insert origin netId netMap)
 
 prioExtPort = 3
@@ -131,17 +131,17 @@ convPorts netMap vMod =
             V.InOut -> (S.singleton port, S.singleton port)
         ) (modulePorts vMod)
 
-declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq A.Logic
+declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq (A.Logic ())
 declInst vMods netMap i (V.InstDecl name modId _) =
     let vMod = vMods `S.index` modId in
     let ins = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
             portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Input, V.InOut]] in
     let outs = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
             portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Output, V.InOut]] in
-    S.singleton $ Logic (LkInst $ Inst modId name) (S.fromList ins) (S.fromList outs)
+    S.singleton $ Logic (LkInst $ Inst modId name) (S.fromList ins) (S.fromList outs) ()
 declInst _ _ _ _ = S.empty
 
-convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq A.Logic
+convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq (A.Logic ())
 convInsts vMods netMap vMod = S.foldMapWithIndex (declInst vMods netMap) (moduleDecls vMod)
 
 
@@ -172,19 +172,19 @@ rvalKind :: Expr -> LogicKind
 rvalKind (Var defId) = LkNetAlias
 rvalKind _ = LkOther
 
-mkLogic :: NetMap -> LogicKind -> Seq NetOrigin -> Seq NetOrigin -> Logic
-mkLogic netMap kind ins outs = Logic kind (foldMap f ins) (foldMap f outs)
+mkLogic :: NetMap -> LogicKind -> Seq NetOrigin -> Seq NetOrigin -> A.Logic ()
+mkLogic netMap kind ins outs = Logic kind (foldMap f ins) (foldMap f outs) ()
   where
     f def = case M.lookup def netMap of
         Nothing -> S.empty
         Just n -> S.singleton n
 
-stmtLogic :: NetMap -> Stmt -> Seq Logic
+stmtLogic :: NetMap -> Stmt -> Seq (A.Logic ())
 stmtLogic netMap s = go S.empty s
   where
     -- `imp`: Implicit inputs to any generated `Logic`s, resulting from
     -- the conditions on enclosing `if`s and such.
-    go :: Seq NetOrigin -> Stmt -> Seq Logic
+    go :: Seq NetOrigin -> Stmt -> Seq (A.Logic ())
     go imp (If cond then_ else_) =
         let imp' = imp <> exprVars cond in
         foldMap (go imp') then_ <> maybe S.empty (foldMap $ go imp') else_
@@ -207,7 +207,7 @@ stmtLogic netMap s = go S.empty s
         -- "rvalue".
         S.singleton $ mkLogic netMap LkOther (imp <> exprVars lval) (exprVars lval)
 
-itemLogic :: Seq V.Module -> Seq V.Decl -> NetMap -> V.Item -> Seq Logic
+itemLogic :: Seq V.Module -> Seq V.Decl -> NetMap -> V.Item -> Seq (A.Logic ())
 itemLogic vMods vDecls netMap i = go i
   where
     go (InitVar varId e) = S.singleton $
@@ -232,6 +232,6 @@ itemLogic vMods vDecls netMap i = go i
     go (Always ss) = foldMap (stmtLogic netMap) ss
     go (Initial ss) = foldMap (stmtLogic netMap) ss
 
-convItems :: Seq V.Module -> NetMap -> V.Module -> Seq Logic
+convItems :: Seq V.Module -> NetMap -> V.Module -> Seq (A.Logic ())
 convItems vMods netMap vMod =
     mconcat $ map (itemLogic vMods (moduleDecls vMod) netMap) $ moduleItems vMod

@@ -23,14 +23,14 @@ import Debug.Trace
 import BESSPIN.ArchExtract.Architecture
 
 
-mapMods :: (Module -> Module) -> Design -> Design
+mapMods :: (Module a -> Module a) -> Design a -> Design a
 mapMods f d = Design $ fmap f $ designMods d
 
 
 -- Rebuild the `netSources` and `netSinks` connection lists for all nets in
 -- `mod`, based on the `Inputs` and `Outputs` lists for the module itself and
 -- all its `ModInst`s and `Logic`s.
-reconnectNets :: Module -> Module
+reconnectNets :: Module a -> Module a
 reconnectNets mod = runST $ do
     sources <- newArray (NetId 0, NetId $ S.length (moduleNets mod) - 1) S.empty
     sinks <- newArray (NetId 0, NetId $ S.length (moduleNets mod) - 1) S.empty
@@ -57,13 +57,16 @@ reconnectNets mod = runST $ do
             writeArray netConns netId conns'
 
 -- Rewrite all `NetId`s in the tree using the provided function.
-mapNetIds :: (NetId -> NetId) -> Module -> Module
-mapNetIds f mod = everywhere (mkT f) mod
+mapNetIds :: (NetId -> NetId) -> Module a -> Module a
+mapNetIds f mod =
+    let anns = gatherAnn mod
+        mod' = everywhere (mkT f) $ constAnn () mod in
+    scatterAnn anns mod'
 
 -- Delete all `Net`s that fail the predicate `f`.  This changes the contents of
 -- `moduleNets`, so `NetId`s may change.  Raises an error if any of the
 -- deleted nets is currently in use.
-filterNets :: (NetId -> Net -> Bool) -> Module -> Module
+filterNets :: (NetId -> Net a -> Bool) -> Module a -> Module a
 filterNets f mod = mod' { moduleNets = nets' }
   where
     -- Compute the new list of nets, along with the mapping from old `NetId`s
@@ -85,13 +88,13 @@ filterNets f mod = mod' { moduleNets = nets' }
 
 -- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
 -- nets with the other.
-mergeAliasedNets :: Module -> Module
+mergeAliasedNets :: Module a -> Module a
 mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
 
 -- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
 -- all of its input and output nets are merged into a single net, indicating
 -- that data can flow freely from any input to any output.
-filterLogics :: (Int -> Logic -> Bool) -> Module -> Module
+filterLogics :: (Int -> Logic a -> Bool) -> Module a -> Module a
 filterLogics f mod =
     runNetMerge act (mod { moduleLogics = logics' })
   where
@@ -103,7 +106,7 @@ filterLogics f mod =
 
 -- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
 -- connected to the same nets.
-filterInstsToLogic :: (Int -> Logic -> Inst -> Bool) -> Module -> Module
+filterInstsToLogic :: (Int -> Logic a -> Inst -> Bool) -> Module a -> Module a
 filterInstsToLogic f mod =
     reconnectNets $ mod { moduleLogics = logics' }
   where
@@ -117,13 +120,13 @@ filterInstsToLogic f mod =
 -- Disconnect all connection points selected by predicate `f` from their
 -- current nets.  Since each connection point must be connected to some net,
 -- this function adds a new, otherwise-empty net for each disconnected `Conn`.
-disconnect :: (Conn -> Side -> NetId -> Net -> Bool) -> Module -> Module
+disconnect :: Monoid a => (Conn -> Side -> NetId -> Net a -> Bool) -> Module a -> Module a
 disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
   where
     nets = moduleNets mod
     (mod', nets') = runState (goMod mod) nets
 
-    goMod :: Module -> NetM Module
+    goMod :: Monoid a => Module a -> NetM a (Module a)
     goMod (Module name ins outs logics nets) =
         Module <$> pure name <*> goPorts Source ins <*> goPorts Sink outs <*>
             goLogics logics <*> pure nets
@@ -133,13 +136,14 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
         Port <$> pure name <*>
             goNet (ExtPort idx) side netId (extPortName side name idx netId)
 
-    goLogics :: Seq Logic -> NetM (Seq Logic)
+    goLogics :: Monoid a => Seq (Logic a) -> NetM a (Seq (Logic a))
     goLogics logics = S.traverseWithIndex goLogic logics
-    goLogic :: Int -> Logic -> NetM Logic
-    goLogic idx (Logic kind ins outs) =
-        Logic <$> pure kind <*>
-            S.traverseWithIndex (go Sink) ins <*>
-            S.traverseWithIndex (go Source) outs
+    goLogic :: Monoid a => Int -> Logic a -> NetM a (Logic a)
+    goLogic idx (Logic kind ins outs ann) =
+        Logic <$> pure kind
+            <*> S.traverseWithIndex (go Sink) ins
+            <*> S.traverseWithIndex (go Source) outs
+            <*> pure ann
       where
         go side portIdx netId = goNet (LogicPort idx portIdx) side netId $
             logicPortName side portIdx netId
@@ -162,11 +166,11 @@ prioDcNet = -1
 
 
 
-type NetM a = State (Seq Net) a
+type NetM a b = State (Seq (Net a)) b
 
-mkNet :: Text -> Int -> NetM NetId
+mkNet :: Monoid a => Text -> Int -> NetM a NetId
 mkNet name prio = state $ \nets ->
-    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty)
+    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty mempty)
     
 
 
@@ -186,7 +190,7 @@ mergeNetSeq ids = case S.viewl ids of
     S.EmptyL -> return ()
     id1 S.:< ids -> forM_ ids $ \id2 -> mergeNets id1 id2
 
-runNetMerge :: (forall s. NetMergeM s ()) -> Module -> Module
+runNetMerge :: (forall s. NetMergeM s ()) -> Module a -> Module a
 runNetMerge m mod =
     reconnectNets $
     filterNets (\netId net -> substMap M.! netId == netId) $

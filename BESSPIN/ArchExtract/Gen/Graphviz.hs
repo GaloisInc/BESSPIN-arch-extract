@@ -95,7 +95,7 @@ bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
             else
                 loop seen pending (acc |> cur)
 
-logicShowsPorts :: Module -> Int -> Bool
+logicShowsPorts :: Module a -> Int -> Bool
 logicShowsPorts mod idx = case logicKind $ mod `moduleLogic` idx of
     LkInst _ -> True
     _ -> False
@@ -117,15 +117,15 @@ dedupEdges m = fmap go m
             else (acc, seen))
         (S.empty, Set.empty) xs
 
-netEdges :: Cfg -> Int -> Net -> Seq (NodeId, NodeId)
+netEdges :: Cfg -> Int -> Net a -> Seq (NodeId, NodeId)
 netEdges cfg idx net =
     fmap (\conn -> (NConn Source conn, NNet idx)) (netSources net) <>
     fmap (\conn -> (NNet idx, NConn Sink conn)) (netSinks net)
 
-allNetEdges :: Cfg -> Seq Net -> Seq (NodeId, NodeId)
+allNetEdges :: Cfg -> Seq (Net a) -> Seq (NodeId, NodeId)
 allNetEdges cfg nets = join $ S.mapWithIndex (netEdges cfg) nets
 
-filterEdges :: Cfg -> Module -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
+filterEdges :: Cfg -> Module a -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
 filterEdges cfg mod edges = edges'
   where
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
@@ -226,7 +226,7 @@ portCluster cfg side label ports =
         let label = name in
         DN $ DotNode key [mkLabel label]
 
-netNode :: Cfg -> Int -> Net -> DotStatement Text
+netNode :: Cfg -> Int -> Net a -> DotStatement Text
 netNode cfg idx net =
     let name = netName net in
     let names = T.lines name in
@@ -244,7 +244,7 @@ logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
-logicNode :: Design -> Cfg -> Int -> Logic -> Seq (DotStatement Text)
+logicNode :: Design a -> Cfg -> Int -> Logic a -> Seq (DotStatement Text)
 logicNode design cfg idx logic@Logic { logicKind = LkInst inst } =
     S.singleton $ SG $ DotSG True (Just clusterId) stmts
   where
@@ -269,7 +269,7 @@ logicNode design cfg idx logic =
 edgeStmt cfg n1 n2 = DE $ DotEdge (nodeIdKey cfg n1) (nodeIdKey cfg n2) []
 
 
-graphModule' :: Design -> Cfg -> Module -> Seq (DotStatement Text)
+graphModule' :: Design a -> Cfg -> Module a -> Seq (DotStatement Text)
 graphModule' design cfg mod =
     portCluster cfg Source tInputs (moduleInputs mod) <|
     portCluster cfg Sink tOutputs (moduleOutputs mod) <|
@@ -280,7 +280,7 @@ graphModule' design cfg mod =
     fmap (uncurry $ edgeStmt cfg)
         (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
 
-graphModule :: Design -> Cfg -> Module -> DotGraph Text
+graphModule :: Design a -> Cfg -> Module a -> DotGraph Text
 graphModule design cfg mod =
     DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
         ( graphModule' design cfg mod

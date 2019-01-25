@@ -26,7 +26,7 @@ import BESSPIN.ArchExtract.GraphOps
 instsNamed ns mod = S.foldMapWithIndex go (moduleLogics mod)
   where
     ns' = Set.fromList $ map T.pack ns
-    go i (Logic (LkInst inst) _ _) =
+    go i (Logic (LkInst inst) _ _ _) =
         if Set.member (instName inst) ns' then Set.singleton i else Set.empty
     go _ _ = Set.empty
 

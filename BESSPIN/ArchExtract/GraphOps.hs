@@ -129,19 +129,19 @@ outputRoots mod =
 -- Find the set of nodes that are "fully downstream" of `targets` in `mod`.  A
 -- node is "fully downstream" if all of its inputs (transitively) originate in
 -- `targets`.
-downstreamFull :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
+downstreamFull :: (Set Int, Set NetId) -> Module a -> (Set Int, Set NetId)
 downstreamFull splitTargets mod = splitNodeSet $
     coverAllPaths (getOutputs mod) (allModNodes mod) (mergeNodeSet splitTargets) (inputRoots mod)
 
-upstreamFull :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
+upstreamFull :: (Set Int, Set NetId) -> Module a -> (Set Int, Set NetId)
 upstreamFull splitTargets mod = splitNodeSet $
     coverAllPaths (getInputs mod) (allModNodes mod) (mergeNodeSet splitTargets) (outputRoots mod)
 
-downstreamPartial :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
+downstreamPartial :: (Set Int, Set NetId) -> Module a -> (Set Int, Set NetId)
 downstreamPartial splitTargets mod = splitNodeSet $
     coverAnyPath (getOutputs mod) (Set.toList $ mergeNodeSet splitTargets)
 
-upstreamPartial :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
+upstreamPartial :: (Set Int, Set NetId) -> Module a -> (Set Int, Set NetId)
 upstreamPartial splitTargets mod = splitNodeSet $
     coverAnyPath (getInputs mod) (Set.toList $ mergeNodeSet splitTargets)
 
@@ -151,7 +151,7 @@ upstreamPartial splitTargets mod = splitNodeSet $
 -- the nodes which have no connection (in any direction) to `mod`'s inputs or
 -- outputs except through the `targets`.
 enclosed :: (Set Int, Set NetId) -> (Set Int, Set NetId) ->
-    Module -> (Set Int, Set NetId)
+    Module a -> (Set Int, Set NetId)
 enclosed targets exclude mod = splitNodeSet $
     coverAllPaths
         (\n -> getInputs mod n ++ getOutputs mod n)

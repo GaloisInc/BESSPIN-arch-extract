@@ -41,7 +41,7 @@ import BESSPIN.ArchExtract.Simplify
 -- set the module interface by providing appropriate boundary nets, and by
 -- default (with empty `excludeNets`), every bit of logic that can possibly go
 -- inside that interface will be included in the new module.
-aggregateModule :: ModId -> Set NetId -> Set NetId -> Design -> Design
+aggregateModule :: Monoid a => ModId -> Set NetId -> Set NetId -> Design a -> Design a
 aggregateModule modId boundaryNets excludeNets d =
     d { designMods = (S.update modId mod' $ designMods d) |> newMod }
   where
@@ -88,7 +88,7 @@ aggregateModule modId boundaryNets excludeNets d =
             Port (head $ T.lines $ netName net) netId) outPorts)
         leftLogicItems
         (moduleNets mod)
-    newInst = Logic (LkInst $ Inst newModId instName) inPorts outPorts
+    newInst = Logic (LkInst $ Inst newModId instName) inPorts outPorts mempty
 
 partitionWithIndex :: (Int -> a -> Bool) -> Seq a -> (Seq a, Seq a)
 partitionWithIndex f xs =

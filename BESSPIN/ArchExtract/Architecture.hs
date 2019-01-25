@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module BESSPIN.ArchExtract.Architecture where
 
+import Control.Monad.State
 import Data.Data
 import Data.Ix
 import Data.Sequence (Seq)
@@ -19,25 +20,26 @@ instance Enum NetId where
     toEnum = NetId
     fromEnum = unwrapNetId
 
-data Design = Design
-    { designMods :: Seq Module
+data Design ann = Design
+    { designMods :: Seq (Module ann)
     }
     deriving (Show, Typeable, Data)
 
-data Module = Module
+data Module ann = Module
     { moduleName :: Text
     , moduleInputs :: Seq Port
     , moduleOutputs :: Seq Port
-    , moduleLogics :: Seq Logic
-    , moduleNets :: Seq Net
+    , moduleLogics :: Seq (Logic ann)
+    , moduleNets :: Seq (Net ann)
     }
     deriving (Show, Typeable, Data)
 
 -- A blob of anonymous logic.
-data Logic = Logic
+data Logic ann = Logic
     { logicKind :: LogicKind
     , logicInputs :: Seq NetId
     , logicOutputs :: Seq NetId
+    , logicAnn :: ann
     }
     deriving (Show, Typeable, Data)
 
@@ -59,12 +61,13 @@ data Port = Port
     }
     deriving (Show, Typeable, Data)
 
-data Net = Net
+data Net ann = Net
     { netName :: Text
     -- Used to select a name to use when merging nets during net alias handling
     , netNamePriority :: Int
     , netSources :: Seq Conn
     , netSinks :: Seq Conn
+    , netAnn :: ann
     }
     deriving (Show, Typeable, Data)
 
@@ -87,29 +90,89 @@ data Side = Source | Sink
 -- we define a singular `fooBar :: Foo -> Int -> Bar` that combines the field
 -- access and sequence indexing.
 
-designMod :: Design -> ModId -> Module
+designMod :: Design ann -> ModId -> Module ann
 designMod d i = designMods d `S.index` i
 
-moduleInput :: Module -> Int -> Port
+moduleInput :: Module ann -> Int -> Port
 moduleInput m i = moduleInputs m `S.index` i
 
-moduleOutput :: Module -> Int -> Port
+moduleOutput :: Module ann -> Int -> Port
 moduleOutput m i = moduleOutputs m `S.index` i
 
-moduleLogic :: Module -> Int -> Logic
+moduleLogic :: Module ann -> Int -> Logic ann
 moduleLogic m i = moduleLogics m `S.index` i
 
-moduleNet :: Module -> NetId -> Net
+moduleNet :: Module ann -> NetId -> Net ann
 moduleNet m (NetId i) = moduleNets m `S.index` i
 
-logicInput :: Logic -> Int -> NetId
+logicInput :: Logic ann -> Int -> NetId
 logicInput l i = logicInputs l `S.index` i
 
-logicOutput :: Logic -> Int -> NetId
+logicOutput :: Logic ann -> Int -> NetId
 logicOutput l i = logicOutputs l `S.index` i
 
-netSource :: Net -> Int -> Conn
+netSource :: Net ann -> Int -> Conn
 netSource n i = netSources n `S.index` i
 
-netSink :: Net -> Int -> Conn
+netSink :: Net ann -> Int -> Conn
 netSink n i = netSinks n `S.index` i
+
+
+
+class Annotated t where
+    gatherAnn :: t ann -> [ann]
+    scatterAnn' :: t ann' -> State [ann] (t ann)
+
+nextAnn :: State [a] a
+nextAnn = state $ \xs -> case xs of
+    [] -> error $ "too few annotations in scatter"
+    x : xs -> (x, xs)
+
+instance Annotated Design where
+    gatherAnn (Design mods) = foldMap gatherAnn mods
+    scatterAnn' (Design mods) = Design <$> mapM scatterAnn' mods
+
+instance Annotated Module where
+    gatherAnn (Module _ _ _ logics nets) =
+        foldMap gatherAnn logics ++
+        foldMap gatherAnn nets
+    scatterAnn' (Module name ins outs logics nets) = Module
+        <$> pure name
+        <*> pure ins
+        <*> pure outs
+        <*> mapM scatterAnn' logics
+        <*> mapM scatterAnn' nets
+
+instance Annotated Logic where
+    gatherAnn (Logic _ _ _ ann) = [ann]
+    scatterAnn' (Logic kind ins outs _) = Logic
+        <$> pure kind
+        <*> pure ins
+        <*> pure outs
+        <*> nextAnn
+
+instance Annotated Net where
+    gatherAnn (Net _ _ _ _ ann) = [ann]
+    scatterAnn' (Net name prio sources sinks _) = Net
+        <$> pure name
+        <*> pure prio
+        <*> pure sources
+        <*> pure sinks
+        <*> nextAnn
+
+scatterAnn anns x = case runState (scatterAnn' x) anns of
+    (x', []) -> x'
+    (_, _ : _) -> error $ "too many annotations in scatter"
+
+
+constAnn :: Annotated t => ann -> t ann' -> t ann
+constAnn ann x = fst $ runState (scatterAnn' x) (repeat ann)
+
+mapAnn :: Annotated t => (ann -> ann') -> t ann -> t ann'
+mapAnn f x = scatterAnn (map f $ gatherAnn x) x
+
+zipAnn :: Annotated t => t ann1 -> t ann2 -> t (ann1, ann2)
+zipAnn x y = scatterAnn (zip (gatherAnn x) (gatherAnn y)) x
+
+zipAnnWith :: Annotated t => (a -> b -> c) -> t a -> t b -> t c
+zipAnnWith f x y = scatterAnn (zipWith f (gatherAnn x) (gatherAnn y)) x
