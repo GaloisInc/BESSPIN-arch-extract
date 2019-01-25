@@ -35,10 +35,10 @@ extractArch vDes =
         --filterInsts (\_ i ->
         --    not $ modDeclName (designMods d `S.index` modInstId i)
         --        `elem` map T.pack ["mux2", "eqcmp"]) $
-        filterInstsToLogic (\_ i ->
-            not $ modDeclName (designMods d `S.index` modInstId i)
+        --filterInstsToLogic (\_ i ->
+            --not $ modDeclName (designMods d `S.index` modInstId i)
                 --`elem` []) $
-                `elem` map T.pack ["mux2", "eqcmp"]) $
+                --`elem` map T.pack ["mux2", "eqcmp"]) $
                 --`elem` map T.pack ["mux2", "eqcmp", "flopenr", "flopenrc"]) $
             --`elem` map T.pack ["adder"]) mod) $
         mod) $

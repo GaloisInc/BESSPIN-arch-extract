@@ -133,6 +133,9 @@ data Cfg = Cfg
     , cfgDrawLogics :: Bool
     , cfgHideNamedNets :: Set Text
     , cfgDedupEdges :: Bool
+    , cfgInstColor :: Int -> Maybe Color
+    , cfgLogicColor :: Int -> Maybe Color
+    , cfgNetColor :: NetId -> Maybe Color
     }
 
 defaultCfg = Cfg
@@ -142,6 +145,9 @@ defaultCfg = Cfg
     , cfgDrawLogics = True
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = False
+    , cfgInstColor = const Nothing
+    , cfgLogicColor = const Nothing
+    , cfgNetColor = const Nothing
     }
 
 drawNetNode cfg net =
@@ -186,7 +192,12 @@ nodeIdKey cfg (NLogic idx) = logicKey cfg idx
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
 mkTooltip name = Tooltip $ TL.fromStrict name
 
-labelStmt name = GA $ GraphAttrs [mkLabel name]
+attrStmt attrs = GA $ GraphAttrs attrs
+labelStmt name = attrStmt [mkLabel name]
+
+convColor :: Maybe Color -> [Attribute]
+convColor Nothing = []
+convColor (Just c) = [Color $ toColorList [c]]
 
 
 portCluster :: Cfg -> Side -> Text -> Seq PortDecl -> DotStatement Text
@@ -209,29 +220,32 @@ netNode cfg idx net =
                 T.pack " (+" <> T.pack (show $ length names) <> T.pack " more)"
             else T.empty in
     let shortName = head (T.lines name) <> suffix in
+    let color = convColor $ cfgNetColor cfg $ NetId idx in
 
-    DN $ DotNode (netKey cfg idx) [mkLabel shortName, mkTooltip name]
+    DN $ DotNode (netKey cfg idx) ([mkLabel shortName, mkTooltip name] ++ color)
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 
 logicNode :: Cfg -> Int -> Logic -> DotStatement Text
 logicNode cfg idx logic =
+    let color = convColor $ cfgLogicColor cfg idx in
     DN $ DotNode (logicKey cfg idx)
-        [ mkLabel $ logicLabel $ logicKind logic
-        , Shape BoxShape ]
+        ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
 
 instCluster :: Design -> Cfg -> Int -> ModInst -> Seq (DotStatement Text)
 instCluster _ _ _ inst | modInstId inst == -1 = S.empty
 instCluster design cfg instIdx inst =
     S.singleton $ SG $ DotSG True (Just clusterId) stmts
   where
+    color = convColor $ cfgInstColor cfg instIdx
     clusterId = joinGraphId [cfgPrefix cfg, T.pack "inst", T.pack $ show instIdx]
     mod = designMods design `S.index` modInstId inst
     stmts =
         S.mapWithIndex (go Sink) (modDeclInputs mod) <>
         S.mapWithIndex (go Source) (modDeclOutputs mod) |>
-        labelStmt (modDeclName mod <> T.singleton ' ' <> modInstName inst)
+        attrStmt 
+            ([mkLabel $ modDeclName mod <> T.singleton ' ' <> modInstName inst] ++ color)
     go side idx port =
         DN $ DotNode (connKey cfg side (InstPort instIdx idx))
             [mkLabel $ portDeclName port]
