@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Main where
 
 import Control.Monad
@@ -11,6 +12,7 @@ import Data.Word
 
 import Language.Clafer
 import Data.GraphViz.Attributes.Colors
+import Data.GraphViz.Attributes.Colors.X11
 
 import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
@@ -21,6 +23,7 @@ import BESSPIN.ArchExtract.Gen.Graphviz
 
 import BESSPIN.ArchExtract.Aggregate
 import BESSPIN.ArchExtract.GraphOps
+import BESSPIN.ArchExtract.PipelineStage
 
 
 instsNamed ns mod = S.foldMapWithIndex go (moduleLogics mod)
@@ -75,6 +78,19 @@ main = do
 
     let mod = designMods a `S.index` 3
 
+{-
+    let mod' = labelPipelineStages
+            [ (("D_E" `T.isSuffixOf`), Nothing)
+            , (("E_M" `T.isSuffixOf`), Nothing)
+            , (("E_W" `T.isSuffixOf`), Nothing)
+            , (("F" `T.isSuffixOf`), Just 1)
+            , (("D" `T.isSuffixOf`), Just 2)
+            , (("E" `T.isSuffixOf`), Just 3)
+            , (("M" `T.isSuffixOf`), Just 4)
+            , (("W" `T.isSuffixOf`), Just 5)
+            ] mod
+    let mod = mod'
+
 
     let (ie, le, ne) = (Set.empty, Set.empty, Set.empty)
     --let (ie, le, ne) = enclosed (Set.empty, Set.empty, nets) (Set.empty, Set.empty, exc) mod
@@ -82,41 +98,59 @@ main = do
             if Set.member k xe then Just $ RGB 200 0 200
             else Nothing
 
+    let mod' = mod
+    let mod = mapAnn (\stage -> Ann $ case stage of
+            Just 1 -> Just $ X11Color Red
+            Just 2 -> Just $ X11Color Orange
+            Just 3 -> Just $ X11Color Green
+            Just 4 -> Just $ X11Color Turquoise
+            Just 5 -> Just $ X11Color Purple
+            Nothing -> Nothing) mod'
 
     let g = graphModule a
             (defaultCfg
-                { cfgDrawNets = False
+                { cfgDrawNets = True
                 , cfgDrawOnesidedNets = False
-                , cfgDrawLogics = False
+                , cfgDrawLogics = True
                 , cfgDedupEdges = True
                 , cfgPrefix = moduleName mod
-
-                , cfgInstColor = color ie
-                , cfgLogicColor = color le
-                , cfgNetColor = color ne
                 })
             mod
     putStrLn $ T.unpack $ moduleName mod
     writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
-{-
+    -}
+
+    let a' = Design $ fmap (
+            mapAnn (\stage -> Ann $ case stage of
+                Just 1 -> Just $ X11Color Red
+                Just 2 -> Just $ X11Color Orange
+                Just 3 -> Just $ X11Color Green
+                Just 4 -> Just $ X11Color Turquoise
+                Just 5 -> Just $ X11Color Purple
+                Nothing -> Nothing)
+            .
+            labelPipelineStages
+                [ (("D_E" `T.isSuffixOf`), Nothing)
+                , (("E_M" `T.isSuffixOf`), Nothing)
+                , (("E_W" `T.isSuffixOf`), Nothing)
+                , (("F" `T.isSuffixOf`), Just 1)
+                , (("D" `T.isSuffixOf`), Just 2)
+                , (("E" `T.isSuffixOf`), Just 3)
+                , (("M" `T.isSuffixOf`), Just 4)
+                , (("W" `T.isSuffixOf`), Just 5)
+                ]) $ designMods a
+    let a = a'
 
     forM_ (designMods a) $ \mod -> do
         let g = graphModule a
                 (defaultCfg
                     { cfgDrawNets = True
                     , cfgDrawOnesidedNets = False
-                    , cfgDrawLogics = False
+                    , cfgDrawLogics = True
                     , cfgDedupEdges = False
                     , cfgShortenNetNames = False
                     , cfgPrefix = moduleName mod
-                    {- , cfgHideNamedNets = Set.fromList
-                        [ T.pack "clock"
-                        , T.pack "clk"
-                        , T.pack "reset"
-                        ]
-                        -}
                     })
                 mod
         putStrLn $ T.unpack $ moduleName mod
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
-        -}
