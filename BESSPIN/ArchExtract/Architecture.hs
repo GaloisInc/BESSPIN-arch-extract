@@ -4,13 +4,14 @@ module BESSPIN.ArchExtract.Architecture where
 import Data.Data
 import Data.Ix
 import Data.Sequence (Seq)
+import qualified Data.Sequence as S
 import Data.Text (Text)
 import Data.Typeable
 
 
 -- The ID of a module is its position in `designMods`.
 type ModId = Int
--- The ID of a net is its position in `modDeclNets`.
+-- The ID of a net is its position in `moduleNets`.
 newtype NetId = NetId { unwrapNetId :: Int }
     deriving (Show, Eq, Ord, Ix, Typeable, Data)
 
@@ -19,26 +20,16 @@ instance Enum NetId where
     fromEnum = unwrapNetId
 
 data Design = Design
-    { designMods :: Seq ModDecl
+    { designMods :: Seq Module
     }
     deriving (Show, Typeable, Data)
 
-data ModDecl = ModDecl
-    { modDeclName :: Text
-    , modDeclInputs :: Seq PortDecl
-    , modDeclOutputs :: Seq PortDecl
-    , modDeclInsts :: Seq ModInst
-    , modDeclLogics :: Seq Logic
-    , modDeclNets :: Seq Net
-    }
-    deriving (Show, Typeable, Data)
-
--- An instance of a module.
-data ModInst = ModInst
-    { modInstId :: ModId
-    , modInstName :: Text
-    , modInstInputs :: Seq NetId
-    , modInstOutputs :: Seq NetId
+data Module = Module
+    { moduleName :: Text
+    , moduleInputs :: Seq Port
+    , moduleOutputs :: Seq Port
+    , moduleLogics :: Seq Logic
+    , moduleNets :: Seq Net
     }
     deriving (Show, Typeable, Data)
 
@@ -50,12 +41,21 @@ data Logic = Logic
     }
     deriving (Show, Typeable, Data)
 
-data LogicKind = LkNetAlias | LkOther
+data LogicKind =
+    LkInst Inst |
+    LkNetAlias |
+    LkOther
     deriving (Show, Eq, Typeable, Data)
 
-data PortDecl = PortDecl
-    { portDeclName :: Text
-    , portDeclNet :: NetId
+data Inst = Inst 
+    { instModId :: ModId
+    , instName :: Text
+    }
+    deriving (Show, Eq, Typeable, Data)
+
+data Port = Port
+    { portName :: Text
+    , portNet :: NetId
     }
     deriving (Show, Typeable, Data)
 
@@ -68,16 +68,48 @@ data Net = Net
     }
     deriving (Show, Typeable, Data)
 
--- The first `Int` is an index into `Insts`/`Logics` (`ExtPort` doesn't have
--- one of these, since there is only one containing module).  The second is the
--- index of the corresponding entry in the `Inputs`/`Outputs` list (`Inputs` if
--- this `Conn` is on the `netSinks` side of the `Net`, `Outputs` if it's on the
--- `netSources` side.)
-data Conn = ExtPort Int | InstPort Int Int | LogicPort Int Int
+-- For `ExtPort`, the `Int` is an index into the `moduleInputs`/`Outputs` list
+-- (`Inputs` if this `Conn` is on the `netSinks` side of the `Net`, `Outputs`
+-- if it's on the `netSources` side).  For `LogicPort`, the first `Int` is the
+-- index of the `Logic` in `moduleLogics`, and the second `Int` indexes into
+-- `logicInputs`/`Outputs`.
+data Conn = ExtPort Int | LogicPort Int Int
     deriving (Show, Eq, Ord, Typeable, Data)
 
--- Enum for indicating a side of a net, inst, or logic.  For clarity, these are
--- named `Source` and `Sink` instead of `Input` and `Output` because
--- `Input`/`Output` have opposite meanings on external ports vs. logic/insts.
+-- Enum for indicating a side of a net, logic, or module.  For clarity, these
+-- are named `Source` and `Sink` instead of `Input` and `Output` because
+-- `Input`/`Output` have opposite meanings on external ports vs. logic.
 data Side = Source | Sink
     deriving (Show, Eq, Ord, Typeable, Data)
+
+
+-- Item-lookup functions.  For each `fooBars :: Foo -> Seq Bar` field above,
+-- we define a singular `fooBar :: Foo -> Int -> Bar` that combines the field
+-- access and sequence indexing.
+
+designMod :: Design -> ModId -> Module
+designMod d i = designMods d `S.index` i
+
+moduleInput :: Module -> Int -> Port
+moduleInput m i = moduleInputs m `S.index` i
+
+moduleOutput :: Module -> Int -> Port
+moduleOutput m i = moduleOutputs m `S.index` i
+
+moduleLogic :: Module -> Int -> Logic
+moduleLogic m i = moduleLogics m `S.index` i
+
+moduleNet :: Module -> NetId -> Net
+moduleNet m (NetId i) = moduleNets m `S.index` i
+
+logicInput :: Logic -> Int -> NetId
+logicInput l i = logicInputs l `S.index` i
+
+logicOutput :: Logic -> Int -> NetId
+logicOutput l i = logicOutputs l `S.index` i
+
+netSource :: Net -> Int -> Conn
+netSource n i = netSources n `S.index` i
+
+netSink :: Net -> Int -> Conn
+netSink n i = netSinks n `S.index` i

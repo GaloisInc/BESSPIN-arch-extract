@@ -12,9 +12,8 @@ import Data.Word
 import Language.Clafer
 import Data.GraphViz.Attributes.Colors
 
-import BESSPIN.ArchExtract.Verilog.Raw
 import BESSPIN.ArchExtract.Verilog.FromRaw
-import BESSPIN.ArchExtract.Verilog.Extract
+import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
 import BESSPIN.ArchExtract.Architecture
 --import BESSPIN.ArchExtract.Gen.Clafer
@@ -24,13 +23,14 @@ import BESSPIN.ArchExtract.Aggregate
 import BESSPIN.ArchExtract.GraphOps
 
 
-instsNamed ns mod = S.foldMapWithIndex go (modDeclInsts mod)
+instsNamed ns mod = S.foldMapWithIndex go (moduleLogics mod)
   where
     ns' = Set.fromList $ map T.pack ns
-    go i inst = if Set.member (modInstName inst) ns'
-        then Set.singleton i else Set.empty
+    go i (Logic (LkInst inst) _ _) =
+        if Set.member (instName inst) ns' then Set.singleton i else Set.empty
+    go _ _ = Set.empty
 
-netsNamed ns mod = S.foldMapWithIndex go (modDeclNets mod)
+netsNamed ns mod = S.foldMapWithIndex go (moduleNets mod)
   where
     ns' = Set.fromList $ map T.pack ns
     go i net = if not $ Set.null $ Set.intersection ns' (Set.fromList $ T.lines $ netName net)
@@ -47,8 +47,7 @@ main = do
     let v = fromRaw raw modIds
     let a = extractArch v
 
-{-
-    let mod = designMods a `S.index` 3
+    let mod = a `designMod` 3
 
     let nets1 = flip netsNamed mod $
             [ "RA1D", "RA2D", "RA1E", "RA2E", "WA3E", "WA3M", "WA3W"
@@ -78,7 +77,7 @@ main = do
 
 
     let (ie, le, ne) = (Set.empty, Set.empty, Set.empty)
-    let (ie, le, ne) = enclosed (Set.empty, Set.empty, nets) (Set.empty, Set.empty, exc) mod
+    --let (ie, le, ne) = enclosed (Set.empty, Set.empty, nets) (Set.empty, Set.empty, exc) mod
     let color xe k =
             if Set.member k xe then Just $ RGB 200 0 200
             else Nothing
@@ -90,16 +89,16 @@ main = do
                 , cfgDrawOnesidedNets = False
                 , cfgDrawLogics = False
                 , cfgDedupEdges = True
-                , cfgPrefix = modDeclName mod
+                , cfgPrefix = moduleName mod
 
                 , cfgInstColor = color ie
                 , cfgLogicColor = color le
                 , cfgNetColor = color ne
                 })
             mod
-    putStrLn $ T.unpack $ modDeclName mod
-    writeFile ("out/" ++ T.unpack (modDeclName mod) ++ ".dot") $ printGraphviz g
--}
+    putStrLn $ T.unpack $ moduleName mod
+    writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
+{-
 
     forM_ (designMods a) $ \mod -> do
         let g = graphModule a
@@ -109,7 +108,7 @@ main = do
                     , cfgDrawLogics = False
                     , cfgDedupEdges = False
                     , cfgShortenNetNames = False
-                    , cfgPrefix = modDeclName mod
+                    , cfgPrefix = moduleName mod
                     {- , cfgHideNamedNets = Set.fromList
                         [ T.pack "clock"
                         , T.pack "clk"
@@ -118,5 +117,6 @@ main = do
                         -}
                     })
                 mod
-        putStrLn $ T.unpack $ modDeclName mod
-        writeFile ("out/" ++ T.unpack (modDeclName mod) ++ ".dot") $ printGraphviz g
+        putStrLn $ T.unpack $ moduleName mod
+        writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
+        -}

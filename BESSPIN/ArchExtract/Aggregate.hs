@@ -21,78 +21,76 @@ import BESSPIN.ArchExtract.GraphOps
 import BESSPIN.ArchExtract.Simplify
 
 
--- Within module `modId`, collect a set of `ModInst` and `Logic` items, create
--- a new `ModDecl` containing only those items, and replace the original items
--- with an instantiation of that new module.
+-- Within module `modId`, collect a set of `Logic`s and `Net`s, create a new
+-- `Module` declaration containing only those items, and replace the original
+-- items with an instantiation of that new module.
 --
--- The ports of the new module are exactly the nets given in the `inputs` and
--- `outputs` sets.  The set of `ModInst` and `Logic` items to include is
--- inferred from the inputs and outputs: all items that are both "downstream of
--- inputs" and "upstream of outputs" are included in the modulde.  The
--- downstream-of-inputs predicate is defined as follows:
+-- The set of items to include in the new module is defined by `boundaryNets`
+-- and `excludeNets`.  Roughly speaking, the goal is to include a
+-- self-contained collection of logic that lies "inside" the `boundaryNets`,
+-- without including any of the `excludeNets`.
 --
---   1. (Base case) Each net in the `inputs` set is downstream-of-inputs.
---   2. A logic or instance item is downstream-of-inputs if each of its input
---      nets is downstream-of-inputs.
---   3. A net is downstream-of-inputs if each of its source logics or instances
---      is downstream-of-inputs.
+-- Concretely: we include all the `boundaryNets`, plus any net or logic that is
+-- only reachable from the original module's input/output ports by passing
+-- through a boundary net.  The `excludeNets` are added to the input and output
+-- ports, so that anything reachable from an `excludeNet` without passing
+-- through a `boundaryNet` is excluded from the set.
 --
--- The upstream-of-outputs works the same but in the reverse direction.
---
--- The effect of these rules is to include as many insts and logics as
--- possible, without changing the semantics of the design and without expanding
--- the new module's input or output ports beyond those listed in `inputs` and
--- `outputs`.
+-- With these rules, it should always be the case that every port of the
+-- generated module is based on one of the boundary nets.  That means users can
+-- set the module interface by providing appropriate boundary nets, and by
+-- default (with empty `excludeNets`), every bit of logic that can possibly go
+-- inside that interface will be included in the new module.
 aggregateModule :: ModId -> Set NetId -> Set NetId -> Design -> Design
 aggregateModule modId boundaryNets excludeNets d =
     d { designMods = (S.update modId mod' $ designMods d) |> newMod }
   where
-    mod = designMods d `S.index` modId
+    mod = d `designMod` modId
     newModId = S.length $ designMods d
 
-    (takenInsts, takenLogics, takenNets) = enclosed
-        (Set.empty, Set.empty, boundaryNets)
-        (Set.empty, Set.empty, excludeNets)
+    (takenLogics, takenNets) = enclosed
+        (Set.empty, boundaryNets)
+        (Set.empty, excludeNets)
         mod
 
     connTaken (ExtPort _) = False
-    connTaken (InstPort i _) = i `Set.member` takenInsts
     connTaken (LogicPort i _) = i `Set.member` takenLogics
 
     -- List of nets that will become input ports.  These are nets that pass
-    -- data from a non-taken inst/logic to a taken one.
+    -- data from a non-taken logic to a taken one.
     inPorts = S.foldMapWithIndex (\i net ->
         if NetId i `Set.member` takenNets &&
                 any (not . connTaken) (netSources net) &&
                 any connTaken (netSinks net)
-            then S.singleton $ NetId i else S.empty) (modDeclNets mod)
+            then S.singleton $ NetId i else S.empty) (moduleNets mod)
     outPorts = S.foldMapWithIndex (\i net ->
         if NetId i `Set.member` takenNets &&
                 any connTaken (netSources net) &&
                 any (not . connTaken) (netSinks net)
-            then S.singleton $ NetId i else S.empty) (modDeclNets mod)
+            then S.singleton $ NetId i else S.empty) (moduleNets mod)
+
+    (takenLogicItems, leftLogicItems) =
+        partitionWithIndex (\i _ -> Set.member i takenLogics) $ moduleLogics mod
 
     mod' = reconnectNets $ mod
-        { modDeclInsts = (deleteByIndex takenInsts $ modDeclInsts mod) |> newInst
-        , modDeclLogics = deleteByIndex takenLogics $ modDeclLogics mod
+        { moduleLogics = leftLogicItems |> newInst
         }
 
     modName = T.pack "agg"
     instName = T.pack "agg"
 
-    newMod = reconnectNets $ ModDecl modName
+    newMod = reconnectNets $ Module modName
         (fmap (\netId ->
-            let net = modDeclNets mod `S.index` unwrapNetId netId in
-            PortDecl (head $ T.lines $ netName net) netId) inPorts)
+            let net = mod `moduleNet` netId in
+            Port (head $ T.lines $ netName net) netId) inPorts)
         (fmap (\netId ->
-            let net = modDeclNets mod `S.index` unwrapNetId netId in
-            PortDecl (head $ T.lines $ netName net) netId) outPorts)
-        S.empty
-        S.empty
-        (modDeclNets mod)
-    newInst = ModInst newModId instName inPorts outPorts
+            let net = mod `moduleNet` netId in
+            Port (head $ T.lines $ netName net) netId) outPorts)
+        leftLogicItems
+        (moduleNets mod)
+    newInst = Logic (LkInst $ Inst newModId instName) inPorts outPorts
 
--- Delete every entry in `s` whose index appears in `idxs`.
-deleteByIndex :: Set Int -> Seq a -> Seq a
-deleteByIndex idxs s = S.foldMapWithIndex (\i x ->
-    if not $ i `Set.member` idxs then S.singleton x else S.empty) s
+partitionWithIndex :: (Int -> a -> Bool) -> Seq a -> (Seq a, Seq a)
+partitionWithIndex f xs =
+    S.foldMapWithIndex (\i x ->
+        if f i x then (S.singleton x, S.empty) else (S.empty, S.singleton x)) xs

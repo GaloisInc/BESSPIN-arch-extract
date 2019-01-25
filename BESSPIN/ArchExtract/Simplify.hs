@@ -23,32 +23,29 @@ import Debug.Trace
 import BESSPIN.ArchExtract.Architecture
 
 
-mapMods :: (ModDecl -> ModDecl) -> Design -> Design
+mapMods :: (Module -> Module) -> Design -> Design
 mapMods f d = Design $ fmap f $ designMods d
 
 
 -- Rebuild the `netSources` and `netSinks` connection lists for all nets in
 -- `mod`, based on the `Inputs` and `Outputs` lists for the module itself and
 -- all its `ModInst`s and `Logic`s.
-reconnectNets :: ModDecl -> ModDecl
+reconnectNets :: Module -> Module
 reconnectNets mod = runST $ do
-    sources <- newArray (NetId 0, NetId $ S.length (modDeclNets mod) - 1) S.empty
-    sinks <- newArray (NetId 0, NetId $ S.length (modDeclNets mod) - 1) S.empty
+    sources <- newArray (NetId 0, NetId $ S.length (moduleNets mod) - 1) S.empty
+    sinks <- newArray (NetId 0, NetId $ S.length (moduleNets mod) - 1) S.empty
 
-    connect (modDeclInputs mod) portDeclNet sources ExtPort
-    connect (modDeclOutputs mod) portDeclNet sinks ExtPort
-    void $ flip S.traverseWithIndex (modDeclInsts mod) $ \i inst -> do
-        connect (modInstInputs inst) id sinks (InstPort i)
-        connect (modInstOutputs inst) id sources (InstPort i)
-    void $ flip S.traverseWithIndex (modDeclLogics mod) $ \i inst -> do
+    connect (moduleInputs mod) portNet sources ExtPort
+    connect (moduleOutputs mod) portNet sinks ExtPort
+    void $ flip S.traverseWithIndex (moduleLogics mod) $ \i inst -> do
         connect (logicInputs inst) id sinks (LogicPort i)
         connect (logicOutputs inst) id sources (LogicPort i)
 
-    nets' <- flip S.traverseWithIndex (modDeclNets mod) $ \i net -> do
+    nets' <- flip S.traverseWithIndex (moduleNets mod) $ \i net -> do
         netSources <- readArray sources (NetId i)
         netSinks <- readArray sinks (NetId i)
         return $ net { netSources = netSources, netSinks = netSinks }
-    return $ mod { modDeclNets = nets' }
+    return $ mod { moduleNets = nets' }
 
   where
     connect :: Seq a -> (a -> NetId) -> STArray s NetId (Seq Conn) -> (Int -> Conn) -> ST s ()
@@ -60,18 +57,18 @@ reconnectNets mod = runST $ do
             writeArray netConns netId conns'
 
 -- Rewrite all `NetId`s in the tree using the provided function.
-mapNetIds :: (NetId -> NetId) -> ModDecl -> ModDecl
+mapNetIds :: (NetId -> NetId) -> Module -> Module
 mapNetIds f mod = everywhere (mkT f) mod
 
 -- Delete all `Net`s that fail the predicate `f`.  This changes the contents of
--- `modDeclNets`, so `NetId`s may change.  Raises an error if any of the
+-- `moduleNets`, so `NetId`s may change.  Raises an error if any of the
 -- deleted nets is currently in use.
-filterNets :: (NetId -> Net -> Bool) -> ModDecl -> ModDecl
-filterNets f mod = mod' { modDeclNets = nets' }
+filterNets :: (NetId -> Net -> Bool) -> Module -> Module
+filterNets f mod = mod' { moduleNets = nets' }
   where
     -- Compute the new list of nets, along with the mapping from old `NetId`s
     -- to new ones.
-    (nets', idMap) = S.foldlWithIndex g (S.empty, M.empty) (modDeclNets mod)
+    (nets', idMap) = S.foldlWithIndex g (S.empty, M.empty) (moduleNets mod)
       where
         g (nets, idMap) idx net =
             if f (NetId idx) net then
@@ -82,110 +79,75 @@ filterNets f mod = mod' { modDeclNets = nets' }
     mod' = flip mapNetIds mod $ \netId -> case M.lookup netId idMap of
         Just newId -> newId
         Nothing ->
-            let name = netName $ modDeclNets mod `S.index` unwrapNetId netId in
+            let name = netName $ moduleNets mod `S.index` unwrapNetId netId in
             error $ "net " ++ show (T.unpack name) ++
                 " (" ++ show netId ++ ") was deleted while still in use"
 
 -- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
 -- nets with the other.
-mergeAliasedNets :: ModDecl -> ModDecl
+mergeAliasedNets :: Module -> Module
 mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
 
 -- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
 -- all of its input and output nets are merged into a single net, indicating
 -- that data can flow freely from any input to any output.
-filterLogics :: (Int -> Logic -> Bool) -> ModDecl -> ModDecl
+filterLogics :: (Int -> Logic -> Bool) -> Module -> Module
 filterLogics f mod =
-    runNetMerge act (mod { modDeclLogics = logics' })
+    runNetMerge act (mod { moduleLogics = logics' })
   where
-    logics' = filterWithIndex f $ modDeclLogics mod
+    logics' = filterWithIndex f $ moduleLogics mod
     act = do
-        void $ flip S.traverseWithIndex (modDeclLogics mod) $ \idx l -> do
+        void $ flip S.traverseWithIndex (moduleLogics mod) $ \idx l -> do
             when (not $ f idx l) $ do
                 mergeNetSeq $ logicInputs l <> logicOutputs l
 
--- Delete module instantiations rejected by predicate `f`.  When an
--- instantiation is deleted, all of its input and output nets are merged into a
--- single net, indicating that data can flow freely from any input to any
--- output.
-filterInsts :: (Int -> ModInst -> Bool) -> ModDecl -> ModDecl
-filterInsts f mod =
-    runNetMerge act (mod { modDeclInsts = insts' })
-  where
-    insts' = filterWithIndex f $ modDeclInsts mod
-    act = do
-        void $ flip S.traverseWithIndex (modDeclInsts mod) $ \idx inst -> do
-            when (not $ f idx inst) $ do
-                traceShow ("merge nets",
-                    fmap (\id -> T.unpack $ netName $ modDeclNets mod `S.index` unwrapNetId id) $
-                        modInstInputs inst <> modInstOutputs inst) $
-                    mergeNetSeq $ modInstInputs inst <> modInstOutputs inst
-
-
--- Remove module instantiations rejected by predicate `f`, replacing them with
--- `Logic`s connected to the same nets.
-filterInstsToLogic :: (Int -> ModInst -> Bool) -> ModDecl -> ModDecl
+-- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
+-- connected to the same nets.
+filterInstsToLogic :: (Int -> Logic -> Inst -> Bool) -> Module -> Module
 filterInstsToLogic f mod =
-    reconnectNets $ mod { modDeclInsts = insts', modDeclLogics = logics' }
+    reconnectNets $ mod { moduleLogics = logics' }
   where
-    (insts', rejectedInsts) = S.foldMapWithIndex (\idx inst ->
-            if f idx inst then
-                (S.singleton inst, S.empty)
-            else
-                (S.empty, S.singleton inst))
-        (modDeclInsts mod)
-    logics' = modDeclLogics mod <> fmap instToLogic rejectedInsts
-    instToLogic (ModInst _ _ ins outs) = Logic LkOther ins outs
+    logics' = S.mapWithIndex (\i logic ->
+        if not $ check i logic then logic { logicKind = LkOther } else logic) (moduleLogics mod)
+    check i logic = case logicKind logic of
+        LkInst inst -> f i logic inst
+        _ -> True
 
 
 -- Disconnect all connection points selected by predicate `f` from their
 -- current nets.  Since each connection point must be connected to some net,
 -- this function adds a new, otherwise-empty net for each disconnected `Conn`.
-disconnect :: (Conn -> Side -> NetId -> Net -> Bool) -> ModDecl -> ModDecl
-disconnect f mod = reconnectNets $ mod' { modDeclNets = nets' }
+disconnect :: (Conn -> Side -> NetId -> Net -> Bool) -> Module -> Module
+disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
   where
-    nets = modDeclNets mod
+    nets = moduleNets mod
     (mod', nets') = runState (goMod mod) nets
 
-    goMod :: ModDecl -> NetM ModDecl
-    goMod (ModDecl name ins outs insts logics nets) =
-        ModDecl <$> pure name <*> goPorts Source ins <*> goPorts Sink outs <*>
-            goInsts insts <*> goLogics logics <*> pure nets
+    goMod :: Module -> NetM Module
+    goMod (Module name ins outs logics nets) =
+        Module <$> pure name <*> goPorts Source ins <*> goPorts Sink outs <*>
+            goLogics logics <*> pure nets
 
     goPorts side ports = S.traverseWithIndex (goPort side) ports
-    goPort side idx (PortDecl name netId) =
-        PortDecl <$> pure name <*>
+    goPort side idx (Port name netId) =
+        Port <$> pure name <*>
             goNet (ExtPort idx) side netId (extPortName side name idx netId)
 
-    goInsts :: Seq ModInst -> NetM (Seq ModInst)
-    goInsts insts = S.traverseWithIndex goInst insts
-    goInst idx (ModInst modId name ins outs) =
-        ModInst <$> pure modId <*> pure name <*>
-            goItemPorts Sink (InstPort idx) (instPortName name) ins <*>
-            goItemPorts Source (InstPort idx) (instPortName name) outs
     goLogics :: Seq Logic -> NetM (Seq Logic)
     goLogics logics = S.traverseWithIndex goLogic logics
+    goLogic :: Int -> Logic -> NetM Logic
     goLogic idx (Logic kind ins outs) =
         Logic <$> pure kind <*>
-            goItemPorts Sink (LogicPort idx) logicPortName ins <*>
-            goItemPorts Source (LogicPort idx) logicPortName outs
-
-    -- Handles both ModInst and Logic ports.
-    goItemPorts :: Side -> (Int -> Conn) -> (Side -> Int -> NetId -> Text) ->
-        Seq NetId -> NetM (Seq NetId)
-    goItemPorts side mkConn mkName netIds =
-        S.traverseWithIndex (goItemPort side mkConn mkName) netIds
-    goItemPort side mkConn mkName idx netId =
-        let conn = mkConn idx in
-        let name = mkName side idx netId in
-        goNet conn side netId name
+            S.traverseWithIndex (go Sink) ins <*>
+            S.traverseWithIndex (go Source) outs
+      where
+        go side portIdx netId = goNet (LogicPort idx portIdx) side netId $
+            logicPortName side portIdx netId
 
     goNet conn side netId name =
         if f conn side netId (nets `S.index` unwrapNetId netId) then
             return netId
         else
-            traceShow ("replace net", netName $ nets `S.index` unwrapNetId netId,
-                netId, "with", name, "at", conn, side) $
             mkNet name prioDcNet
 
     dcName netId base = T.pack "dc$" <> base <> T.singleton '$' <>
@@ -193,8 +155,6 @@ disconnect f mod = reconnectNets $ mod' { modDeclNets = nets' }
     dotted parts = T.intercalate (T.singleton '.') parts
     extPortName side name idx netId =
         dcName netId $ dotted [T.pack "ext", T.pack $ show side, T.pack $ show idx, name]
-    instPortName instName side portIdx netId =
-        dcName netId $ dotted [instName, T.pack $ show side, T.pack $ show portIdx]
     logicPortName side portIdx netId =
         dcName netId $ dotted [T.pack "logic", T.pack $ show side, T.pack $ show portIdx]
 
@@ -226,7 +186,7 @@ mergeNetSeq ids = case S.viewl ids of
     S.EmptyL -> return ()
     id1 S.:< ids -> forM_ ids $ \id2 -> mergeNets id1 id2
 
-runNetMerge :: (forall s. NetMergeM s ()) -> ModDecl -> ModDecl
+runNetMerge :: (forall s. NetMergeM s ()) -> Module -> Module
 runNetMerge m mod =
     reconnectNets $
     filterNets (\netId net -> substMap M.! netId == netId) $
@@ -244,11 +204,11 @@ runNetMerge m mod =
         -- point descriptors are (-prio, id), so that taking the `min` of two
         -- descriptors gives the higher-priority one, or (in case of a tie) the
         -- one with higher ID.
-        arr <- newArray_ (NetId 0, NetId $ S.length (modDeclNets mod) - 1)
+        arr <- newArray_ (NetId 0, NetId $ S.length (moduleNets mod) - 1)
             :: ST s (STArray s NetId (NetMergePoint s))
         (lo, hi) <- getBounds arr
         forM_ [lo .. hi] $ \netId -> do
-            let net = modDeclNets mod `S.index` unwrapNetId netId
+            let net = moduleNets mod `S.index` unwrapNetId netId
             pt <- UF.fresh $ Set.singleton (- netNamePriority net, netId)
             writeArray arr netId pt
 
@@ -269,7 +229,7 @@ runNetMerge m mod =
             if newId == oldId then
                 let newName = T.unlines $
                         map (\(_,id) -> netName $
-                            modDeclNets mod `S.index` unwrapNetId id) $
+                            moduleNets mod `S.index` unwrapNetId id) $
                         Set.toList desc in
                 return $ M.singleton newId newName
             else
@@ -285,7 +245,7 @@ runNetMerge m mod =
         in
         n { netName = newName }
 
-    renameNets mod = mod { modDeclNets = S.mapWithIndex renameNet $ modDeclNets mod }
+    renameNets mod = mod { moduleNets = S.mapWithIndex renameNet $ moduleNets mod }
 
 
 filterWithIndex :: (Int -> a -> Bool) -> Seq a -> Seq a

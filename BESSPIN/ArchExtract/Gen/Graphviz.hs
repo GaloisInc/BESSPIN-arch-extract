@@ -16,7 +16,7 @@ import qualified Data.Text.Lazy as TL
 
 import Debug.Trace
 
-import Data.GraphViz.Attributes.Complete
+import Data.GraphViz.Attributes.Complete hiding (portName)
 import Data.GraphViz.Types
 import Data.GraphViz.Types.Generalised
 
@@ -30,7 +30,9 @@ tInputs = T.pack "Inputs"
 tOutputs = T.pack "Outputs"
 
 
-data NodeId = NConn Side Conn | NNet Int | NLogic Int
+-- `NBasicLogic` is used for logic nodes where we hide the ports and only draw
+-- a single graph node for the entire thing.
+data NodeId = NConn Side Conn | NNet Int | NBasicLogic Int
     deriving (Show, Eq, Ord)
 
 type EdgeMap = Map NodeId (Seq NodeId)
@@ -50,7 +52,7 @@ type EdgeMap = Map NodeId (Seq NodeId)
 --   a
 --    \------> d
 bypassNodes :: (NodeId -> Bool) -> EdgeMap -> EdgeMap
-bypassNodes f edges = traceShow ("full map", edges) $ M.mapMaybeWithKey go edges
+bypassNodes f edges = M.mapMaybeWithKey go edges
   where
     go :: NodeId -> Seq NodeId -> Maybe (Seq NodeId)
     go src _ | f src = Nothing
@@ -61,18 +63,16 @@ bypassNodes f edges = traceShow ("full map", edges) $ M.mapMaybeWithKey go edges
     -- targets in `edges` (this creates the bypassing edges.  `seen` is used to
     -- prevent infinite loops when the graph contains a cycle.
     newTargets :: Set NodeId -> NodeId -> Seq NodeId
-    newTargets seen node | traceShow ("consider", node, "saw", seen) False = undefined
     newTargets seen node | node `Set.member` seen =
         if not $ f node then S.singleton node else S.empty
     newTargets seen node | not $ f node = S.singleton node
     newTargets seen node =
         let tgts = fromMaybe S.empty $ M.lookup node edges in
-        traceShow ("bypassing", node, "mapping over", tgts) $
         join $ fmap (newTargets (Set.insert node seen)) tgts
 
 -- Like `bypassNodes`, but deduplicates edges internally for efficiency.
 bypassNodesWithDedup :: (NodeId -> Bool) -> EdgeMap -> EdgeMap
-bypassNodesWithDedup f edges = traceShow ("full map", edges) $ M.mapMaybeWithKey go edges
+bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
   where
     go :: NodeId -> Seq NodeId -> Maybe (Seq NodeId)
     go src _ | f src = Nothing
@@ -95,6 +95,21 @@ bypassNodesWithDedup f edges = traceShow ("full map", edges) $ M.mapMaybeWithKey
             else
                 loop seen pending (acc |> cur)
 
+logicShowsPorts :: Module -> Int -> Bool
+logicShowsPorts mod idx = case logicKind $ mod `moduleLogic` idx of
+    LkInst _ -> True
+    _ -> False
+
+-- For all `NConn ... LogicPort` nodes where the logic index matches `f`,
+-- switch to a `NBasicLogic` `NodeId`.  This is used to get proper
+-- deduplication of edges to/from logics that don't show individual ports.
+clearLogicPorts :: (Int -> Bool) -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
+clearLogicPorts f edges = fmap go edges
+  where
+    go (a, b) = (goNode a, goNode b)
+    goNode (NConn _ (LogicPort i _)) | f i = NBasicLogic i
+    goNode n = n
+
 dedupEdges m = fmap go m
   where
     go xs = fst $ foldl (\(acc, seen) x ->
@@ -104,23 +119,21 @@ dedupEdges m = fmap go m
 
 netEdges :: Cfg -> Int -> Net -> Seq (NodeId, NodeId)
 netEdges cfg idx net =
-    fmap (\conn -> (connNode Source conn, NNet idx)) (netSources net) <>
-    fmap (\conn -> (NNet idx, connNode Sink conn)) (netSinks net)
-  where
-    connNode side (LogicPort i _) = NLogic i
-    connNode side conn = NConn side conn
+    fmap (\conn -> (NConn Source conn, NNet idx)) (netSources net) <>
+    fmap (\conn -> (NNet idx, NConn Sink conn)) (netSinks net)
 
 allNetEdges :: Cfg -> Seq Net -> Seq (NodeId, NodeId)
 allNetEdges cfg nets = join $ S.mapWithIndex (netEdges cfg) nets
 
-filterEdges :: Cfg -> ModDecl -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
+filterEdges :: Cfg -> Module -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
 filterEdges cfg mod edges = edges'
   where
-    edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty edges
+    edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
+        clearLogicPorts (not . logicShowsPorts mod) edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
-        NLogic _ -> not $ cfgDrawLogics cfg
-        NNet i -> not $ drawNetNode cfg (modDeclNets mod `S.index` i)
+        NBasicLogic _ -> not $ cfgDrawLogics cfg
+        NNet i -> not $ drawNetNode cfg (mod `moduleNet` NetId i)
         _ -> False
     edges' = M.foldlWithKey (\es s ts -> es <> fmap (\t -> (s, t)) ts) S.empty edgeMap'
 
@@ -168,28 +181,28 @@ drawNetEdges cfg net =
 joinKey parts = T.intercalate (T.singleton '$') parts
 joinGraphId parts = Str $ TL.fromStrict $ joinKey parts
 
+portClusterId cfg side = joinGraphId [cfgPrefix cfg, T.pack "ext", sideKey side]
+
 sideKey Source = T.pack "source"
 sideKey Sink = T.pack "sink"
 
-portClusterId cfg side = joinGraphId [cfgPrefix cfg, T.pack "ext", sideKey side]
-
-connKey cfg side (ExtPort i) =
-    joinKey [cfgPrefix cfg, T.pack "ext", sideKey side, T.pack (show i)]
-connKey cfg side (InstPort i j) =
-    joinKey [cfgPrefix cfg, T.pack "inst", T.pack (show i), sideKey side, T.pack (show j)]
-connKey cfg side (LogicPort i _) =
-    --joinKey [cfgPrefix cfg, T.pack "logic", T.pack (show i), sideKey side, T.pack (show j)]
-    logicKey cfg i
+extKey cfg side idx =
+    joinKey [cfgPrefix cfg, T.pack "ext", sideKey side, T.pack (show idx)]
 
 netKey cfg idx =
     joinKey [cfgPrefix cfg, T.pack "net", T.pack (show idx)]
 
-logicKey cfg idx =
+logicKey cfg side idx portIdx =
+    joinKey [cfgPrefix cfg, T.pack "inst",
+        T.pack (show idx), sideKey side, T.pack (show portIdx)]
+
+basicLogicKey cfg idx =
     joinKey [cfgPrefix cfg, T.pack "logic", T.pack (show idx)]
 
-nodeIdKey cfg (NConn side conn) = connKey cfg side conn
+nodeIdKey cfg (NConn side (ExtPort idx)) = extKey cfg side idx
+nodeIdKey cfg (NConn side (LogicPort idx portIdx)) = logicKey cfg side idx portIdx
 nodeIdKey cfg (NNet idx) = netKey cfg idx
-nodeIdKey cfg (NLogic idx) = logicKey cfg idx
+nodeIdKey cfg (NBasicLogic idx) = basicLogicKey cfg idx
 
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
 mkTooltip name = Tooltip $ TL.fromStrict name
@@ -202,14 +215,14 @@ convColor Nothing = []
 convColor (Just c) = [Color $ toColorList [c]]
 
 
-portCluster :: Cfg -> Side -> Text -> Seq PortDecl -> DotStatement Text
+portCluster :: Cfg -> Side -> Text -> Seq Port -> DotStatement Text
 portCluster cfg side label ports =
     SG $ DotSG True (Just $ portClusterId cfg side) stmts
   where
     stmts =
         S.mapWithIndex go ports |> labelStmt label
-    go idx (PortDecl name _) =
-        let key = connKey cfg side (ExtPort idx) in
+    go idx (Port name _) =
+        let key = extKey cfg side idx in
         let label = name in
         DN $ DotNode key [mkLabel label]
 
@@ -229,52 +242,49 @@ netNode cfg idx net =
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
+logicLabel (LkInst _) = T.pack "(mod inst)"
 
-logicNode :: Cfg -> Int -> Logic -> DotStatement Text
-logicNode cfg idx logic =
-    let color = convColor $ cfgLogicColor cfg idx in
-    DN $ DotNode (logicKey cfg idx)
-        ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
-
-instCluster :: Design -> Cfg -> Int -> ModInst -> Seq (DotStatement Text)
-instCluster _ _ _ inst | modInstId inst == -1 = S.empty
-instCluster design cfg instIdx inst =
+logicNode :: Design -> Cfg -> Int -> Logic -> Seq (DotStatement Text)
+logicNode design cfg idx logic@Logic { logicKind = LkInst inst } =
     S.singleton $ SG $ DotSG True (Just clusterId) stmts
   where
-    color = convColor $ cfgInstColor cfg instIdx
-    clusterId = joinGraphId [cfgPrefix cfg, T.pack "inst", T.pack $ show instIdx]
-    mod = designMods design `S.index` modInstId inst
+    color = convColor $ cfgInstColor cfg idx
+    clusterId = joinGraphId [cfgPrefix cfg, T.pack "inst", T.pack $ show idx]
+    mod = design `designMod` instModId inst
     stmts =
-        S.mapWithIndex (go Sink) (modDeclInputs mod) <>
-        S.mapWithIndex (go Source) (modDeclOutputs mod) |>
+        S.mapWithIndex (go Sink) (moduleInputs mod) <>
+        S.mapWithIndex (go Source) (moduleOutputs mod) |>
         attrStmt 
-            ([mkLabel $ modDeclName mod <> T.singleton ' ' <> modInstName inst] ++ color)
-    go side idx port =
-        DN $ DotNode (connKey cfg side (InstPort instIdx idx))
-            [mkLabel $ portDeclName port]
+            ([mkLabel $ moduleName mod <> T.singleton ' ' <> instName inst] ++ color)
+    go side portIdx port =
+        DN $ DotNode (logicKey cfg side idx portIdx) [mkLabel $ portName port]
+logicNode design cfg idx logic =
+    if cfgDrawLogics cfg then S.singleton stmt else S.empty
+  where
+    color = convColor $ cfgLogicColor cfg idx
+    stmt = DN $ DotNode (basicLogicKey cfg idx)
+        ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
 
 
 edgeStmt cfg n1 n2 = DE $ DotEdge (nodeIdKey cfg n1) (nodeIdKey cfg n2) []
 
 
-graphModule' :: Design -> Cfg -> ModDecl -> Seq (DotStatement Text)
+graphModule' :: Design -> Cfg -> Module -> Seq (DotStatement Text)
 graphModule' design cfg mod =
-    portCluster cfg Source tInputs (modDeclInputs mod) <|
-    portCluster cfg Sink tOutputs (modDeclOutputs mod) <|
+    portCluster cfg Source tInputs (moduleInputs mod) <|
+    portCluster cfg Sink tOutputs (moduleOutputs mod) <|
     S.foldMapWithIndex (\idx net ->
         if drawNetNode cfg net then S.singleton $ netNode cfg idx net else S.empty)
-        (modDeclNets mod) <>
-    (if cfgDrawLogics cfg then S.mapWithIndex (logicNode cfg) (modDeclLogics mod)
-        else S.empty) <>
-    join (S.mapWithIndex (instCluster design cfg) (modDeclInsts mod)) <>
+        (moduleNets mod) <>
+    S.foldMapWithIndex (logicNode design cfg) (moduleLogics mod) <>
     fmap (uncurry $ edgeStmt cfg)
-        (filterEdges cfg mod $ allNetEdges cfg $ modDeclNets mod)
+        (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
 
-graphModule :: Design -> Cfg -> ModDecl -> DotGraph Text
-graphModule design cfg mod = traceShow mod $
+graphModule :: Design -> Cfg -> Module -> DotGraph Text
+graphModule design cfg mod =
     DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
         ( graphModule' design cfg mod
-        |> labelStmt (modDeclName mod)
+        |> labelStmt (moduleName mod)
         |> GA (GraphAttrs [RankDir FromLeft, RankSep [2.0]])
         )
 

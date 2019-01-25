@@ -17,7 +17,7 @@ import Debug.Trace
 import BESSPIN.ArchExtract.Architecture
 
 
-data Node = NInput | NOutput | NInst Int | NLogic Int | NNet NetId
+data Node = NInput | NOutput | NLogic Int | NNet NetId
     deriving (Show, Eq, Ord)
 
 -- Find the set of all nodes for which at least one path in the "forward"
@@ -60,27 +60,22 @@ coverAllPaths revNodes allNodes targets exits = covered
     covered = (allNodes `Set.difference` uncoveredPlusTargets) `Set.union` targets
 
 
-splitNodeSet :: Set Node -> (Set Int, Set Int, Set NetId)
-splitNodeSet nodes = (insts, logics, nets)
+splitNodeSet :: Set Node -> (Set Int, Set NetId)
+splitNodeSet nodes = (logics, nets)
   where
-    (_ioNodes, instLogicNetNodes) = Set.spanAntitone (\n ->
+    (_ioNodes, logicNetNodes) = Set.spanAntitone (\n ->
         case n of NInput -> True; NOutput -> True; _ -> False) nodes
-    (instNodes, logicNetNodes) = Set.spanAntitone (\n ->
-        case n of NInst _ -> True; _ -> False) instLogicNetNodes
     (logicNodes, netNodes) = Set.spanAntitone (\n ->
         case n of NLogic _ -> True; _ -> False) logicNetNodes
 
-    insts = Set.mapMonotonic (\n ->
-        case n of NInst x -> x; _ -> error "expected NInst") instNodes
     logics = Set.mapMonotonic (\n ->
         case n of NLogic x -> x; _ -> error "expected NLogic") logicNodes
     nets = Set.mapMonotonic (\n ->
         case n of NNet x -> x; _ -> error "expected NNet") netNodes
 
-mergeNodeSet :: (Set Int, Set Int, Set NetId) -> Set Node
-mergeNodeSet (insts, logics, nets) = instNodes `Set.union` logicNodes `Set.union` netNodes
+mergeNodeSet :: (Set Int, Set NetId) -> Set Node
+mergeNodeSet (logics, nets) = logicNodes `Set.union` netNodes
   where
-    instNodes = Set.mapMonotonic NInst insts
     logicNodes = Set.mapMonotonic NLogic logics
     netNodes = Set.mapMonotonic NNet nets
 
@@ -89,55 +84,44 @@ allModNodes mod =
     -- Note: this use of fromAscList depends on the order of constructors of
     -- `Node`.
     Set.fromAscList $
-        map NInst [0 .. S.length (modDeclInsts mod) - 1] ++
-        map NLogic [0 .. S.length (modDeclLogics mod) - 1] ++
-        map (NNet . NetId) [0 .. S.length (modDeclNets mod) - 1]
+        map NLogic [0 .. S.length (moduleLogics mod) - 1] ++
+        map (NNet . NetId) [0 .. S.length (moduleNets mod) - 1]
 
 getInputs _ NInput = []
 getInputs mod NOutput =
-    map (NNet . portDeclNet) $ toList $ modDeclOutputs mod
-getInputs mod (NInst i) =
-    map NNet $ toList $ modInstInputs $ modDeclInsts mod `S.index` i
+    map (NNet . portNet) $ toList $ moduleOutputs mod
 getInputs mod (NLogic i) =
-    map NNet $ toList $ logicInputs $ modDeclLogics mod `S.index` i
-getInputs mod (NNet (NetId i)) =
-    map go $ toList $ netSources $ modDeclNets mod `S.index` i
+    map NNet $ toList $ logicInputs $ mod `moduleLogic` i
+getInputs mod (NNet i) =
+    map go $ toList $ netSources $ mod `moduleNet` i
   where
     go (ExtPort _) = NInput
-    go (InstPort i _) = NInst i
     go (LogicPort i _) = NLogic i
 
 getOutputs mod NInput =
-    map (NNet . portDeclNet) $ toList $ modDeclInputs mod
+    map (NNet . portNet) $ toList $ moduleInputs mod
 getOutputs _ NOutput = []
-getOutputs mod (NInst i) =
-    map NNet $ toList $ modInstOutputs $ modDeclInsts mod `S.index` i
 getOutputs mod (NLogic i) =
-    map NNet $ toList $ logicOutputs $ modDeclLogics mod `S.index` i
-getOutputs mod (NNet (NetId i)) =
-    map go $ toList $ netSinks $ modDeclNets mod `S.index` i
+    map NNet $ toList $ logicOutputs $ mod `moduleLogic` i
+getOutputs mod (NNet i) =
+    map go $ toList $ netSinks $ mod `moduleNet` i
   where
     go (ExtPort _) = NOutput
-    go (InstPort i _) = NInst i
     go (LogicPort i _) = NLogic i
 
 inputRoots mod =
-    map NInst (S.foldMapWithIndex goInst $ modDeclInsts mod) ++
-    map NLogic (S.foldMapWithIndex goLogic $ modDeclLogics mod) ++
-    map (NNet . NetId) (S.foldMapWithIndex goNet $ modDeclNets mod) ++
+    map NLogic (S.foldMapWithIndex goLogic $ moduleLogics mod) ++
+    map (NNet . NetId) (S.foldMapWithIndex goNet $ moduleNets mod) ++
     [NInput]
   where
-    goInst i inst = if S.null $ modInstInputs inst then [i] else []
     goLogic i logic = if S.null $ logicInputs logic then [i] else []
     goNet i net = if S.null $ netSources net then [i] else []
 
 outputRoots mod =
-    map NInst (S.foldMapWithIndex goInst $ modDeclInsts mod) ++
-    map NLogic (S.foldMapWithIndex goLogic $ modDeclLogics mod) ++
-    map (NNet . NetId) (S.foldMapWithIndex goNet $ modDeclNets mod) ++
+    map NLogic (S.foldMapWithIndex goLogic $ moduleLogics mod) ++
+    map (NNet . NetId) (S.foldMapWithIndex goNet $ moduleNets mod) ++
     [NOutput]
   where
-    goInst i inst = if S.null $ modInstOutputs inst then [i] else []
     goLogic i logic = if S.null $ logicOutputs logic then [i] else []
     goNet i net = if S.null $ netSinks net then [i] else []
 
@@ -145,19 +129,19 @@ outputRoots mod =
 -- Find the set of nodes that are "fully downstream" of `targets` in `mod`.  A
 -- node is "fully downstream" if all of its inputs (transitively) originate in
 -- `targets`.
-downstreamFull :: (Set Int, Set Int, Set NetId) -> ModDecl -> (Set Int, Set Int, Set NetId)
+downstreamFull :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
 downstreamFull splitTargets mod = splitNodeSet $
     coverAllPaths (getOutputs mod) (allModNodes mod) (mergeNodeSet splitTargets) (inputRoots mod)
 
-upstreamFull :: (Set Int, Set Int, Set NetId) -> ModDecl -> (Set Int, Set Int, Set NetId)
+upstreamFull :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
 upstreamFull splitTargets mod = splitNodeSet $
     coverAllPaths (getInputs mod) (allModNodes mod) (mergeNodeSet splitTargets) (outputRoots mod)
 
-downstreamPartial :: (Set Int, Set Int, Set NetId) -> ModDecl -> (Set Int, Set Int, Set NetId)
+downstreamPartial :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
 downstreamPartial splitTargets mod = splitNodeSet $
     coverAnyPath (getOutputs mod) (Set.toList $ mergeNodeSet splitTargets)
 
-upstreamPartial :: (Set Int, Set Int, Set NetId) -> ModDecl -> (Set Int, Set Int, Set NetId)
+upstreamPartial :: (Set Int, Set NetId) -> Module -> (Set Int, Set NetId)
 upstreamPartial splitTargets mod = splitNodeSet $
     coverAnyPath (getInputs mod) (Set.toList $ mergeNodeSet splitTargets)
 
@@ -166,8 +150,8 @@ upstreamPartial splitTargets mod = splitNodeSet $
 -- Find the set of nodes that are fully enclosed by the `targets` - that is,
 -- the nodes which have no connection (in any direction) to `mod`'s inputs or
 -- outputs except through the `targets`.
-enclosed :: (Set Int, Set Int, Set NetId) -> (Set Int, Set Int, Set NetId) ->
-    ModDecl -> (Set Int, Set Int, Set NetId)
+enclosed :: (Set Int, Set NetId) -> (Set Int, Set NetId) ->
+    Module -> (Set Int, Set NetId)
 enclosed targets exclude mod = splitNodeSet $
     coverAllPaths
         (\n -> getInputs mod n ++ getOutputs mod n)

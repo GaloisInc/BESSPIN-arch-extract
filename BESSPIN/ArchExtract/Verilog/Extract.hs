@@ -19,7 +19,7 @@ import qualified Data.UnionFind.ST as UF
 
 import Debug.Trace
 
-import BESSPIN.ArchExtract.Architecture
+import BESSPIN.ArchExtract.Architecture hiding (moduleNets)
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.AST
 import qualified BESSPIN.ArchExtract.Verilog.AST as V
@@ -33,10 +33,10 @@ extractArch vDes =
         --filterInsts (\_ i ->
             --not $ modInstName i `elem` map T.pack ["ra1reg"]) $
         --filterInsts (\_ i ->
-        --    not $ modDeclName (designMods d `S.index` modInstId i)
+        --    not $ moduleName (designMods d `S.index` modInstId i)
         --        `elem` map T.pack ["mux2", "eqcmp"]) $
         --filterInstsToLogic (\_ i ->
-            --not $ modDeclName (designMods d `S.index` modInstId i)
+            --not $ moduleName (designMods d `S.index` modInstId i)
                 --`elem` []) $
                 --`elem` map T.pack ["mux2", "eqcmp"]) $
                 --`elem` map T.pack ["mux2", "eqcmp", "flopenr", "flopenrc"]) $
@@ -47,7 +47,7 @@ extractArch vDes =
     vMods = V.designModules vDes
     d = A.Design $ fmap (extractMod vMods) vMods
 
-extractMod :: Seq V.Module -> V.Module -> A.ModDecl
+extractMod :: Seq V.Module -> V.Module -> A.Module
 extractMod vMods vMod =
     --filterLogics (\_ _ -> False) $
     filterLogics (\_ l -> logicKind l /= LkNetAlias) $
@@ -58,9 +58,9 @@ extractMod vMods vMod =
         not $ baseName `elem` map T.pack ["clock", "clk", "reset"]) $
     -- Convert instantiations of undefined modules to logic.  (Otherwise we hit
     -- errors when trying to look up the port definitions.)
-    filterInstsToLogic (\_ i -> modInstId i /= -1) $
+    filterInstsToLogic (\_ _ i -> instModId i /= -1) $
     reconnectNets $
-    A.ModDecl (moduleName vMod) inputs outputs insts logics nets
+    A.Module (V.moduleName vMod) inputs outputs (insts <> logics) nets
   where
     --instMap = buildInstMap interMap (moduleItems vMod)
     netParts = moduleNets vMods vMod
@@ -70,7 +70,7 @@ extractMod vMods vMod =
     logics = convItems vMods netMap vMod
 
 
--- Building `modDeclNets` from `V.moduleDecls`
+-- Building `moduleNets` from `V.moduleDecls`
 
 -- Info used to build a `Net` and its corresponding `NetMap` entry.
 data NetParts = NetParts
@@ -117,35 +117,35 @@ moduleNets :: Seq V.Module -> V.Module -> [NetParts]
 moduleNets vMods vMod = S.foldMapWithIndex (declNet vMods) (moduleDecls vMod)
 
 
--- Building `modDeclInputs`, `modDeclOutputs`, and `modDeclInsts` from
+-- Building `moduleInputs`, `moduleOutputs`, and `moduleInsts` from
 -- `V.moduleDecls`.
 
-convPorts :: NetMap -> V.Module -> (Seq A.PortDecl, Seq A.PortDecl)
+convPorts :: NetMap -> V.Module -> (Seq A.Port, Seq A.Port)
 convPorts netMap vMod =
     mconcat $ map (\i ->
         let vPort = moduleDecls vMod `S.index` i in
-        let port = A.PortDecl (V.declName vPort) (netMap M.! NoDecl i) in
+        let port = A.Port (V.declName vPort) (netMap M.! NoDecl i) in
         case portDeclDir vPort of
             V.Input -> (S.singleton port, S.empty)
             V.Output -> (S.empty, S.singleton port)
             V.InOut -> (S.singleton port, S.singleton port)
         ) (modulePorts vMod)
 
-declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq A.ModInst
+declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq A.Logic
 declInst vMods netMap i (V.InstDecl name modId _) =
     let vMod = vMods `S.index` modId in
     let ins = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
             portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Input, V.InOut]] in
     let outs = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
             portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Output, V.InOut]] in
-    S.singleton $ ModInst modId name (S.fromList ins) (S.fromList outs)
+    S.singleton $ Logic (LkInst $ Inst modId name) (S.fromList ins) (S.fromList outs)
 declInst _ _ _ _ = S.empty
 
-convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq A.ModInst
+convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq A.Logic
 convInsts vMods netMap vMod = S.foldMapWithIndex (declInst vMods netMap) (moduleDecls vMod)
 
 
--- Building `modDeclLogics` from `V.moduleItems`
+-- Building `moduleLogics` from `V.moduleItems`
 
 -- Get the origin info for every net used in `e`.
 exprVars :: Expr -> Seq NetOrigin
