@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Gen.Graphviz where
 
 import Control.Monad
@@ -17,6 +18,7 @@ import qualified Data.Text.Lazy as TL
 import Debug.Trace
 
 import Data.GraphViz.Attributes.Complete hiding (portName)
+import qualified Data.GraphViz.Attributes.HTML as H
 import Data.GraphViz.Types
 import Data.GraphViz.Types.Generalised
 
@@ -95,8 +97,8 @@ bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
             else
                 loop seen pending (acc |> cur)
 
-logicShowsPorts :: Module Ann -> Int -> Bool
-logicShowsPorts mod idx = case logicKind $ mod `moduleLogic` idx of
+logicShowsPorts :: Logic a -> Bool
+logicShowsPorts l = case logicKind l of
     LkInst _ -> True
     _ -> False
 
@@ -129,7 +131,7 @@ filterEdges :: Cfg -> Module Ann -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
 filterEdges cfg mod edges = edges'
   where
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
-        clearLogicPorts (not . logicShowsPorts mod) edges
+        clearLogicPorts (\idx -> not $ logicShowsPorts $ mod `moduleLogic` idx) edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
         NBasicLogic _ -> not $ cfgDrawLogics cfg
@@ -191,17 +193,8 @@ extKey cfg side idx =
 netKey cfg idx =
     joinKey [cfgPrefix cfg, T.pack "net", T.pack (show idx)]
 
-logicKey cfg side idx portIdx =
-    joinKey [cfgPrefix cfg, T.pack "inst",
-        T.pack (show idx), sideKey side, T.pack (show portIdx)]
-
-basicLogicKey cfg idx =
+logicKey cfg idx =
     joinKey [cfgPrefix cfg, T.pack "logic", T.pack (show idx)]
-
-nodeIdKey cfg (NConn side (ExtPort idx)) = extKey cfg side idx
-nodeIdKey cfg (NConn side (LogicPort idx portIdx)) = logicKey cfg side idx portIdx
-nodeIdKey cfg (NNet idx) = netKey cfg idx
-nodeIdKey cfg (NBasicLogic idx) = basicLogicKey cfg idx
 
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
 mkTooltip name = Tooltip $ TL.fromStrict name
@@ -225,6 +218,7 @@ portCluster cfg side label ports =
         let label = name in
         DN $ DotNode key [mkLabel label]
 
+
 netNode :: Cfg -> Int -> Net Ann -> DotStatement Text
 netNode cfg idx net =
     let name = netName net in
@@ -239,33 +233,89 @@ netNode cfg idx net =
 
     DN $ DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
 
+
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
 logicNode :: Design a -> Cfg -> Int -> Logic Ann -> Seq (DotStatement Text)
-logicNode design cfg idx logic@Logic { logicKind = LkInst inst } =
-    S.singleton $ SG $ DotSG True (Just clusterId) stmts
-  where
-    color = convColor $ annColor $ logicAnn logic
-    clusterId = joinGraphId [cfgPrefix cfg, T.pack "inst", T.pack $ show idx]
-    mod = design `designMod` instModId inst
-    stmts =
-        S.mapWithIndex (go Sink) (moduleInputs mod) <>
-        S.mapWithIndex (go Source) (moduleOutputs mod) |>
-        attrStmt 
-            ([mkLabel $ moduleName mod <> T.singleton ' ' <> instName inst] ++ color)
-    go side portIdx port =
-        DN $ DotNode (logicKey cfg side idx portIdx) [mkLabel $ portName port]
-logicNode design cfg idx logic =
+logicNode design cfg idx logic
+    | logicShowsPorts logic = S.singleton $
+        logicTableNode cfg design idx logic
+    | otherwise = logicBasicNode cfg idx logic
+
+logicBasicNode cfg idx logic =
     if cfgDrawLogics cfg then S.singleton stmt else S.empty
   where
     color = convColor $ annColor $ logicAnn logic
-    stmt = DN $ DotNode (basicLogicKey cfg idx)
+    stmt = DN $ DotNode (logicKey cfg idx)
         ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
 
+-- List of input port names and output port names for a logic item.  Uses the
+-- module declaration's port names for `LkInst`, and numbers otherwise.
+logicPortNames :: Design a -> Logic b -> (Seq Text, Seq Text)
+logicPortNames d l@(Logic { logicKind = LkInst inst }) =
+    (fmap portName $ moduleInputs mod,
+        fmap portName $ moduleOutputs mod)
+  where
+    mod = d `designMod` instModId inst
+logicPortNames d l =
+    (S.fromList $ map (T.pack . show) [0 .. maxInput],
+        S.fromList $ map (T.pack . show) [0 .. maxOutput])
+  where
+    maxInput = S.length (logicInputs l) - 1
+    maxOutput = S.length (logicOutputs l) - 1
 
-edgeStmt cfg n1 n2 = DE $ DotEdge (nodeIdKey cfg n1) (nodeIdKey cfg n2) []
+logicName :: Design a -> Logic b -> H.Text
+logicName d l@(Logic { logicKind = LkInst inst }) =
+    [H.Str $ TL.fromStrict $ moduleName $ d `designMod` instModId inst,
+        H.Newline [],
+        H.Str $ TL.fromStrict $ instName inst]
+logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
+
+logicTable :: Cfg -> Design a -> Int -> Logic Ann -> H.Label
+logicTable cfg d idx l = H.Table $
+    H.HTable Nothing [] $ nameRow : concat [[H.HorizontalRule, r] | r <- portRows]
+  where
+    nameRow = H.Cells [H.LabelCell [H.ColSpan 2] $ H.Text $ logicName d l]
+    (ins, outs) = logicPortNames d l
+    maxPort = max (S.length ins - 1) (S.length outs - 1)
+    portCell side names portIdx = case S.lookup portIdx names of
+        Nothing -> H.LabelCell [] $ H.Text [H.Str ""]
+        Just name ->
+            let port = joinKey [sideKey side, T.pack $ show portIdx] in
+            H.LabelCell [H.Port $ PN $ TL.fromStrict port] $
+                H.Text [H.Str $ TL.fromStrict name]
+    portRow i = H.Cells [portCell Sink ins i, H.VerticalRule, portCell Source outs i]
+    portRows = map portRow [0 .. maxPort]
+
+logicTableNode :: Cfg -> Design a -> Int -> Logic Ann -> DotStatement Text
+logicTableNode cfg d idx l =
+    DN $ DotNode (logicKey cfg idx)
+        ([Label $ HtmlLabel $ logicTable cfg d idx l, Shape PlainText] ++
+            convColor (annColor $ logicAnn l))
+
+
+edgeStmt :: Cfg -> NodeId -> NodeId -> DotStatement Text
+edgeStmt cfg n1 n2 = DE $ DotEdge end1 end2 attrs
+  where
+    go (NConn side (ExtPort idx)) = (extKey cfg side idx, Nothing)
+    go (NConn side (LogicPort idx portIdx)) =
+        (logicKey cfg idx, Just $ joinKey [sideKey side, T.pack $ show portIdx])
+    go (NNet idx) = (netKey cfg idx, Nothing)
+    go (NBasicLogic idx) = (logicKey cfg idx, Nothing)
+
+    (end1, port1) = go n1
+    (end2, port2) = go n2
+
+    attrs =
+        (case port1 of
+            Nothing -> []
+            Just port -> [TailPort $ LabelledPort (PN $ TL.fromStrict port) (Just East)])
+        ++
+        (case port2 of
+            Nothing -> []
+            Just port -> [HeadPort $ LabelledPort (PN $ TL.fromStrict port) (Just West)])
 
 
 graphModule' :: Design a -> Cfg -> Module Ann -> Seq (DotStatement Text)
