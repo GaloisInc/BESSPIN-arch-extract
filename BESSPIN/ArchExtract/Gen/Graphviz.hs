@@ -32,12 +32,15 @@ tInputs = T.pack "Inputs"
 tOutputs = T.pack "Outputs"
 
 
--- `NBasicLogic` is used for logic nodes where we hide the ports and only draw
--- a single graph node for the entire thing.
-data NodeId = NConn Side Conn | NNet Int | NBasicLogic Int
+-- An ID of an endpoint of an edge.  "Port" is the name Graphviz uses for
+-- places within a node where edges can begin/end.  `PConn`: a port
+-- corresponding to a `Conn`.  `PNet`: the central node representing a `Net`.
+-- `PBasicLogic`: the single-port node representing a basic logic element,
+-- where the individual ports are not displayed.
+data PortId = PConn Side Conn | PNet Int | PBasicLogic Int
     deriving (Show, Eq, Ord)
 
-type EdgeMap = Map NodeId (Seq NodeId)
+type EdgeMap = Map PortId (Seq PortId)
 
 -- Modify an `EdgeMap`, replacing edges ending at nodes matching predicate `f`
 -- with new edges that bypass that node.  For example:
@@ -53,10 +56,10 @@ type EdgeMap = Map NodeId (Seq NodeId)
 --    /------> c
 --   a
 --    \------> d
-bypassNodes :: (NodeId -> Bool) -> EdgeMap -> EdgeMap
+bypassNodes :: (PortId -> Bool) -> EdgeMap -> EdgeMap
 bypassNodes f edges = M.mapMaybeWithKey go edges
   where
-    go :: NodeId -> Seq NodeId -> Maybe (Seq NodeId)
+    go :: PortId -> Seq PortId -> Maybe (Seq PortId)
     go src _ | f src = Nothing
     go src tgts = Just $ join $ fmap (newTargets (Set.singleton src)) tgts
 
@@ -64,7 +67,7 @@ bypassNodes f edges = M.mapMaybeWithKey go edges
     -- then `node` is kept unchanged; otherwise, it is replaced with its
     -- targets in `edges` (this creates the bypassing edges.  `seen` is used to
     -- prevent infinite loops when the graph contains a cycle.
-    newTargets :: Set NodeId -> NodeId -> Seq NodeId
+    newTargets :: Set PortId -> PortId -> Seq PortId
     newTargets seen node | node `Set.member` seen =
         if not $ f node then S.singleton node else S.empty
     newTargets seen node | not $ f node = S.singleton node
@@ -73,10 +76,10 @@ bypassNodes f edges = M.mapMaybeWithKey go edges
         join $ fmap (newTargets (Set.insert node seen)) tgts
 
 -- Like `bypassNodes`, but deduplicates edges internally for efficiency.
-bypassNodesWithDedup :: (NodeId -> Bool) -> EdgeMap -> EdgeMap
+bypassNodesWithDedup :: (PortId -> Bool) -> EdgeMap -> EdgeMap
 bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
   where
-    go :: NodeId -> Seq NodeId -> Maybe (Seq NodeId)
+    go :: PortId -> Seq PortId -> Maybe (Seq PortId)
     go src _ | f src = Nothing
     go src tgts =
         let tgtsSet = Set.fromList $ toList tgts in
@@ -102,14 +105,14 @@ logicShowsPorts l = case logicKind l of
     LkInst _ -> True
     _ -> False
 
--- For all `NConn ... LogicPort` nodes where the logic index matches `f`,
--- switch to a `NBasicLogic` `NodeId`.  This is used to get proper
+-- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
+-- switch to a `PBasicLogic` `PortId`.  This is used to get proper
 -- deduplication of edges to/from logics that don't show individual ports.
-clearLogicPorts :: (Int -> Bool) -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
+clearLogicPorts :: (Int -> Bool) -> Seq (PortId, PortId) -> Seq (PortId, PortId)
 clearLogicPorts f edges = fmap go edges
   where
     go (a, b) = (goNode a, goNode b)
-    goNode (NConn _ (LogicPort i _)) | f i = NBasicLogic i
+    goNode (PConn _ (LogicPort i _)) | f i = PBasicLogic i
     goNode n = n
 
 dedupEdges m = fmap go m
@@ -119,23 +122,23 @@ dedupEdges m = fmap go m
             else (acc, seen))
         (S.empty, Set.empty) xs
 
-netEdges :: Cfg -> Int -> Net Ann -> Seq (NodeId, NodeId)
+netEdges :: Cfg -> Int -> Net Ann -> Seq (PortId, PortId)
 netEdges cfg idx net =
-    fmap (\conn -> (NConn Source conn, NNet idx)) (netSources net) <>
-    fmap (\conn -> (NNet idx, NConn Sink conn)) (netSinks net)
+    fmap (\conn -> (PConn Source conn, PNet idx)) (netSources net) <>
+    fmap (\conn -> (PNet idx, PConn Sink conn)) (netSinks net)
 
-allNetEdges :: Cfg -> Seq (Net Ann) -> Seq (NodeId, NodeId)
+allNetEdges :: Cfg -> Seq (Net Ann) -> Seq (PortId, PortId)
 allNetEdges cfg nets = join $ S.mapWithIndex (netEdges cfg) nets
 
-filterEdges :: Cfg -> Module Ann -> Seq (NodeId, NodeId) -> Seq (NodeId, NodeId)
+filterEdges :: Cfg -> Module Ann -> Seq (PortId, PortId) -> Seq (PortId, PortId)
 filterEdges cfg mod edges = edges'
   where
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
         clearLogicPorts (\idx -> not $ logicShowsPorts $ mod `moduleLogic` idx) edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
-        NBasicLogic _ -> not $ cfgDrawLogics cfg
-        NNet i -> not $ drawNetNode cfg (mod `moduleNet` NetId i)
+        PBasicLogic _ -> not $ cfgDrawLogics cfg
+        PNet i -> not $ drawNetNode cfg (mod `moduleNet` NetId i)
         _ -> False
     edges' = M.foldlWithKey (\es s ts -> es <> fmap (\t -> (s, t)) ts) S.empty edgeMap'
 
@@ -296,14 +299,14 @@ logicTableNode cfg d idx l =
             convColor (annColor $ logicAnn l))
 
 
-edgeStmt :: Cfg -> NodeId -> NodeId -> DotStatement Text
+edgeStmt :: Cfg -> PortId -> PortId -> DotStatement Text
 edgeStmt cfg n1 n2 = DE $ DotEdge end1 end2 attrs
   where
-    go (NConn side (ExtPort idx)) = (extKey cfg side idx, Nothing)
-    go (NConn side (LogicPort idx portIdx)) =
+    go (PConn side (ExtPort idx)) = (extKey cfg side idx, Nothing)
+    go (PConn side (LogicPort idx portIdx)) =
         (logicKey cfg idx, Just $ joinKey [sideKey side, T.pack $ show portIdx])
-    go (NNet idx) = (netKey cfg idx, Nothing)
-    go (NBasicLogic idx) = (logicKey cfg idx, Nothing)
+    go (PNet idx) = (netKey cfg idx, Nothing)
+    go (PBasicLogic idx) = (logicKey cfg idx, Nothing)
 
     (end1, port1) = go n1
     (end2, port2) = go n2
