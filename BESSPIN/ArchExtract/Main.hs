@@ -46,7 +46,6 @@ main = do
                 putStrLn ("error decoding verilog AST:\n" ++ errs)
                 error $ "decoding error"
             Right x -> return x
-    mapM_ print $ M.toList raw
     let v = fromRaw raw modIds
     let a = extractArch v
 

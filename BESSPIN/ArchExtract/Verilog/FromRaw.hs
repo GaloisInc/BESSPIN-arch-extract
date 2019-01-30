@@ -134,7 +134,10 @@ mkItems i = do
             forM assigns $ \i -> getNode i >>= \n -> case n of
                 R.NetRegAssign l r -> ContAssign <$> mkExpr l <*> mkExpr r
                 _ -> error $ "expected NetRegAssign at " ++ show i
-        R.AlwaysConstruct body -> toList $ Always <$> mkStmts body
+        R.AlwaysConstruct kind body -> getNode body >>= \n' -> case n' of
+            R.EventControlStatement evts s ->
+                toList $ Always <$> mapM mkEvent evts <*> mkStmts s
+            _ -> toList $ Always <$> pure [] <*> mkStmts body
         R.InitialConstruct body -> toList $ Initial <$> mkStmts body
         _ -> trace ("unknown mod item at " ++ show i) $ return []
 
@@ -158,7 +161,7 @@ mkStmts i = do
     n <- getNode i
     case n of
         R.SeqBlock ds ss -> mapM_ declRef ds >> concat <$> mapM mkStmts ss
-        R.EventControlStatement s -> mkStmts s
+        R.EventControlStatement _ s -> mkStmts s
         R.ConditionalStatement cond then_ (Just else_) -> toList $
             If <$> mkExpr cond <*> mkStmts then_ <*> (Just <$> mkStmts else_)
         R.ConditionalStatement cond then_ Nothing -> toList $
@@ -211,6 +214,19 @@ mkExpr i = do
             AssignPat <$> mkExpr rep <*> mapM mkExpr es
         _ -> trace ("unknown expression at " ++ show i) $ return UnknownExpr
         --_ -> error $ "expected expression at " ++ show i
+
+mkExprVar :: NodeId -> FromRawM Int
+mkExprVar i = mkExpr i >>= \e -> case e of
+    Var declId -> return declId
+    _ -> error $ "expected Var expression at " ++ show i
+
+mkEvent :: NodeId -> FromRawM Event
+mkEvent i = do
+    n <- getNode i
+    case n of
+        R.EventExpression optEdge e ->
+            Event <$> pure optEdge <*> mkExprVar e
+        _ -> error $ "expected EventExpression at " ++ show i
 
 mkIndex :: NodeId -> FromRawM Index
 mkIndex i = do

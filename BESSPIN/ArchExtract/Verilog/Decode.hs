@@ -324,11 +324,18 @@ clsNode cls = case T.unpack cls of
 
     "N7Verific19VeriAlwaysConstructE" -> do
         s <- node
-        return $ AlwaysConstruct s
+        kind <- alwaysKind
+        return $ AlwaysConstruct kind s
 
     "N7Verific20VeriInitialConstructE" -> do
         s <- node
         return $ InitialConstruct s
+
+    "N7Verific19VeriEventExpressionE" -> do
+        edge <- optEdge
+        e <- node
+        skip    -- IffCondition
+        return $ EventExpression edge e
 
     -- Statements
 
@@ -340,9 +347,9 @@ clsNode cls = case T.unpack cls of
 
     -- TODO: flatten EventControl.At into Always
     "N7Verific25VeriEventControlStatementE" -> do
-        nodes   -- At
+        evts <- nodes
         s <- node
-        return $ EventControlStatement s
+        return $ EventControlStatement evts s
 
     "N7Verific24VeriConditionalStatementE" -> do
         cond <- node
@@ -503,6 +510,21 @@ optPortDir = integer >>= \x -> case x of
     330 -> return $ Just Input
     346 -> return $ Just Output
     _ -> fail $ "unknown PortDir enum: " ++ show x
+
+optEdge :: DecodeM (Maybe Edge)
+optEdge = integer >>= \x -> case x of
+    0 -> return Nothing
+    338 -> return $ Just NegEdge
+    349 -> return $ Just PosEdge
+    _ -> fail $ "unknown Edge enum: " ++ show x
+
+alwaysKind :: DecodeM AlwaysKind
+alwaysKind = integer >>= \x -> case x of
+    292 -> return AkPlain
+    455 -> return AkComb
+    456 -> return AkFf
+    457 -> return AkLatch
+    _ -> fail $ "unknown AlwaysKind enum: " ++ show x
 
 
 -- Bytestring deserialization

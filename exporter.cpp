@@ -16,6 +16,7 @@
 #include <VeriModule.h>
 #include <VeriStatement.h>
 #include <VeriScope.h>
+#include <veri_yacc.h>
 
 #include <tinycbor/cbor.h>
 
@@ -303,6 +304,15 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.tree_node(ii->GetId());
     } else if (auto ac = exact_cast<VeriAlwaysConstruct>(x)) {
         sub.tree_node(ac->GetStmt());
+        unsigned kind = VERI_ALWAYS;
+        if (ac->GetQualifier(VERI_ALWAYS_COMB)) {
+            kind = VERI_ALWAYS_COMB;
+        } else if (ac->GetQualifier(VERI_ALWAYS_LATCH)) {
+            kind = VERI_ALWAYS_LATCH;
+        } else if (ac->GetQualifier(VERI_ALWAYS_FF)) {
+            kind = VERI_ALWAYS_FF;
+        }
+        sub.uint(kind);
     } else if (auto ecs = exact_cast<VeriEventControlStatement>(x)) {
         sub.tree_nodes(ecs->GetAt());
         sub.tree_node(ecs->GetStmt());

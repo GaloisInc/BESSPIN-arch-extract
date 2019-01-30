@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Verilog.Extract where
 
 import Control.Monad
@@ -59,6 +60,8 @@ extractMod vMods vMod =
     -- Convert instantiations of undefined modules to logic.  (Otherwise we hit
     -- errors when trying to look up the port definitions.)
     filterInstsToLogic (\_ _ i -> instModId i /= -1) $
+    traceShow ("stateful nets for ", V.moduleName vMod, stateNets) $
+        buildRegisters stateNets' $
     reconnectNets $
     A.Module (V.moduleName vMod) inputs outputs (insts <> logics) nets
   where
@@ -68,6 +71,9 @@ extractMod vMods vMod =
     (inputs, outputs) = convPorts netMap vMod
     insts = convInsts vMods netMap vMod
     logics = convItems vMods netMap vMod
+
+    stateNets = stateHoldingNets vMod
+    stateNets' = Set.map (\no -> netMap M.! no) stateNets
 
 
 -- Building `moduleNets` from `V.moduleDecls`
@@ -229,9 +235,77 @@ itemLogic vMods vDecls netMap i = go i
                 InOut -> inLogic <> outLogic
     go (ContAssign l r) = S.singleton $
         mkLogic netMap (rvalKind r) (exprVars r) (exprVars l)
-    go (Always ss) = foldMap (stmtLogic netMap) ss
+    go (Always _ ss) = foldMap (stmtLogic netMap) ss
     go (Initial ss) = foldMap (stmtLogic netMap) ss
 
 convItems :: Seq V.Module -> NetMap -> V.Module -> Seq (A.Logic ())
 convItems vMods netMap vMod =
     mconcat $ map (itemLogic vMods (moduleDecls vMod) netMap) $ moduleItems vMod
+
+
+-- Conversion of state-holding nets to registers
+
+-- Identify state-holding nets.  Our current heuristic is: a net holds state if
+-- it appears on the LHS of an assignment inside an edge-sensitive `always`
+-- block.
+stateHoldingNets :: V.Module -> Set NetOrigin
+stateHoldingNets mod = foldMap goItem $ V.moduleItems mod
+  where
+    goItem (Always evts body) | any (not . isNothing . eventEdge) evts = goStmts body
+    goItem _ = Set.empty
+
+    goStmts ss = mconcat $ map goStmt ss
+
+    goStmt (If _ t e) = goStmts t <> maybe Set.empty goStmts e
+    goStmt (Case _ cases) = mconcat $ map (goStmts . snd) cases
+    goStmt (For inits _ steps body) = goStmts inits <> goStmts steps <> goStmts body
+    goStmt (NonBlockingAssign l _) = goExpr l
+    goStmt (BlockingAssign l _) = goExpr l
+    goStmt (BlockingUpdate l) = goExpr l
+
+    goExpr (Var declId) = Set.singleton $ NoDecl declId
+    goExpr (Index base _) = goExpr base
+    goExpr (MemIndex base _) = goExpr base
+    goExpr (Concat exprs) = mconcat (map goExpr exprs)
+    goExpr (MultiConcat _ exprs) = mconcat (map goExpr exprs)
+    goExpr _ = Set.empty
+
+-- Replace state-holding nets with `LkRegister` logic nodes.  This consists of
+-- splitting the net into input and output halves and joining the two with the
+-- new logic.  We do this for all state-holding nets in a single pass.
+buildRegisters :: Set NetId -> A.Module () -> A.Module ()
+buildRegisters targets mod = reconnectNets $ mod
+    { A.moduleOutputs = outputs'
+    , A.moduleLogics = logics'
+    , A.moduleNets = nets'
+    }
+  where
+    -- Old nets, with `$in` appended to the name of each target net.
+    oldNets = S.mapWithIndex (\idx net ->
+        if Set.member (NetId idx) targets then
+            net { netName = netName net <> "$in" }
+        else net) (A.moduleNets mod)
+    newNets = S.fromList $ map (\i ->
+        let net = mod `A.moduleNet` i in
+        net { netName = netName net <> "$out" }) $ Set.toList targets
+    nets' = oldNets <> newNets
+
+    -- Maps each target NetId to the NetId of the newly-created output net.
+    -- (The input net keeps the NetId of the original net.)
+    reconnMap :: Map NetId NetId
+    reconnMap = M.fromList $
+        zip (Set.toList targets) (map NetId [S.length $ A.moduleNets mod ..])
+
+    goNetId :: NetId -> NetId
+    goNetId i = fromMaybe i $ M.lookup i reconnMap
+
+    outputs' =
+        fmap (\port -> port { portNet = goNetId $ portNet port }) (A.moduleOutputs mod)
+    oldLogics = fmap
+        (\logic -> logic { logicInputs = fmap goNetId $ logicInputs logic })
+        (A.moduleLogics mod)
+    newLogics = S.fromList $ map (\(old, new) ->
+            let net = mod `A.moduleNet` old in
+            Logic (LkRegister $ A.netName net) (S.singleton old) (S.singleton new) ())
+        (M.toList reconnMap)
+    logics' = oldLogics <> newLogics

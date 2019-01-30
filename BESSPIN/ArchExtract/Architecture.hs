@@ -46,6 +46,7 @@ data Logic ann = Logic
 data LogicKind =
     LkInst Inst |
     LkNetAlias |
+    LkRegister Text |
     LkOther
     deriving (Show, Eq, Typeable, Data)
 

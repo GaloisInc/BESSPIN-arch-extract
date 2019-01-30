@@ -105,6 +105,7 @@ bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
 logicShowsPorts :: Logic a -> Bool
 logicShowsPorts l = case logicKind l of
     LkInst _ -> True
+    LkRegister _ -> True
     _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
@@ -264,6 +265,7 @@ netNode' cfg idx net = S.fromList $ toList $ netNode cfg idx net
 
 
 logicLabel LkOther = T.pack "(logic)"
+logicLabel (LkRegister name) = "(register " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
@@ -304,6 +306,8 @@ logicName d l@(Logic { logicKind = LkInst inst }) =
     [H.Str $ TL.fromStrict $ moduleName $ d `designMod` instModId inst,
         H.Newline [],
         H.Str $ TL.fromStrict $ instName inst]
+logicName d l@(Logic { logicKind = LkRegister name }) =
+    [H.Str $ TL.fromStrict $ "(register " <> name <> ")"]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
 logicTable :: Cfg -> Design a -> Int -> Logic Ann -> H.Label

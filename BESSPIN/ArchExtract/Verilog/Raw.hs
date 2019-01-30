@@ -59,10 +59,15 @@ data Node =
     , netRegAssignRval :: NodeId
     } |
     AlwaysConstruct
-    { alwaysConstructBody :: NodeId
+    { alwaysConstructKind :: AlwaysKind
+    , alwaysConstructBody :: NodeId
     } |
     InitialConstruct
     { initialConstructBody :: NodeId
+    } |
+    EventExpression
+    { eventExpressionEdge :: Maybe Edge
+    , eventExpressionExpr :: NodeId
     } |
 
     SeqBlock
@@ -70,7 +75,8 @@ data Node =
     , seqBlockStmts :: [NodeId]
     } |
     EventControlStatement
-    { eventControlStatementBody :: NodeId
+    { eventControlStatementEvents :: [NodeId]
+    , eventControlStatementBody :: NodeId
     } |
     ConditionalStatement
     { conditionalStatementCond :: NodeId
@@ -169,4 +175,10 @@ data Node =
     deriving (Show)
 
 data PortDir = Input | Output | InOut
+    deriving (Show, Eq)
+
+data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
+    deriving (Show, Eq)
+
+data Edge = PosEdge | NegEdge
     deriving (Show, Eq)

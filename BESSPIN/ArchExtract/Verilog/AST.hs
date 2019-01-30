@@ -1,6 +1,7 @@
 module BESSPIN.ArchExtract.Verilog.AST
     ( module BESSPIN.ArchExtract.Verilog.AST
-    , BESSPIN.ArchExtract.Verilog.Raw.PortDir(..)
+    , PortDir(..)
+    , Edge(..)
     ) where
 
 import Control.Monad
@@ -8,7 +9,7 @@ import Control.Monad
 import Data.Sequence (Seq)
 import Data.Text (Text)
 
-import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..))
+import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..), Edge(..))
 
 
 -- Verilog AST.  This only supports the constructs we currently use for
@@ -61,7 +62,9 @@ data Item =
     , contAssignRval :: Expr
     } |
     Always
-    { alwaysBody :: [Stmt]
+    -- If `alwaysEvents` is empty, this is an `always @(*)` statement.
+    { alwaysEvents :: [Event]
+    , alwaysBody :: [Stmt]
     } |
     Initial
     { initialBody :: [Stmt]
@@ -141,6 +144,12 @@ data Expr =
     } |
     UnknownExpr
     {}
+    deriving (Show)
+
+data Event = Event
+    { eventEdge :: Maybe Edge
+    , eventVarDeclId :: Int
+    }
     deriving (Show)
 
 data Index = ISingle Expr | IRange Expr Expr
