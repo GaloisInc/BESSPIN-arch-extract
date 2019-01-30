@@ -13,12 +13,14 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import qualified Data.Text.Lazy as TL
 
 import Debug.Trace
 
 import Data.GraphViz.Attributes.Complete hiding (portName)
 import qualified Data.GraphViz.Attributes.HTML as H
+import Data.GraphViz.Commands
 import Data.GraphViz.Types
 import Data.GraphViz.Types.Generalised
 
@@ -152,6 +154,7 @@ data Cfg = Cfg
     , cfgHideNamedNets :: Set Text
     , cfgDedupEdges :: Bool
     , cfgShortenNetNames :: Bool
+    , cfgPipelineStages :: Int
     }
 
 defaultCfg = Cfg
@@ -162,6 +165,7 @@ defaultCfg = Cfg
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = False
     , cfgShortenNetNames = True
+    , cfgPipelineStages = 0
     }
 
 drawNetNode cfg net =
@@ -179,6 +183,7 @@ drawNetEdges cfg net =
 
 data Ann = Ann
     { annColor :: Maybe Color
+    , annPipelineStage :: Maybe Int
     }
 
 
@@ -198,6 +203,17 @@ netKey cfg idx =
 
 logicKey cfg idx =
     joinKey [cfgPrefix cfg, T.pack "logic", T.pack (show idx)]
+
+stageStartKey cfg i =
+    joinKey [cfgPrefix cfg,
+        "stage" <> T.pack (show i),
+        "start"]
+
+stageChainKey cfg i j =
+    joinKey [cfgPrefix cfg,
+        "stage" <> T.pack (show i),
+        "rank" <> T.pack (show j),
+        "chain"]
 
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
 mkTooltip name = Tooltip $ TL.fromStrict name
@@ -221,8 +237,15 @@ portCluster cfg side label ports =
         let label = name in
         DN $ DotNode key [mkLabel label]
 
+portClusters :: Cfg -> Module a -> Seq (DotStatement Text)
+portClusters cfg mod =
+    S.empty |>
+    portCluster cfg Source tInputs (moduleInputs mod) |>
+    portCluster cfg Sink tOutputs (moduleOutputs mod)
 
-netNode :: Cfg -> Int -> Net Ann -> DotStatement Text
+
+netNode :: Cfg -> Int -> Net Ann -> Maybe (DotNode Text)
+netNode cfg idx net | not $ drawNetNode cfg net = Nothing
 netNode cfg idx net =
     let name = netName net in
     let names = T.lines name in
@@ -234,24 +257,31 @@ netNode cfg idx net =
     let displayName = if cfgShortenNetNames cfg then shortName else name in
     let color = convColor $ annColor $ netAnn net in
 
-    DN $ DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
+    Just $
+        DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
+
+netNode' cfg idx net = S.fromList $ toList $ netNode cfg idx net
 
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
-logicNode :: Design a -> Cfg -> Int -> Logic Ann -> Seq (DotStatement Text)
+logicNode :: Design a -> Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
 logicNode design cfg idx logic
-    | logicShowsPorts logic = S.singleton $
+    | logicShowsPorts logic = Just $
         logicTableNode cfg design idx logic
     | otherwise = logicBasicNode cfg idx logic
 
+logicNode' design cfg idx logic =
+    S.fromList $ toList $ logicNode design cfg idx logic
+
+logicBasicNode :: Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
 logicBasicNode cfg idx logic =
-    if cfgDrawLogics cfg then S.singleton stmt else S.empty
+    if cfgDrawLogics cfg then Just node else Nothing
   where
     color = convColor $ annColor $ logicAnn logic
-    stmt = DN $ DotNode (logicKey cfg idx)
+    node = DotNode (logicKey cfg idx)
         ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
 
 -- List of input port names and output port names for a logic item.  Uses the
@@ -292,15 +322,15 @@ logicTable cfg d idx l = H.Table $
     portRow i = H.Cells [portCell Sink ins i, H.VerticalRule, portCell Source outs i]
     portRows = map portRow [0 .. maxPort]
 
-logicTableNode :: Cfg -> Design a -> Int -> Logic Ann -> DotStatement Text
+logicTableNode :: Cfg -> Design a -> Int -> Logic Ann -> DotNode Text
 logicTableNode cfg d idx l =
-    DN $ DotNode (logicKey cfg idx)
+    DotNode (logicKey cfg idx)
         ([Label $ HtmlLabel $ logicTable cfg d idx l, Shape PlainText] ++
             convColor (annColor $ logicAnn l))
 
 
-edgeStmt :: Cfg -> PortId -> PortId -> DotStatement Text
-edgeStmt cfg n1 n2 = DE $ DotEdge end1 end2 attrs
+graphEdge :: Cfg -> PortId -> PortId -> DotEdge Text
+graphEdge cfg n1 n2 = DotEdge end1 end2 attrs
   where
     go (PConn side (ExtPort idx)) = (extKey cfg side idx, Nothing)
     go (PConn side (LogicPort idx portIdx)) =
@@ -321,23 +351,173 @@ edgeStmt cfg n1 n2 = DE $ DotEdge end1 end2 attrs
             Just port -> [HeadPort $ LabelledPort (PN $ TL.fromStrict port) (Just West)])
 
 
-graphModule' :: Design a -> Cfg -> Module Ann -> Seq (DotStatement Text)
-graphModule' design cfg mod =
-    portCluster cfg Source tInputs (moduleInputs mod) <|
-    portCluster cfg Sink tOutputs (moduleOutputs mod) <|
-    S.foldMapWithIndex (\idx net ->
-        if drawNetNode cfg net then S.singleton $ netNode cfg idx net else S.empty)
-        (moduleNets mod) <>
-    S.foldMapWithIndex (logicNode design cfg) (moduleLogics mod) <>
-    fmap (uncurry $ edgeStmt cfg)
-        (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
+graphModuleUnstaged :: Design a -> Cfg -> Module Ann -> Seq (DotStatement Text)
+graphModuleUnstaged design cfg mod = graphModuleStaged design cfg mod S.empty
 
-graphModule :: Design a -> Cfg -> Module Ann -> DotGraph Text
-graphModule design cfg mod =
-    DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
-        ( graphModule' design cfg mod
+graphModuleStaged :: Design a -> Cfg -> Module Ann -> StageLayout -> Seq (DotStatement Text)
+graphModuleStaged design cfg mod layout =
+    portClusters cfg mod <>
+    stageStmts <>
+    fmap DN unstagedNodes <>
+    fmap (\(a,b) -> DE $ graphEdge cfg a b)
+        (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod) <>
+    chainEdges <>
+    interChainEdges <>
+    chainStartEdge <>
+    chainEndEdge
+  where
+    stageStmts = flip S.foldMapWithIndex layout $ \i stage ->
+        (DN (DotNode (stageStartKey cfg i) [invis]) <|) $
+        flip S.foldMapWithIndex stage $ \j rank ->
+            let gi = joinGraphId [cfgPrefix cfg,
+                    "stage" <> T.pack (show i),
+                    "rank" <> T.pack (show j)] in
+            let label = T.pack (show i) <> "." <> T.pack (show j) in
+            S.singleton $ SG $ DotSG False (Just gi) $
+                GA (GraphAttrs [Rank SameRank]) <|
+                DN (DotNode (stageChainKey cfg i j) [mkLabel label, invis]) <|
+                foldMap (fmap DN . mkNode) rank
+
+    --invis = Style [SItem Dotted []]
+    invis = Style [SItem Invisible []]
+    heavy = Weight $ Dbl 10.0
+
+    -- We use the actual contents of `layout` instead of `annPipelineStage`, to
+    -- handle the case where nodes are annotated with out-of-range stages:
+    -- those nodes have `annPipelineStage` set, but don't appear in `layout`.
+    stagedIds = foldMap (foldMap (foldMap Set.singleton)) layout
+
+    unstagedNodes =
+        S.foldMapWithIndex (\idx net ->
+            if not $ Set.member (NNet $ NetId idx) stagedIds then
+                netNode' cfg idx net else S.empty) (moduleNets mod) <>
+        S.foldMapWithIndex (\idx logic ->
+            if not $ Set.member (NLogic idx) stagedIds then
+                logicNode' design cfg idx logic else S.empty) (moduleLogics mod)
+
+    chainEdges = flip S.foldMapWithIndex layout $ \i stage ->
+        flip foldMap [0 .. S.length stage - 1] $ \j ->
+            let prev = if j > 0 then stageChainKey cfg i (j - 1)
+                    else stageStartKey cfg i in
+            S.singleton $ DE $ DotEdge prev (stageChainKey cfg i j) [invis, heavy]
+
+    stageLastKey cfg i stage =
+        if len > 0 then stageChainKey cfg i (len - 1)
+            else stageStartKey cfg i
+      where
+        len = S.length stage
+
+    interChainEdges = flip S.foldMapWithIndex layout $ \i stage ->
+        if i < S.length layout - 1 then
+            S.singleton $ DE $
+                DotEdge (stageLastKey cfg i stage) (stageStartKey cfg (i + 1)) [invis, heavy]
+        else S.empty
+
+    chainStartEdge :: Seq (DotStatement Text)
+    chainStartEdge = S.fromList $ maybeToList $ do
+        guard $ not $ S.null layout
+        guard $ not $ S.null $ moduleInputs mod
+        return $ DE $ DotEdge (extKey cfg Source 0) (stageStartKey cfg 0) [invis, heavy]
+
+    chainEndEdge :: Seq (DotStatement Text)
+    chainEndEdge = S.fromList $ maybeToList $ do
+        let i = S.length layout - 1
+        stage <- layout S.!? i
+        guard $ not $ S.null $ moduleOutputs mod
+        return $ DE $ DotEdge (stageLastKey cfg i stage) (extKey cfg Sink 0) [invis, heavy]
+
+    mkNode (NLogic idx) = logicNode' design cfg idx (mod `moduleLogic` idx)
+    mkNode (NNet i) = netNode' cfg (unwrapNetId i) (mod `moduleNet` i)
+
+
+-- Combined ID type for both logic and net nodes.  Used for tracking nodes
+-- through the pipeline-stage layout process.
+data NodeId = NLogic Int | NNet NetId
+    deriving (Show, Eq, Ord)
+
+nodePipelineStage mod (NLogic idx) =
+    annPipelineStage $ logicAnn $ mod `moduleLogic` idx
+nodePipelineStage mod (NNet i) =
+    annPipelineStage $ netAnn $ mod `moduleNet` i
+
+-- For each stage (0 .. cfgPipelineStages - 1), for each rank, a list of nodes
+-- present in that rank of that stage.
+type StageLayout = Seq (Seq (Seq NodeId))
+
+-- Given a module, compute the pipeline stage and (intra-stage) node rank for
+-- each net and logic node in the module's output graph.  The output map only
+-- contains entries for those nodes that have a (non-`Nothing`) pipeline stage
+-- annotation.
+layoutModule :: Design a -> Cfg -> Module Ann -> IO StageLayout
+layoutModule design cfg mod = graphvizWithHandle Dot g DotOutput $ \h -> do
+    t <- T.hGetContents h
+    return $ go $ parseDotGraphLiberally $ TL.fromStrict t
+  where
+    netNodes :: Seq (DotNode Text)
+    netKeyMap :: Map Text NodeId
+    (netNodes, netKeyMap) = S.foldMapWithIndex (\idx net ->
+            case netNode cfg idx net of
+                Nothing -> (S.empty, M.empty)
+                Just n -> (S.singleton n, M.singleton (netKey cfg idx) (NNet $ NetId idx)))
+        (moduleNets mod)
+
+    (logicNodes, logicKeyMap) = S.foldMapWithIndex (\idx logic ->
+            case logicNode design cfg idx logic of
+                Nothing -> (S.empty, M.empty)
+                Just n -> (S.singleton n, M.singleton (logicKey cfg idx) (NLogic idx)))
+        (moduleLogics mod)
+
+    stmts =
+        portClusters cfg mod <>
+        fmap DN netNodes <>
+        fmap DN logicNodes <>
+        fmap (\(a,b) -> DE $ graphEdge cfg a b)
+            (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
+
+    keyMap = netKeyMap <> logicKeyMap
+
+    g = DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
+        ( stmts
+        |> GA (GraphAttrs [RankDir FromLeft])
+        )
+
+    go :: DotGraph Text -> StageLayout
+    go g' = mkLayout $ mkPosMap $ collectPos g'
+
+    -- Output is `[(stage index, x-position, node ID)]`.
+    collectPos :: DotGraph Text -> [(Int, Double, NodeId)]
+    collectPos g' = flip concatMap (toList $ graphStatements g') (\s -> case s of
+        DN n -> maybeToList $ do
+            i <- M.lookup (nodeID n) keyMap
+            (x,y) <- graphNodePos n
+            stage <- nodePipelineStage mod i
+            return $ (stage, x, i)
+        _ -> [])
+
+    mkPosMap posList =
+        M.unionsWith (M.unionWith (<>)) $
+        map (\(s,x,i) -> M.singleton s (M.singleton x (S.singleton i))) $
+        posList
+
+    mkLayout :: Map Int (Map Double (Seq NodeId)) -> Seq (Seq (Seq NodeId))
+    mkLayout posMap =
+        S.fromList $
+        map (\i -> maybe S.empty (S.fromList . M.elems) $ M.lookup i posMap) $
+        [0 .. cfgPipelineStages cfg - 1]
+
+graphNodePos :: DotNode a -> Maybe (Double, Double)
+graphNodePos n = getFirst $ foldMap (\att -> case att of
+    Pos (PointPos p) -> First $ Just (xCoord p, yCoord p)
+    _ -> First $ Nothing) (nodeAttributes n)
+
+graphModule :: Design a -> Cfg -> Module Ann -> IO (DotGraph Text)
+graphModule design cfg mod = do
+    layout <- layoutModule design cfg mod
+    let stmts = graphModuleStaged design cfg mod layout
+    return $ DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
+        ( stmts
         |> labelStmt (moduleName mod)
-        |> GA (GraphAttrs [RankDir FromLeft, RankSep [2.0]])
+        |> GA (GraphAttrs [RankDir FromLeft, RankSep [1.5]])
         )
 
 printGraphviz :: DotGraph Text -> String

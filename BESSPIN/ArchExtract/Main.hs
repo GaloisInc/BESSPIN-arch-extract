@@ -121,13 +121,16 @@ main = do
     -}
 
     let a' = Design $ fmap (
-            mapAnn (\stage -> Ann $ case stage of
-                Just 1 -> Just $ X11Color Red
-                Just 2 -> Just $ X11Color Orange
-                Just 3 -> Just $ X11Color Green
-                Just 4 -> Just $ X11Color Turquoise
-                Just 5 -> Just $ X11Color Purple
-                Nothing -> Nothing)
+            mapAnn (\stage -> Ann
+                { annColor = case stage of
+                    Just 1 -> Just $ X11Color Red
+                    Just 2 -> Just $ X11Color Orange
+                    Just 3 -> Just $ X11Color Green
+                    Just 4 -> Just $ X11Color Turquoise
+                    Just 5 -> Just $ X11Color Purple
+                    Nothing -> Nothing
+                , annPipelineStage = subtract 1 <$> stage
+                })
             .
             labelPipelineStages
                 [ (("D_E" `T.isSuffixOf`), Nothing)
@@ -141,16 +144,21 @@ main = do
                 ]) $ designMods a
     let a = a'
 
+
+    --let mod = a `designMod` 3
     forM_ (designMods a) $ \mod -> do
-        let g = graphModule a
+        putStrLn " ----------------------"
+        putStrLn $ T.unpack $ moduleName mod
+        putStrLn " ----------------------"
+        g <- graphModule a
                 (defaultCfg
                     { cfgDrawNets = True
                     , cfgDrawOnesidedNets = False
-                    , cfgDrawLogics = True
-                    , cfgDedupEdges = False
+                    , cfgDrawLogics = False
+                    , cfgDedupEdges = True
                     , cfgShortenNetNames = False
                     , cfgPrefix = moduleName mod
+                    , cfgPipelineStages = 5
                     })
                 mod
-        putStrLn $ T.unpack $ moduleName mod
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
