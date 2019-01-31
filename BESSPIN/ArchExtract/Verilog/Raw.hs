@@ -3,6 +3,7 @@ module BESSPIN.ArchExtract.Verilog.Raw where
 import Data.Map (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Word
 
 
 newtype NodeId = NodeId { unwrapNodeId :: Int }
@@ -182,3 +183,9 @@ data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
 
 data Edge = PosEdge | NegEdge
     deriving (Show, Eq)
+
+data Span = Span !Word32 !Word32
+    deriving (Show, Eq)
+
+data FileInfo = FileInfo Text Span
+    deriving (Show)

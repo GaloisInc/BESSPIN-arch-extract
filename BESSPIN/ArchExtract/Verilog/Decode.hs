@@ -1,6 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 module BESSPIN.ArchExtract.Verilog.Decode where
 
+import Prelude hiding (span)
 import Control.Monad
 import qualified Data.ByteString.Lazy as BS
 import Data.Map (Map)
@@ -68,8 +69,9 @@ skipRest = DecodeM $ \s -> case sStack s of
     [] -> Left "empty stack"
     _ : stk -> Right ((), s { sStack = [] : stk })
 
-record :: NodeId -> Node -> DecodeM ()
-record nodeId n = DecodeM $ \s ->
+record :: NodeId -> Span -> Node -> DecodeM ()
+record nodeId sp n = DecodeM $ \s ->
+    -- TODO: do something with `sp`
     let s' = s { sNodes = M.insert nodeId n $ sNodes s } in
     Right ((), s')
 
@@ -167,6 +169,11 @@ traceScope loc m = mapErr (\err -> "at " ++ show loc ++ ":\n" ++ err) m
 nodeId :: DecodeM NodeId
 nodeId = NodeId <$> fromIntegral <$> integer
 
+span = do
+    start <- fromIntegral <$> integer
+    end <- fromIntegral <$> integer
+    return $ Span start end
+
 -- Parse a node (using `m`), a CBOR NodeId, or null, returning the parsed
 -- NodeId.
 optNodeWith :: (Text -> DecodeM Node) -> DecodeM (Maybe NodeId)
@@ -182,12 +189,14 @@ optNodeWith f = match' $ \t -> case t of
         id_ <- traceScope "node header" $ do
             pushList ts
             nodeId
-        cls <- traceScope ("node", id_, "header") $ do
-            text
+        (sp, cls) <- traceScope ("node", id_, "header") $ do
+            cls <- text
+            sp <- span
+            return (sp, cls)
         traceScope (cls, id_) $ do
             n <- f cls
             popList
-            record id_ n
+            record id_ sp n
         return id_
 
 nodeWith :: (Text -> DecodeM Node) -> DecodeM NodeId
@@ -527,11 +536,26 @@ alwaysKind = integer >>= \x -> case x of
     _ -> fail $ "unknown AlwaysKind enum: " ++ show x
 
 
+fileInfo :: DecodeM FileInfo
+fileInfo = list $ do
+    path <- text
+    sp <- span
+    return $ FileInfo path sp
+
+
+topLevel :: DecodeM ([NodeId], [FileInfo])
+topLevel = list $ do
+    ns <- traceScope "nodes" $ nodes
+    fs <- traceScope "file_info table" $ listOf fileInfo
+    return (ns, fs)
+
+
 -- Bytestring deserialization
 
 deserialize :: BS.ByteString -> Either String (Map NodeId Node, [NodeId])
 deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ show cborErr
     Right (_, term) ->
-        runDecodeM (listOf $ nodeWith clsNode) (S [[term]] M.empty) >>= \(is, s) ->
+        runDecodeM topLevel (S [[term]] M.empty) >>= \((is, fs), s) ->
+            -- TODO: do something with `fs :: [FileInfo]`
             return (sNodes s, is)
