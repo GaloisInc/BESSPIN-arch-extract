@@ -184,9 +184,20 @@ drawNetEdges cfg net =
 
 data Ann = Ann
     { annColor :: Maybe Color
+    -- Which pipeline stage this node is in, if known.
     , annPipelineStage :: Maybe Int
-    }
 
+    -- The rank of this node in its pipeline stage.  Populated by
+    -- `layoutModule`.
+    , annPipelineRank :: Maybe Int
+    }
+    deriving (Show)
+
+defaultAnn = Ann
+    { annColor = Nothing
+    , annPipelineStage = Nothing
+    , annPipelineRank = Nothing
+    }
 
 joinKey parts = T.intercalate (T.singleton '$') parts
 joinGraphId parts = Str $ TL.fromStrict $ joinKey parts
@@ -216,6 +227,8 @@ stageChainKey cfg i j =
         "rank" <> T.pack (show j),
         "chain"]
 
+outputKey cfg = joinKey [cfgPrefix cfg, "output"]
+
 mkLabel name = Label $ StrLabel $ TL.fromStrict name
 mkTooltip name = Tooltip $ TL.fromStrict name
 
@@ -227,22 +240,11 @@ convColor Nothing = []
 convColor (Just c) = [Color $ toColorList [c]]
 
 
-portCluster :: Cfg -> Side -> Text -> Seq Port -> DotStatement Text
-portCluster cfg side label ports =
-    SG $ DotSG True (Just $ portClusterId cfg side) stmts
-  where
-    stmts =
-        S.mapWithIndex go ports |> labelStmt label
-    go idx (Port name _) =
-        let key = extKey cfg side idx in
-        let label = name in
-        DN $ DotNode key [mkLabel label]
-
-portClusters :: Cfg -> Module a -> Seq (DotStatement Text)
-portClusters cfg mod =
-    S.empty |>
-    portCluster cfg Source tInputs (moduleInputs mod) |>
-    portCluster cfg Sink tOutputs (moduleOutputs mod)
+portNode :: Cfg -> Side -> Int -> Port -> DotNode Text
+portNode cfg side idx (Port name _) =
+    let key = extKey cfg side idx in
+    let label = name in
+    DotNode key [mkLabel label]
 
 
 netNode :: Cfg -> Int -> Net Ann -> Maybe (DotNode Text)
@@ -261,8 +263,6 @@ netNode cfg idx net =
     Just $
         DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
 
-netNode' cfg idx net = S.fromList $ toList $ netNode cfg idx net
-
 
 logicLabel LkOther = T.pack "(logic)"
 logicLabel (LkRegister name) = "(register " <> name <> ")"
@@ -274,9 +274,6 @@ logicNode design cfg idx logic
     | logicShowsPorts logic = Just $
         logicTableNode cfg design idx logic
     | otherwise = logicBasicNode cfg idx logic
-
-logicNode' design cfg idx logic =
-    S.fromList $ toList $ logicNode design cfg idx logic
 
 logicBasicNode :: Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
 logicBasicNode cfg idx logic =
@@ -355,174 +352,276 @@ graphEdge cfg n1 n2 = DotEdge end1 end2 attrs
             Just port -> [HeadPort $ LabelledPort (PN $ TL.fromStrict port) (Just West)])
 
 
-graphModuleUnstaged :: Design a -> Cfg -> Module Ann -> Seq (DotStatement Text)
-graphModuleUnstaged design cfg mod = graphModuleStaged design cfg mod S.empty
+-- Combined ID type for all nodes that appear in the generated graph.  Useful
+-- for tracking nodes through the multi-stage layout process.
+data NodeId =
+    NExtPort Side Int |
+    NLogic Int |
+    NNet NetId |
 
-graphModuleStaged :: Design a -> Cfg -> Module Ann -> StageLayout -> Seq (DotStatement Text)
-graphModuleStaged design cfg mod layout =
-    portClusters cfg mod <>
-    stageStmts <>
-    fmap DN unstagedNodes <>
-    fmap (\(a,b) -> DE $ graphEdge cfg a b)
-        (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod) <>
-    chainEdges <>
-    interChainEdges <>
-    chainStartEdge <>
-    chainEndEdge
-  where
-    stageStmts = flip S.foldMapWithIndex layout $ \i stage ->
-        (DN (DotNode (stageStartKey cfg i) [invis]) <|) $
-        flip S.foldMapWithIndex stage $ \j rank ->
-            let gi = joinGraphId [cfgPrefix cfg,
-                    "stage" <> T.pack (show i),
-                    "rank" <> T.pack (show j)] in
-            let label = T.pack (show i) <> "." <> T.pack (show j) in
-            S.singleton $ SG $ DotSG False (Just gi) $
-                GA (GraphAttrs [Rank SameRank]) <|
-                DN (DotNode (stageChainKey cfg i j) [mkLabel label, invis]) <|
-                foldMap (fmap DN . mkNode) rank
+    -- The rest of these nodes are invisible "rank markers", used to fix the
+    -- ordering of other nodes in the final graphviz layout.  Specifically, we
+    -- emit a chain of rank markers `A -> B -> C` with high edge weights, so
+    -- they always end up on different ranks in the desired order, then force
+    -- other nodes in the graph onto those ranks by putting them in a
+    -- `rank=same` subgraph together with one of the rank markers.
 
-    --invis = Style [SItem Dotted []]
-    invis = Style [SItem Invisible []]
-    heavy = Weight $ Dbl 10.0
-
-    -- We use the actual contents of `layout` instead of `annPipelineStage`, to
-    -- handle the case where nodes are annotated with out-of-range stages:
-    -- those nodes have `annPipelineStage` set, but don't appear in `layout`.
-    stagedIds = foldMap (foldMap (foldMap Set.singleton)) layout
-
-    unstagedNodes =
-        S.foldMapWithIndex (\idx net ->
-            if not $ Set.member (NNet $ NetId idx) stagedIds then
-                netNode' cfg idx net else S.empty) (moduleNets mod) <>
-        S.foldMapWithIndex (\idx logic ->
-            if not $ Set.member (NLogic idx) stagedIds then
-                logicNode' design cfg idx logic else S.empty) (moduleLogics mod)
-
-    chainEdges = flip S.foldMapWithIndex layout $ \i stage ->
-        flip foldMap [0 .. S.length stage - 1] $ \j ->
-            let prev = if j > 0 then stageChainKey cfg i (j - 1)
-                    else stageStartKey cfg i in
-            S.singleton $ DE $ DotEdge prev (stageChainKey cfg i j) [invis, heavy]
-
-    stageLastKey cfg i stage =
-        if len > 0 then stageChainKey cfg i (len - 1)
-            else stageStartKey cfg i
-      where
-        len = S.length stage
-
-    interChainEdges = flip S.foldMapWithIndex layout $ \i stage ->
-        if i < S.length layout - 1 then
-            S.singleton $ DE $
-                DotEdge (stageLastKey cfg i stage) (stageStartKey cfg (i + 1)) [invis, heavy]
-        else S.empty
-
-    chainStartEdge :: Seq (DotStatement Text)
-    chainStartEdge = S.fromList $ maybeToList $ do
-        guard $ not $ S.null layout
-        guard $ not $ S.null $ moduleInputs mod
-        return $ DE $ DotEdge (extKey cfg Source 0) (stageStartKey cfg 0) [invis, heavy]
-
-    chainEndEdge :: Seq (DotStatement Text)
-    chainEndEdge = S.fromList $ maybeToList $ do
-        let i = S.length layout - 1
-        stage <- layout S.!? i
-        guard $ not $ S.null $ moduleOutputs mod
-        return $ DE $ DotEdge (stageLastKey cfg i stage) (extKey cfg Sink 0) [invis, heavy]
-
-    mkNode (NLogic idx) = logicNode' design cfg idx (mod `moduleLogic` idx)
-    mkNode (NNet i) = netNode' cfg (unwrapNetId i) (mod `moduleNet` i)
-
-
--- Combined ID type for both logic and net nodes.  Used for tracking nodes
--- through the pipeline-stage layout process.
-data NodeId = NLogic Int | NNet NetId
+    -- Rank marker for the start of a pipeline stage.
+    NrmStageStart Int |
+    -- Rank marker for a given rank within a pipeline stage.
+    NrmStageRank Int Int |
+    -- Rank marker for the output cluster.  Used to force the outputs to be to
+    -- the right of the last pipeline stage.  (`NStageStart 0` serves a similar
+    -- role for the inputs and the first stage.)
+    NrmOutputRank
     deriving (Show, Eq, Ord)
 
-nodePipelineStage mod (NLogic idx) =
-    annPipelineStage $ logicAnn $ mod `moduleLogic` idx
-nodePipelineStage mod (NNet i) =
-    annPipelineStage $ netAnn $ mod `moduleNet` i
+-- During graph output, we divide the nodes into buckets, then output (most)
+-- buckets together as clusters or subgraphs.
+data Bucket =
+    -- Emit the node at top level, not grouped with any other nodes.
+    BFree |
+    -- Emit the node as part of the external port cluster on the given side.
+    BExtPort Side |
+    -- Emit the node as part of the pipeline stage `rank=same` subgraph for the
+    -- given stage (first `Int`) and rank (second `Int`).
+    BPipeline Int Int |
+    -- Emit the node as part of the pipeline start subgraph for the given
+    -- stage.  Note that `BPipelineStart 0` and `BExtPort Source` are actually
+    -- emitted together.
+    BPipelineStart Int |
+    -- Emit the node with the same rank as the outputs, but outside the output
+    -- cluster.
+    BOutputRank
+    deriving (Show, Eq, Ord)
 
--- For each stage (0 .. cfgPipelineStages - 1), for each rank, a list of nodes
--- present in that rank of that stage.
-type StageLayout = Seq (Seq (Seq NodeId))
+annBucket ann = case (annPipelineStage ann, annPipelineRank ann) of
+    (Just stage, Just rank) -> BPipeline stage rank
+    _ -> BFree
 
--- Given a module, compute the pipeline stage and (intra-stage) node rank for
--- each net and logic node in the module's output graph.  The output map only
--- contains entries for those nodes that have a (non-`Nothing`) pipeline stage
--- annotation.
-layoutModule :: Design a -> Cfg -> Module Ann -> IO StageLayout
-layoutModule design cfg mod = graphvizWithHandle Dot g DotOutput $ \h -> do
-    t <- T.hGetContents h
-    return $ go $ parseDotGraphLiberally $ TL.fromStrict t
+nodeBucket _ (NExtPort side _) = BExtPort side
+nodeBucket mod (NLogic idx) =
+    annBucket $ logicAnn $ mod `moduleLogic` idx
+nodeBucket mod (NNet i) =
+    annBucket $ netAnn $ mod `moduleNet` i
+nodeBucket _ (NrmStageStart i) = BPipelineStart i
+nodeBucket _ (NrmStageRank i j) = BPipeline i j
+nodeBucket _ NrmOutputRank = BOutputRank
+
+-- Short label, mainly used for debug displays of rank markers.
+nodeShortLabel (NExtPort Source i) = "i" <> T.pack (show i)
+nodeShortLabel (NExtPort Sink i) = "o" <> T.pack (show i)
+nodeShortLabel (NLogic i) = "l" <> T.pack (show i)
+nodeShortLabel (NNet (NetId i)) = "n" <> T.pack (show i)
+nodeShortLabel (NrmStageStart i) = "s" <> T.pack (show i)
+nodeShortLabel (NrmStageRank i j) = "s" <> T.pack (show i) <> "." <> T.pack (show j)
+nodeShortLabel NrmOutputRank = "out"
+
+nodeKey cfg (NExtPort side i) = extKey cfg side i
+nodeKey cfg (NLogic idx) = logicKey cfg idx
+nodeKey cfg (NNet (NetId idx)) = netKey cfg idx
+nodeKey cfg (NrmStageStart i) = stageStartKey cfg i
+nodeKey cfg (NrmStageRank i j) = stageChainKey cfg i j
+nodeKey cfg NrmOutputRank = outputKey cfg
+
+bucketKey cfg BFree = joinKey [cfgPrefix cfg, "free"]
+bucketKey cfg (BExtPort side) = joinKey [cfgPrefix cfg, "ext", sideKey side]
+bucketKey cfg (BPipeline i j) = joinKey
+    [cfgPrefix cfg, "stage", T.pack $ show i, "rank", T.pack $ show j]
+bucketKey cfg (BPipelineStart i) =
+    joinKey [cfgPrefix cfg, "stage", T.pack $ show i, "start"]
+bucketKey cfg BOutputRank = joinKey [cfgPrefix cfg, "output"]
+
+
+bucketNodes :: Module Ann -> [(NodeId, DotNode Text)] -> Map Bucket (Seq (DotNode Text))
+bucketNodes mod xs = M.unionsWith (<>) $ map (\(i,n) ->
+    M.singleton (nodeBucket mod i) (S.singleton n)) xs
+
+modulePortNodes :: Cfg -> Module Ann -> [(NodeId, DotNode Text)]
+modulePortNodes cfg mod =
+    go Source (moduleInputs mod) <>
+    go Sink (moduleOutputs mod)
   where
-    netNodes :: Seq (DotNode Text)
-    netKeyMap :: Map Text NodeId
-    (netNodes, netKeyMap) = S.foldMapWithIndex (\idx net ->
-            case netNode cfg idx net of
-                Nothing -> (S.empty, M.empty)
-                Just n -> (S.singleton n, M.singleton (netKey cfg idx) (NNet $ NetId idx)))
-        (moduleNets mod)
+    go side ports =
+        S.foldMapWithIndex (\idx port ->
+            [(NExtPort side idx, portNode cfg side idx port)]) ports
 
-    (logicNodes, logicKeyMap) = S.foldMapWithIndex (\idx logic ->
-            case logicNode design cfg idx logic of
-                Nothing -> (S.empty, M.empty)
-                Just n -> (S.singleton n, M.singleton (logicKey cfg idx) (NLogic idx)))
+moduleLogicNodes :: Design a -> Cfg -> Module Ann -> [(NodeId, DotNode Text)]
+moduleLogicNodes design cfg mod =
+    S.foldMapWithIndex (\idx logic -> case logicNode design cfg idx logic of
+            Nothing -> []
+            Just n -> [(NLogic idx, n)])
         (moduleLogics mod)
 
-    stmts =
-        portClusters cfg mod <>
-        fmap DN netNodes <>
-        fmap DN logicNodes <>
-        fmap (\(a,b) -> DE $ graphEdge cfg a b)
-            (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
+moduleNetNodes :: Cfg -> Module Ann -> [(NodeId, DotNode Text)]
+moduleNetNodes cfg mod =
+    S.foldMapWithIndex (\idx net -> case netNode cfg idx net of
+            Nothing -> []
+            Just n -> [(NNet $ NetId idx, n)])
+        (moduleNets mod)
 
-    keyMap = netKeyMap <> logicKeyMap
+moduleEdges :: Cfg -> Module Ann -> Seq (DotEdge Text)
+moduleEdges cfg mod =
+    fmap (\(a, b) -> graphEdge cfg a b) $
+        (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
 
-    g = DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
-        ( stmts
-        |> GA (GraphAttrs [RankDir FromLeft])
+
+invisNodeEntry :: Cfg -> NodeId -> (NodeId, DotNode Text)
+invisNodeEntry cfg n =
+    (n, DotNode (nodeKey cfg n) [mkLabel $ nodeShortLabel n, invis])
+
+invis = Style [SItem Invisible []]
+--invis = Style [SItem Dotted []]
+
+countStageLens :: Module Ann -> [NodeId] -> [Int]
+countStageLens mod ns = [fromMaybe 0 $ M.lookup i lenMap | i <- [0 .. maxStage]]
+  where
+    lenMap = M.unionsWith max $ map (\n -> case nodeBucket mod n of
+        BPipeline i j -> M.singleton i (j + 1)
+        _ -> M.empty) ns
+    maxStage = maximum $ 0 : M.keys lenMap
+
+-- Generate the rank-marker chain for pipeline stages, including the final
+-- `NrmOutputRank` node.  `stageMax` gives the number of ranks in each stage.
+stageChainNodes :: Cfg -> [Int] -> [(NodeId, DotNode Text)]
+stageChainNodes cfg stageLens =
+    concatMap go (zip [0..] stageLens) ++ [invisNodeEntry cfg NrmOutputRank]
+  where
+    go (stage, ranks) =
+        [invisNodeEntry cfg $ NrmStageStart stage] ++
+        [invisNodeEntry cfg $ NrmStageRank stage rank | rank <- [0 .. ranks - 1]]
+
+stageChainEdges :: Cfg -> [Int] -> Seq (DotEdge Text)
+stageChainEdges cfg stageLens =
+    let ns = map fst $ stageChainNodes cfg stageLens in
+    S.fromList $ zipWith (\a b ->
+            DotEdge (nodeKey cfg a) (nodeKey cfg b) [invis, Weight $ Dbl 10.0])
+        ns (tail ns)
+
+mkConstraint :: [Text] -> Seq (DotStatement Text) -> DotStatement Text
+mkConstraint idParts stmts =
+    SG $ DotSG False (Just $ joinGraphId idParts)
+        (GA (GraphAttrs [Rank SameRank]) <| stmts)
+
+mkCluster :: [Text] -> Seq (DotStatement Text) -> DotStatement Text
+mkCluster idParts stmts =
+    SG $ DotSG True (Just $ joinGraphId idParts) stmts
+
+
+-- Generate the Graphviz graph for a module.
+moduleGraph design cfg mod =
+    DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
+        ( moduleGraph' design cfg mod
+        |> labelStmt (moduleName mod)
+        |> GA (GraphAttrs [RankDir FromLeft, RankSep [1.5],
+            customAttribute "newrank" "true"])
         )
 
-    go :: DotGraph Text -> StageLayout
-    go g' = mkLayout $ mkPosMap $ collectPos g'
+moduleGraph' :: Design a -> Cfg -> Module Ann -> Seq (DotStatement Text)
+moduleGraph' design cfg mod =
+    mkConstraint [bucketKey cfg $ BExtPort Source, "outer"]
+        (mkCluster [bucketKey cfg $ BExtPort Source] (bucketStmts $ BExtPort Source) <|
+            bucketStmts (BPipelineStart 0)) <|
+    mkConstraint [bucketKey cfg $ BExtPort Sink, "outer"]
+        (mkCluster [bucketKey cfg $ BExtPort Sink] (bucketStmts $ BExtPort Sink) <|
+            bucketStmts BOutputRank) <|
+    fmap (\b -> mkConstraint [bucketKey cfg b] $ bucketStmts b) pipelineBuckets <>
+    bucketStmts BFree <>
+    fmap DE allEdges
+  where
+    modNodes =
+        modulePortNodes cfg mod ++
+        moduleLogicNodes design cfg mod ++
+        moduleNetNodes cfg mod
+    stageLens = countStageLens mod (map fst modNodes)
+    allNodes = modNodes ++ stageChainNodes cfg stageLens
 
-    -- Output is `[(stage index, x-position, node ID)]`.
-    collectPos :: DotGraph Text -> [(Int, Double, NodeId)]
-    collectPos g' = flip concatMap (toList $ graphStatements g') (\s -> case s of
-        DN n -> maybeToList $ do
-            i <- M.lookup (nodeID n) keyMap
-            (x,y) <- graphNodePos n
-            stage <- nodePipelineStage mod i
-            return $ (stage, x, i)
-        _ -> [])
+    allEdges = moduleEdges cfg mod <> stageChainEdges cfg stageLens
 
-    mkPosMap posList =
-        M.unionsWith (M.unionWith (<>)) $
-        map (\(s,x,i) -> M.singleton s (M.singleton x (S.singleton i))) $
-        posList
+    buckets :: Map Bucket (Seq (DotNode Text))
+    buckets = bucketNodes mod allNodes
 
-    mkLayout :: Map Int (Map Double (Seq NodeId)) -> Seq (Seq (Seq NodeId))
-    mkLayout posMap =
-        S.fromList $
-        map (\i -> maybe S.empty (S.fromList . M.elems) $ M.lookup i posMap) $
-        [0 .. cfgPipelineStages cfg - 1]
+    bucketStmts :: Bucket -> Seq (DotStatement Text)
+    bucketStmts b = fmap DN $ fromMaybe S.empty $ M.lookup b buckets
 
-graphNodePos :: DotNode a -> Maybe (Double, Double)
-graphNodePos n = getFirst $ foldMap (\att -> case att of
+    pre = cfgPrefix cfg
+
+    -- `tail` skips the `BPipelineStart 0` bucket, which is included as part of
+    -- the input-port rank.
+    pipelineBuckets = S.fromList $ tail $ concat $
+        zipWith (\i len -> BPipelineStart i : [BPipeline i j | j <- [0 .. len - 1]])
+            [0..] stageLens
+
+
+-- Given a module, compute the pipeline stage and (intra-stage) node rank for
+-- each net and logic node in the module's output graph, and add it to the
+-- `annPipelineRank` field of each node's `Ann`.
+layoutModule :: Design a -> Cfg -> Module Ann -> IO (Module Ann)
+layoutModule design cfg mod = graphvizWithHandle Dot g DotOutput $ \h -> do
+    t <- T.hGetContents h
+    return $ updateRanks cfg (parseDotGraphLiberally $ TL.fromStrict t) mod
+  where
+    g = moduleGraph design cfg mod
+
+updateRanks :: Cfg -> DotGraph Text -> Module Ann -> Module Ann
+updateRanks cfg g mod = mod
+    { moduleLogics = S.mapWithIndex goLogic $ moduleLogics mod
+    , moduleNets = S.mapWithIndex goNet $ moduleNets mod
+    }
+  where
+    nodeAttrs :: Map Text [Attribute]
+    nodeAttrs = fmap snd $ nodeInformation False g
+
+    logicStageRanks :: [(Int, Double, NodeId)]
+    logicStageRanks = flip S.foldMapWithIndex (moduleLogics mod) $ \idx l ->
+        fromMaybe [] $ do
+            stage <- annPipelineStage $ logicAnn l
+            attrs <- M.lookup (logicKey cfg idx) nodeAttrs
+            (x, y) <- attrPos attrs
+            return $ [(stage, x, NLogic idx)]
+
+    netStageRanks :: [(Int, Double, NodeId)]
+    netStageRanks = flip S.foldMapWithIndex (moduleNets mod) $ \idx l ->
+        fromMaybe [] $ do
+            stage <- annPipelineStage $ netAnn l
+            attrs <- M.lookup (netKey cfg idx) nodeAttrs
+            (x, y) <- attrPos attrs
+            return $ [(stage, x, NNet $ NetId idx)]
+
+    srByStage :: Map Int [(Double, NodeId)]
+    srByStage = M.fromListWith (<>) $
+        map (\(s,x,i) -> (s, [(x, i)])) $
+        logicStageRanks ++ netStageRanks
+
+    indexRanks :: [(Double, NodeId)] -> Map NodeId Int
+    indexRanks xs = M.fromList $ do
+        (rank, is) <- zip [0..] $ M.elems $
+            M.fromListWith (<>) $ map (\(x,i) -> (x, [i])) xs
+        i <- is
+        return (i, rank)
+
+    nodeRank :: Map NodeId Int
+    nodeRank = mconcat $ map indexRanks $ M.elems srByStage
+
+    goLogic idx l = case M.lookup (NLogic idx) nodeRank of
+        Just rank -> l { logicAnn = (logicAnn l) { annPipelineRank = Just rank } }
+        Nothing -> l
+
+    goNet idx l = case M.lookup (NNet $ NetId idx) nodeRank of
+        Just rank -> l { netAnn = (netAnn l) { annPipelineRank = Just rank } }
+        Nothing -> l
+
+
+attrPos :: [Attribute] -> Maybe (Double, Double)
+attrPos attrs = getFirst $ foldMap (\attr -> case attr of
     Pos (PointPos p) -> First $ Just (xCoord p, yCoord p)
-    _ -> First $ Nothing) (nodeAttributes n)
+    _ -> First $ Nothing) attrs
+
 
 graphModule :: Design a -> Cfg -> Module Ann -> IO (DotGraph Text)
 graphModule design cfg mod = do
-    layout <- layoutModule design cfg mod
-    let stmts = graphModuleStaged design cfg mod layout
-    return $ DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
-        ( stmts
-        |> labelStmt (moduleName mod)
-        |> GA (GraphAttrs [RankDir FromLeft, RankSep [1.5]])
-        )
+    mod' <- layoutModule design cfg mod
+    return $ moduleGraph design cfg mod'
 
 printGraphviz :: DotGraph Text -> String
 printGraphviz g = TL.unpack $ printDotGraph g

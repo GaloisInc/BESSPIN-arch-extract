@@ -120,7 +120,7 @@ main = do
     -}
 
     let a' = Design $ fmap (
-            mapAnn (\stage -> Ann
+            mapAnn (\stage -> defaultAnn
                 { annColor = case stage of
                     Just 1 -> Just $ X11Color Red
                     Just 2 -> Just $ X11Color Orange
