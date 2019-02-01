@@ -93,6 +93,12 @@ struct IdMap {
     uint32_t fresh() {
         return next_id++;
     }
+
+    void reset() {
+        obj_ids.clear();
+        next_id = 1;
+        obj_ids.emplace(nullptr, 0);
+    }
 };
 
 struct Span {
@@ -677,6 +683,7 @@ int main(int argc, char **argv) {
         len += more;
         delete[] buf;
         buf = new uint8_t[len];
+        ids.reset();
         cbor_encoder_init(enc.ce.get(), buf, len, 0);
         encode_project(enc);
     }
