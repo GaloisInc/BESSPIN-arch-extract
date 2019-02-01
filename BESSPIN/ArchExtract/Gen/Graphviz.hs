@@ -330,26 +330,47 @@ logicTableNode cfg d idx l =
             convColor (annColor $ logicAnn l))
 
 
-graphEdge :: Cfg -> PortId -> PortId -> DotEdge Text
-graphEdge cfg n1 n2 = DotEdge end1 end2 attrs
+graphEdge :: Cfg -> Module a -> PortId -> PortId -> DotEdge Text
+graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
   where
-    go (PConn side (ExtPort idx)) = (extKey cfg side idx, Nothing)
+    go (PConn side (ExtPort idx)) =
+        (extKey cfg side idx,
+            Nothing,
+            Just $ portTy $ moduleSidePort mod side idx)
     go (PConn side (LogicPort idx portIdx)) =
-        (logicKey cfg idx, Just $ joinKey [sideKey side, T.pack $ show portIdx])
-    go (PNet idx) = (netKey cfg idx, Nothing)
-    go (PBasicLogic idx) = (logicKey cfg idx, Nothing)
+        (logicKey cfg idx,
+            Just $ joinKey [sideKey side, T.pack $ show portIdx],
+            Just $ pinTy $ logicSidePin (mod `moduleLogic` idx) side portIdx)
+    go (PNet idx) = (netKey cfg idx, Nothing, Nothing)
+    go (PBasicLogic idx) = (logicKey cfg idx, Nothing, Nothing)
 
-    (end1, port1) = go n1
-    (end2, port2) = go n2
+    (end1, port1, ty1) = go n1
+    (end2, port2, ty2) = go n2
+
+    goPort portAttr portSide Nothing = []
+    goPort portAttr portSide (Just port) =
+        [portAttr $ LabelledPort (PN $ TL.fromStrict port) (Just portSide)]
+
+    goTy labelAttr ty = case ty of
+        Nothing -> []
+        Just (TWire False False) -> []
+        Just (TWire w d) -> [labelAttr $ StrLabel $ TL.fromStrict $ busLabel w d, bold]
+        Just (TEnum ty) -> goTy labelAttr (Just ty)
+        Just (TAlias _ ty) -> goTy labelAttr (Just ty)
+        Just TSimVal -> [gray]
+      where
+        busLabel False False = ""
+        busLabel True False = "*"
+        busLabel False True = "1x*"
+        busLabel True True = "*x*"
+        bold = Style [SItem Bold []]
+        gray = Color $ toColorList [RGB 150 150 150]
 
     attrs =
-        (case port1 of
-            Nothing -> []
-            Just port -> [TailPort $ LabelledPort (PN $ TL.fromStrict port) (Just East)])
-        ++
-        (case port2 of
-            Nothing -> []
-            Just port -> [HeadPort $ LabelledPort (PN $ TL.fromStrict port) (Just West)])
+        goPort TailPort East port1 ++
+        goPort HeadPort West port2 ++
+        goTy TailLabel ty1 ++
+        goTy HeadLabel ty2
 
 
 -- Combined ID type for all nodes that appear in the generated graph.  Useful
@@ -462,7 +483,7 @@ moduleNetNodes cfg mod =
 
 moduleEdges :: Cfg -> Module Ann -> Seq (DotEdge Text)
 moduleEdges cfg mod =
-    fmap (\(a, b) -> graphEdge cfg a b) $
+    fmap (\(a, b) -> graphEdge cfg mod a b) $
         (filterEdges cfg mod $ allNetEdges cfg $ moduleNets mod)
 
 

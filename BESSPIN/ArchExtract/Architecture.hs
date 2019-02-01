@@ -127,6 +127,10 @@ moduleInput m i = moduleInputs m `S.index` i
 moduleOutput :: Module ann -> Int -> Port
 moduleOutput m i = moduleOutputs m `S.index` i
 
+moduleSidePort :: Module ann -> Side -> Int -> Port
+moduleSidePort m Source i = moduleInput m i
+moduleSidePort m Sink i = moduleOutput m i
+
 moduleLogic :: Module ann -> Int -> Logic ann
 moduleLogic m i = moduleLogics m `S.index` i
 
@@ -139,11 +143,19 @@ logicInput l i = logicInputs l `S.index` i
 logicOutput :: Logic ann -> Int -> Pin
 logicOutput l i = logicOutputs l `S.index` i
 
+logicSidePin :: Logic ann -> Side -> Int -> Pin
+logicSidePin l Source i = logicOutput l i
+logicSidePin l Sink i = logicInput l i
+
 netSource :: Net ann -> Int -> Conn
 netSource n i = netSources n `S.index` i
 
 netSink :: Net ann -> Int -> Conn
 netSink n i = netSinks n `S.index` i
+
+netSideConn :: Net ann -> Side -> Int -> Conn
+netSideConn n Source i = netSource n i
+netSideConn n Sink i = netSink n i
 
 
 
