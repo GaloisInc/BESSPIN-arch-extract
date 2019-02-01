@@ -6,6 +6,7 @@ import Control.Monad
 import qualified Data.ByteString.Lazy as BS
 import Data.Map (Map)
 import qualified Data.Map as M
+import Data.Maybe
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
@@ -284,7 +285,12 @@ clsNode cls = case T.unpack cls of
         return $ TypeId name ty
 
     "N7Verific12VeriDataTypeE" -> do
-        ty <- baseType
+        -- The `Nothing` case happens when the net uses the default ned type.
+        -- We blindly assume the default is `wire`.
+        --
+        -- Note this is different from the case of implicitly-declared nets,
+        -- which don't have a `VeriDataType` attached at all.
+        ty <- fromMaybe TWire <$> optBaseType
         signed <- signing
         dims <- optNode
         return $ DataType ty signed dims
@@ -468,15 +474,15 @@ clsNode cls = case T.unpack cls of
         return $ QuestionColon cond then_ else_
 
     "N7Verific17VeriUnaryOperatorE" -> do
-        oper <- integer
+        op <- unOp
         arg <- node
-        return $ UnaryOperator arg
+        return $ UnaryOperator op arg
 
     "N7Verific18VeriBinaryOperatorE" -> do
-        oper <- integer
+        op <- binOp
         left <- node
         right <- node
-        return $ BinaryOperator left right
+        return $ BinaryOperator op left right
 
     "N7Verific16VeriSelectedNameE" -> do
         base <- node
@@ -544,14 +550,16 @@ alwaysKind = integer >>= \x -> case x of
     VERI_ALWAYS_LATCH -> return AkLatch
     _ -> fail $ "unknown AlwaysKind enum: " ++ show x
 
-baseType :: DecodeM BaseType
-baseType = integer >>= \x -> case x of
-    VERI_INTEGER -> return TInteger
-    VERI_REG -> return TReg
-    VERI_TRI -> return TTri
-    VERI_STRINGTYPE -> return TString
-    VERI_INT -> return TInt
-    VERI_LOGIC -> return TLogic
+optBaseType :: DecodeM (Maybe BaseType)
+optBaseType = integer >>= \x -> case x of
+    0 -> return Nothing
+    VERI_INTEGER -> return $ Just TInteger
+    VERI_REG -> return $ Just TReg
+    VERI_WIRE -> return $ Just TWire
+    VERI_TRI -> return $ Just TTri
+    VERI_STRINGTYPE -> return $ Just TString
+    VERI_INT -> return $ Just TInt
+    VERI_LOGIC -> return $ Just TLogic
     _ -> fail $ "unknown BaseType enum: " ++ show x
 
 signing :: DecodeM Bool
@@ -565,6 +573,41 @@ declKindIsTypedef :: DecodeM Bool
 declKindIsTypedef = integer >>= \x -> case x of
     VERI_TYPEDEF -> return True
     _ -> return False
+
+unOp :: DecodeM UnOp
+unOp = integer >>= \x -> case x of
+    VERI_MIN -> return UNeg
+    VERI_REDNOT -> return UNot
+    VERI_REDAND -> return $ UReduce BAnd
+    VERI_REDOR -> return $ UReduce BOr
+    VERI_REDXOR -> return $ UReduce BXor
+    VERI_REDNAND -> return $ UReduceNot BAnd
+    VERI_REDNOR -> return $ UReduceNot BOr
+    VERI_REDXNOR -> return $ UReduceNot BXor
+    VERI_LOGNOT -> return ULogNot
+    _ -> fail $ "unknown UnOp enum: " ++ show x
+
+binOp :: DecodeM BinOp
+binOp = integer >>= \x -> case x of
+    VERI_PLUS -> return BAdd
+    VERI_MIN -> return BSub
+    VERI_MUL -> return BMul
+    VERI_DIV -> return BDiv
+    VERI_MODULUS -> return BMod
+    VERI_REDAND -> return BAnd
+    VERI_REDOR -> return BOr
+    VERI_REDXOR -> return BXor
+    VERI_LOGEQ -> return BEq
+    VERI_LOGNEQ -> return BNe
+    VERI_LT -> return BLt
+    VERI_LEQ -> return BLe
+    VERI_GT -> return BGt
+    VERI_GEQ -> return BGe
+    VERI_LOGAND -> return BLogAnd
+    VERI_LOGOR -> return BLogOr
+    VERI_LSHIFT -> return BShl
+    VERI_RSHIFT -> return BShr
+    _ -> fail $ "unknown BinOp enum: " ++ show x
 
 
 fileInfo :: DecodeM FileInfo

@@ -158,10 +158,12 @@ data Node =
     , questionColonElse :: NodeId
     } |
     UnaryOperator
-    { unaryOperatorArg :: NodeId
+    { unaryOperatorOp :: UnOp
+    , unaryOperatorArg :: NodeId
     } |
     BinaryOperator
-    { binaryOperatorLeft :: NodeId
+    { binaryOperatorOp :: BinOp
+    , binaryOperatorLeft :: NodeId
     , binaryOperatorRight :: NodeId
     } |
     SelectedName
@@ -197,7 +199,25 @@ data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
 data Edge = PosEdge | NegEdge
     deriving (Show, Eq)
 
-data BaseType = TLogic | TReg | TTri | TInt | TInteger | TString
+data BaseType = TLogic | TWire | TReg | TTri | TInt | TInteger | TString
+    deriving (Show, Eq)
+
+data UnOp =
+    UNeg |
+    UNot |
+    ULogNot |
+    UReduce BinOp |
+    UReduceNot BinOp |
+    UOther
+    deriving (Show, Eq)
+
+data BinOp =
+    BAdd | BSub | BMul | BDiv | BMod |
+    BAnd | BOr | BXor |
+    BLogAnd | BLogOr |
+    BEq | BNe | BLt | BLe | BGt | BGe |
+    BShl | BShr |
+    BOther
     deriving (Show, Eq)
 
 data Span = Span !Word32 !Word32

@@ -132,6 +132,7 @@ convTy _ (V.TTy base packed unpacked) =
     case base of
         V.TLogic -> wire
         V.TReg -> wire
+        V.TWire -> wire
         V.TTri -> wire
         V.TInt -> sim
         V.TInteger -> sim

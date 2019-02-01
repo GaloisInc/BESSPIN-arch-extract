@@ -224,8 +224,8 @@ mkExpr i = do
         R.MultiConcat rep es -> MultiConcat <$> mkExpr rep <*> mapM mkExpr es
         R.QuestionColon cond then_ else_ ->
             IfExpr <$> mkExpr cond <*> mkExpr then_ <*> mkExpr else_
-        R.UnaryOperator arg -> Unary <$> mkExpr arg
-        R.BinaryOperator lhs rhs -> Binary <$> mkExpr lhs <*> mkExpr rhs
+        R.UnaryOperator _ arg -> Unary <$> mkExpr arg
+        R.BinaryOperator _ lhs rhs -> Binary <$> mkExpr lhs <*> mkExpr rhs
         R.SelectedName base name -> Field <$> mkExpr base <*> pure name
         R.MultiAssignmentPattern rep es ->
             AssignPat <$> mkExpr rep <*> mapM mkExpr es
