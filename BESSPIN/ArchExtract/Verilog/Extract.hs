@@ -83,6 +83,7 @@ data NetParts = NetParts
     { netPartsName :: Text
     , netPartsNamePriority :: Int
     , netPartsOrigin :: NetOrigin
+    , netPartsTy :: A.Ty
     }
     deriving (Show)
 
@@ -98,9 +99,8 @@ type NetMap = Map NetOrigin (NetId, A.Ty)
 buildNets :: [NetParts] -> (Seq (A.Net ()), NetMap)
 buildNets nps = foldl f (S.empty, M.empty) nps
   where
-    f (nets, netMap) (NetParts name prio origin) =
+    f (nets, netMap) (NetParts name prio origin ty) =
         let netId = NetId $ S.length nets in
-        let ty = Ty in -- TODO
         (nets |> Net name prio S.empty S.empty (),
             M.insert origin (netId, ty) netMap)
 
@@ -109,20 +109,41 @@ prioInstPort = 2
 prioWire = 4
 prioDcNet = -1
 
-declNet :: Seq V.Module -> Int -> V.Decl -> [NetParts]
-declNet vMods i (V.PortDecl name _ _) = [NetParts name prioExtPort $ NoDecl i]
-declNet vMods i (V.ParamDecl name _) = []
-declNet vMods i (V.VarDecl name _) = [NetParts name prioWire $ NoDecl i]
-declNet vMods i (V.TypedefDecl name _) = []
-declNet vMods i (V.InstDecl name modId _) =
-    let vMod = vMods `S.index` modId in
+declNet :: Seq V.Module -> V.Module -> Int -> V.Decl -> [NetParts]
+-- TODO: types
+declNet vMods vMod i (V.PortDecl name vTy _) =
+    [NetParts name prioExtPort (NoDecl i) (convTy vMod vTy)]
+declNet vMods vMod i (V.ParamDecl name vTy) = []
+declNet vMods vMod i (V.VarDecl name vTy) =
+    [NetParts name prioWire (NoDecl i) (convTy vMod vTy)]
+declNet vMods vMod i (V.TypedefDecl _ _) = []
+declNet vMods vMod i (V.InstDecl name modId _) =
+    let vInstMod = vMods `S.index` modId in
     zipWith (\j declId ->
-            let portName = V.declName $ moduleDecls vMod `S.index` declId in
-            NetParts (name <> T.pack "." <> portName) prioInstPort (NoInstPort i j))
-        [0..] (modulePorts vMod)
+            let PortDecl portName vTy _ = moduleDecls vInstMod `S.index` declId in
+            let ty = convTy vInstMod vTy in
+            NetParts (name <> T.pack "." <> portName) prioInstPort (NoInstPort i j) ty)
+        [0..] (modulePorts vInstMod)
+
+convTy :: V.Module -> V.Ty -> A.Ty
+convTy _ (V.TTy base packed unpacked) =
+    let wire = A.TWire (not $ null packed) (not $ null unpacked) in
+    let sim = A.TSimVal in
+    case base of
+        V.TLogic -> wire
+        V.TReg -> wire
+        V.TTri -> wire
+        V.TInt -> sim
+        V.TInteger -> sim
+        V.TString -> sim
+convTy vMod (V.TEnum ty) = A.TEnum $ convTy vMod ty
+convTy vMod (V.TRef declId) =
+    let V.TypedefDecl name ty = V.moduleDecls vMod `S.index` declId in
+    A.TAlias name $ convTy vMod ty
+convTy vMod V.TInfer = A.TWire False False -- TODO
 
 moduleNets :: Seq V.Module -> V.Module -> [NetParts]
-moduleNets vMods vMod = S.foldMapWithIndex (declNet vMods) (moduleDecls vMod)
+moduleNets vMods vMod = S.foldMapWithIndex (declNet vMods vMod) (moduleDecls vMod)
 
 
 -- Building `moduleInputs`, `moduleOutputs`, and `moduleInsts` from
@@ -311,12 +332,12 @@ buildRegisters targets mod = reconnectNets $ mod
         fmap (\port -> port { portNet = goNetId $ portNet port }) (A.moduleOutputs mod)
     oldLogics = fmap
         (\logic -> logic { logicInputs = fmap (\p ->
-            Pin (goNetId $ pinNet p) Ty -- TODO
+            Pin (goNetId $ pinNet p) TSimVal -- TODO
             ) $ logicInputs logic })
         (A.moduleLogics mod)
     newLogics = S.fromList $ map (\(old, new) ->
             let net = mod `A.moduleNet` old in
-            let ty = Ty in -- TODO
+            let ty = TSimVal in -- TODO
             Logic (LkRegister $ A.netName net)
                 (S.singleton $ Pin old ty)
                 (S.singleton $ Pin new ty) ())

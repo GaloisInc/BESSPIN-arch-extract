@@ -56,7 +56,7 @@ aggregateModule modId boundaryNets excludeNets d =
     connTaken (ExtPort _) = False
     connTaken (LogicPort i _) = i `Set.member` takenLogics
 
-    inferNetTy i net = Ty -- TODO
+    inferNetTy i net = TSimVal -- TODO
 
     -- List of nets that will become input ports.  These are nets that pass
     -- data from a non-taken logic to a taken one.

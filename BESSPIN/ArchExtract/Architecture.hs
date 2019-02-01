@@ -90,7 +90,20 @@ data Conn = ExtPort Int | LogicPort Int Int
     deriving (Show, Eq, Ord, Typeable, Data)
 
 
-data Ty = Ty
+data Ty =
+    TWire
+    { tWireWidth :: Bool
+    , tWireDepth :: Bool
+    } |
+    TEnum
+    { tEnumBase :: Ty
+    } |
+    TAlias
+    { tAliasName :: Text
+    , tAliasResolved :: Ty
+    } |
+    -- Type for values used only in simulation (int, string, etc).
+    TSimVal
     deriving (Show, Typeable, Data)
 
 
