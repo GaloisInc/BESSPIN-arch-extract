@@ -91,7 +91,7 @@ getInputs _ NInput = []
 getInputs mod NOutput =
     map (NNet . portNet) $ toList $ moduleOutputs mod
 getInputs mod (NLogic i) =
-    map NNet $ toList $ logicInputs $ mod `moduleLogic` i
+    map (NNet . pinNet) $ toList $ logicInputs $ mod `moduleLogic` i
 getInputs mod (NNet i) =
     map go $ toList $ netSources $ mod `moduleNet` i
   where
@@ -102,7 +102,7 @@ getOutputs mod NInput =
     map (NNet . portNet) $ toList $ moduleInputs mod
 getOutputs _ NOutput = []
 getOutputs mod (NLogic i) =
-    map NNet $ toList $ logicOutputs $ mod `moduleLogic` i
+    map (NNet . pinNet) $ toList $ logicOutputs $ mod `moduleLogic` i
 getOutputs mod (NNet i) =
     map go $ toList $ netSinks $ mod `moduleNet` i
   where

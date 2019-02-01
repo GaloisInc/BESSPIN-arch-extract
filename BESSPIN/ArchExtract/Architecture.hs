@@ -34,11 +34,19 @@ data Module ann = Module
     }
     deriving (Show, Typeable, Data)
 
--- A blob of anonymous logic.
+
+data Port = Port
+    { portName :: Text
+    , portNet :: NetId
+    , portTy :: Ty
+    }
+    deriving (Show, Typeable, Data)
+
+
 data Logic ann = Logic
     { logicKind :: LogicKind
-    , logicInputs :: Seq NetId
-    , logicOutputs :: Seq NetId
+    , logicInputs :: Seq Pin
+    , logicOutputs :: Seq Pin
     , logicAnn :: ann
     }
     deriving (Show, Typeable, Data)
@@ -56,11 +64,12 @@ data Inst = Inst
     }
     deriving (Show, Eq, Typeable, Data)
 
-data Port = Port
-    { portName :: Text
-    , portNet :: NetId
+data Pin = Pin
+    { pinNet :: NetId
+    , pinTy :: Ty
     }
     deriving (Show, Typeable, Data)
+
 
 data Net ann = Net
     { netName :: Text
@@ -79,6 +88,11 @@ data Net ann = Net
 -- `logicInputs`/`Outputs`.
 data Conn = ExtPort Int | LogicPort Int Int
     deriving (Show, Eq, Ord, Typeable, Data)
+
+
+data Ty = Ty
+    deriving (Show, Typeable, Data)
+
 
 -- Enum for indicating a side of a net, logic, or module.  For clarity, these
 -- are named `Source` and `Sink` instead of `Input` and `Output` because
@@ -106,10 +120,10 @@ moduleLogic m i = moduleLogics m `S.index` i
 moduleNet :: Module ann -> NetId -> Net ann
 moduleNet m (NetId i) = moduleNets m `S.index` i
 
-logicInput :: Logic ann -> Int -> NetId
+logicInput :: Logic ann -> Int -> Pin
 logicInput l i = logicInputs l `S.index` i
 
-logicOutput :: Logic ann -> Int -> NetId
+logicOutput :: Logic ann -> Int -> Pin
 logicOutput l i = logicOutputs l `S.index` i
 
 netSource :: Net ann -> Int -> Conn

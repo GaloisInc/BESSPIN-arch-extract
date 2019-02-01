@@ -241,7 +241,7 @@ convColor (Just c) = [Color $ toColorList [c]]
 
 
 portNode :: Cfg -> Side -> Int -> Port -> DotNode Text
-portNode cfg side idx (Port name _) =
+portNode cfg side idx (Port name _ _) =
     let key = extKey cfg side idx in
     let label = name in
     DotNode key [mkLabel label]

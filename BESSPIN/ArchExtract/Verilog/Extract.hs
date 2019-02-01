@@ -73,7 +73,7 @@ extractMod vMods vMod =
     logics = convItems vMods netMap vMod
 
     stateNets = stateHoldingNets vMod
-    stateNets' = Set.map (\no -> netMap M.! no) stateNets
+    stateNets' = Set.map (\no -> fst $ netMap M.! no) stateNets
 
 
 -- Building `moduleNets` from `V.moduleDecls`
@@ -93,15 +93,16 @@ data NetOrigin =
     NoInstPort { noDeclId :: Int, noPortIdx :: Int }
     deriving (Show, Eq, Ord)
 
-type NetMap = Map NetOrigin NetId
+type NetMap = Map NetOrigin (NetId, A.Ty)
 
 buildNets :: [NetParts] -> (Seq (A.Net ()), NetMap)
 buildNets nps = foldl f (S.empty, M.empty) nps
   where
     f (nets, netMap) (NetParts name prio origin) =
         let netId = NetId $ S.length nets in
+        let ty = Ty in -- TODO
         (nets |> Net name prio S.empty S.empty (),
-            M.insert origin netId netMap)
+            M.insert origin (netId, ty) netMap)
 
 prioExtPort = 3
 prioInstPort = 2
@@ -131,7 +132,8 @@ convPorts :: NetMap -> V.Module -> (Seq A.Port, Seq A.Port)
 convPorts netMap vMod =
     mconcat $ map (\i ->
         let vPort = moduleDecls vMod `S.index` i in
-        let port = A.Port (V.declName vPort) (netMap M.! NoDecl i) in
+        let (net, ty) = netMap M.! NoDecl i in
+        let port = A.Port (V.declName vPort) net ty in
         case portDeclDir vPort of
             V.Input -> (S.singleton port, S.empty)
             V.Output -> (S.empty, S.singleton port)
@@ -141,11 +143,16 @@ convPorts netMap vMod =
 declInst :: Seq V.Module -> NetMap -> Int -> V.Decl -> Seq (A.Logic ())
 declInst vMods netMap i (V.InstDecl name modId _) =
     let vMod = vMods `S.index` modId in
-    let ins = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
-            portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Input, V.InOut]] in
-    let outs = [netMap M.! NoInstPort i j | (j, portIdx) <- zip [0..] (modulePorts vMod),
-            portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` [V.Output, V.InOut]] in
-    S.singleton $ Logic (LkInst $ Inst modId name) (S.fromList ins) (S.fromList outs) ()
+    let mkPins :: [PortDir] -> Seq A.Pin
+        mkPins dirs = S.fromList $ do
+            (j, portIdx) <- zip [0..] (modulePorts vMod)
+            guard $ portDeclDir (moduleDecls vMod `S.index` portIdx) `elem` dirs
+            let (net, ty) = netMap M.! NoInstPort i j
+            return $ Pin net ty
+    in
+    let ins = mkPins [V.Input, V.InOut] in
+    let outs = mkPins [V.Output, V.InOut] in
+    S.singleton $ Logic (LkInst $ Inst modId name) ins outs ()
 declInst _ _ _ _ = S.empty
 
 convInsts :: Seq V.Module -> NetMap -> V.Module -> Seq (A.Logic ())
@@ -184,7 +191,7 @@ mkLogic netMap kind ins outs = Logic kind (foldMap f ins) (foldMap f outs) ()
   where
     f def = case M.lookup def netMap of
         Nothing -> S.empty
-        Just n -> S.singleton n
+        Just (net, ty) -> S.singleton $ Pin net ty
 
 stmtLogic :: NetMap -> Stmt -> Seq (A.Logic ())
 stmtLogic netMap s = go S.empty s
@@ -303,10 +310,15 @@ buildRegisters targets mod = reconnectNets $ mod
     outputs' =
         fmap (\port -> port { portNet = goNetId $ portNet port }) (A.moduleOutputs mod)
     oldLogics = fmap
-        (\logic -> logic { logicInputs = fmap goNetId $ logicInputs logic })
+        (\logic -> logic { logicInputs = fmap (\p ->
+            Pin (goNetId $ pinNet p) Ty -- TODO
+            ) $ logicInputs logic })
         (A.moduleLogics mod)
     newLogics = S.fromList $ map (\(old, new) ->
             let net = mod `A.moduleNet` old in
-            Logic (LkRegister $ A.netName net) (S.singleton old) (S.singleton new) ())
+            let ty = Ty in -- TODO
+            Logic (LkRegister $ A.netName net)
+                (S.singleton $ Pin old ty)
+                (S.singleton $ Pin new ty) ())
         (M.toList reconnMap)
     logics' = oldLogics <> newLogics

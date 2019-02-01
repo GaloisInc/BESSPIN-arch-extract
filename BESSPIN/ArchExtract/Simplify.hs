@@ -38,8 +38,8 @@ reconnectNets mod = runST $ do
     connect (moduleInputs mod) portNet sources ExtPort
     connect (moduleOutputs mod) portNet sinks ExtPort
     void $ flip S.traverseWithIndex (moduleLogics mod) $ \i inst -> do
-        connect (logicInputs inst) id sinks (LogicPort i)
-        connect (logicOutputs inst) id sources (LogicPort i)
+        connect (logicInputs inst) pinNet sinks (LogicPort i)
+        connect (logicOutputs inst) pinNet sources (LogicPort i)
 
     nets' <- flip S.traverseWithIndex (moduleNets mod) $ \i net -> do
         netSources <- readArray sources (NetId i)
@@ -102,7 +102,7 @@ filterLogics f mod =
     act = do
         void $ flip S.traverseWithIndex (moduleLogics mod) $ \idx l -> do
             when (not $ f idx l) $ do
-                mergeNetSeq $ logicInputs l <> logicOutputs l
+                mergeNetSeq $ fmap pinNet (logicInputs l) <> fmap pinNet (logicOutputs l)
 
 -- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
 -- connected to the same nets.
@@ -132,21 +132,24 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
             goLogics logics <*> pure nets
 
     goPorts side ports = S.traverseWithIndex (goPort side) ports
-    goPort side idx (Port name netId) =
-        Port <$> pure name <*>
-            goNet (ExtPort idx) side netId (extPortName side name idx netId)
+    goPort side idx (Port name netId ty) = Port
+        <$> pure name
+        <*> goNet (ExtPort idx) side netId (extPortName side name idx netId)
+        <*> pure ty
+
+    goPins idx side pins = S.traverseWithIndex (goPin idx side) pins
+    goPin idx side pinIdx (Pin netId ty) = Pin
+        <$> goNet (LogicPort idx pinIdx) side netId (logicPortName side pinIdx netId)
+        <*> pure ty
 
     goLogics :: Monoid a => Seq (Logic a) -> NetM a (Seq (Logic a))
     goLogics logics = S.traverseWithIndex goLogic logics
     goLogic :: Monoid a => Int -> Logic a -> NetM a (Logic a)
     goLogic idx (Logic kind ins outs ann) =
         Logic <$> pure kind
-            <*> S.traverseWithIndex (go Sink) ins
-            <*> S.traverseWithIndex (go Source) outs
+            <*> goPins idx Sink ins
+            <*> goPins idx Source outs
             <*> pure ann
-      where
-        go side portIdx netId = goNet (LogicPort idx portIdx) side netId $
-            logicPortName side portIdx netId
 
     goNet conn side netId name =
         if f conn side netId (nets `S.index` unwrapNetId netId) then
