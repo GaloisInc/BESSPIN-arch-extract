@@ -502,7 +502,8 @@ void Encoder::tree_node(VeriTreeNode* x) {
     } else if (auto tr = exact_cast<VeriTypeRef>(x)) {
         sub.tree_node(tr->GetId());
     } else if (auto ti = exact_cast<VeriTypeId>(x)) {
-        sub.tree_node(ti->GetModuleItem());
+        sub.string(ti->Name());
+        sub.tree_node(ti->GetDataType());
     } else if (auto ds = exact_cast<VeriDotStar>(x)) {
         sub.scope(ds->GetDotStarScope());
     } else if (auto e = exact_cast<VeriEnum>(x)) {

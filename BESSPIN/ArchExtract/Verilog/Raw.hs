@@ -24,20 +24,30 @@ data Node =
     } |
     Variable
     { variableName :: Text
+    -- Data type can be null for implicitly declared vars
+    , variableDataType :: Maybe NodeId
     , variableDims :: Maybe NodeId
     , variableInit :: Maybe NodeId
     , variableDir :: Maybe PortDir
     } |
     ParamId
     { paramIdName :: Text
+    , paramIdDataType :: Maybe NodeId
     , paramIdInit :: Maybe NodeId
     , paramIdDims :: Maybe NodeId
     } |
     DataType
-    { dataTypeDims :: Maybe NodeId
+    { dataTypeType :: BaseType
+    , dataTypeSigned :: Bool
+    , dataTypeDims :: Maybe NodeId
+    } |
+    TypeRef
+    { typeRefDef :: NodeId
     } |
     TypeId
-    {} |
+    { typeIdName :: Text
+    , typeIdType :: NodeId
+    } |
     Enum
     { enumBaseType :: Maybe NodeId
     , enumVariants :: Map Text NodeId
@@ -165,7 +175,10 @@ data Node =
     Range
     { rangeLeft :: NodeId
     , rangeRight :: Maybe NodeId
+    , rangeNext :: Maybe NodeId
     } |
+
+    Dollar |
 
     Ignored
     { ignoredClass :: Text
@@ -182,6 +195,9 @@ data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
     deriving (Show, Eq)
 
 data Edge = PosEdge | NegEdge
+    deriving (Show, Eq)
+
+data BaseType = TLogic | TReg | TTri | TInt | TInteger | TString
     deriving (Show, Eq)
 
 data Span = Span !Word32 !Word32

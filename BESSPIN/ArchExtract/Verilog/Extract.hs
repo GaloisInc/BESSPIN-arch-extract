@@ -109,9 +109,10 @@ prioWire = 4
 prioDcNet = -1
 
 declNet :: Seq V.Module -> Int -> V.Decl -> [NetParts]
-declNet vMods i (V.PortDecl name _) = [NetParts name prioExtPort $ NoDecl i]
-declNet vMods i (V.ParamDecl name) = []
-declNet vMods i (V.VarDecl name) = [NetParts name prioWire $ NoDecl i]
+declNet vMods i (V.PortDecl name _ _) = [NetParts name prioExtPort $ NoDecl i]
+declNet vMods i (V.ParamDecl name _) = []
+declNet vMods i (V.VarDecl name _) = [NetParts name prioWire $ NoDecl i]
+declNet vMods i (V.TypedefDecl name _) = []
 declNet vMods i (V.InstDecl name modId _) =
     let vMod = vMods `S.index` modId in
     zipWith (\j declId ->

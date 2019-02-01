@@ -2,6 +2,7 @@ module BESSPIN.ArchExtract.Verilog.AST
     ( module BESSPIN.ArchExtract.Verilog.AST
     , PortDir(..)
     , Edge(..)
+    , BaseType(..)
     ) where
 
 import Control.Monad
@@ -9,12 +10,11 @@ import Control.Monad
 import Data.Sequence (Seq)
 import Data.Text (Text)
 
-import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..), Edge(..))
+import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..), Edge(..), BaseType(..))
 
 
 -- Verilog AST.  This only supports the constructs we currently use for
--- architecture extraction.  For example, it doesn't store any type
--- information.
+-- architecture extraction.
 
 data Design = Design
     { designModules :: Seq Module
@@ -33,19 +33,42 @@ data Module = Module
 data Decl =
     PortDecl
     { declName :: Text
+    , portDeclTy :: Ty
     , portDeclDir :: PortDir
     } |
     ParamDecl
     { declName :: Text
+    , paramDeclTy :: Ty
     } |
     VarDecl
     { declName :: Text
+    , varDeclTy :: Ty
+    } |
+    TypedefDecl
+    { declName :: Text
+    , typedefDeclTy :: Ty
     } |
     InstDecl
     { declName :: Text
     , instanceModId :: Int
     , instanceParamVals :: [Expr]
     }
+    deriving (Show)
+
+data Ty =
+    TTy
+    { tWireBase :: BaseType
+    , tWirePackedDims :: [Range]
+    , tWireUnpackedDims :: [Range]
+    } |
+    TEnum
+    { tEnumTy :: Ty
+    -- TODO: variants (as paramdecl refs)
+    } |
+    TRef
+    { tRefDeclId :: Int
+    } |
+    TInfer
     deriving (Show)
 
 data Item =
@@ -150,6 +173,9 @@ data Event = Event
     { eventEdge :: Maybe Edge
     , eventVarDeclId :: Int
     }
+    deriving (Show)
+
+data Range = Range Expr Expr
     deriving (Show)
 
 data Index = ISingle Expr | IRange Expr Expr

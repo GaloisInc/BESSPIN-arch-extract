@@ -271,30 +271,35 @@ clsNode cls = case T.unpack cls of
 
     "N7Verific12VeriVariableE" -> do
         name <- text
-        optNode -- DataType - null for implicitly declared vars
+        dataType <- optNode
         dims <- optNode
         init <- optNode
         dir <- optPortDir
-        return $ Variable name dims init dir
+        return $ Variable name dataType dims init dir
 
     "N7Verific10VeriTypeIdE" -> do
-        node    -- ModuleItem
-        return $ TypeId
+        name <- text
+        ty <- node
+        return $ TypeId name ty
 
     "N7Verific12VeriDataTypeE" -> do
-        skip    -- Type
-        skip    -- Signing
+        ty <- baseType
+        signed <- signing
         dims <- optNode
-        return $ DataType dims
+        return $ DataType ty signed dims
+
+    "N7Verific11VeriTypeRefE" -> do
+        def <- node
+        return $ TypeRef def
 
     "N7Verific11VeriParamIdE" -> do
         name <- text
-        optNode -- DataType
+        dataType <- optNode
         init <- optNode
         skip    -- ParamType
         dims <- optNode
         optNode -- Actual
-        return $ ParamId name init dims
+        return $ ParamId name dataType init dims
 
     "N7Verific8VeriEnumE" -> do
         base <- optNode
@@ -492,10 +497,13 @@ clsNode cls = case T.unpack cls of
         skip    -- IsUnpacked
         skip    -- LeftRangeBound
         skip    -- RightRangeBound
-        -- Ranges can theoretically be chained as linked lists, but in practice
-        -- that never seems to happen.
-        null_   -- Next
-        return $ Range left right
+        next <- optNode
+        return $ Range left right next
+
+
+    "N7Verific10VeriDollarE" -> do
+        skip    -- Image
+        return Dollar
 
 
     _ -> unknown cls
@@ -534,6 +542,28 @@ alwaysKind = integer >>= \x -> case x of
     456 -> return AkFf
     457 -> return AkLatch
     _ -> fail $ "unknown AlwaysKind enum: " ++ show x
+
+baseType :: DecodeM BaseType
+baseType = integer >>= \x -> case x of
+    331 -> return TInteger
+    358 -> return TReg
+    380 -> return TTri
+    450 {- VERI_STRINGTYPE -} -> return TString
+    476 -> return TInt
+    478 -> return TLogic
+    _ -> fail $ "unknown BaseType enum: " ++ show x
+
+signing :: DecodeM Bool
+signing = integer >>= \x -> case x of
+    0 -> return False
+    442 {- signed -} -> return True
+    443 {- unsigned -} -> return False
+    _ -> fail $ "unknown Signing enum: " ++ show x
+
+declKindIsTypedef :: DecodeM Bool
+declKindIsTypedef = integer >>= \x -> case x of
+    490 -> return True
+    _ -> return False
 
 
 fileInfo :: DecodeM FileInfo

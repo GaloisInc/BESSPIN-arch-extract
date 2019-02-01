@@ -100,7 +100,7 @@ mkModule i = do
                 items <- concat <$> mapM mkItems items
                 return items
             let ports = S.foldMapWithIndex (\i d -> case d of
-                    PortDecl _ _ -> [i]
+                    PortDecl _ _ _ -> [i]
                     _ -> []) decls
             return $ Module name decls ports items
         _ -> error $ "expected module at " ++ show i
@@ -109,19 +109,36 @@ mkDecl :: NodeId -> FromRawM Decl
 mkDecl i = do
     n <- getNode i
     case n of
-        R.Variable name dims init (Just dir) ->
-            PortDecl <$> pure name <*> pure dir
-        R.Variable name dims init Nothing ->
-            VarDecl <$> pure name
-        R.ParamId name init dims ->
-            ParamDecl <$> pure name
+        R.Variable name optTy dims init (Just dir) ->
+            PortDecl <$> pure name <*> mkTy dims optTy <*> pure dir
+        R.Variable name optTy dims init Nothing ->
+            VarDecl <$> pure name <*> mkTy dims optTy
+        R.ParamId name optTy init dims ->
+            ParamDecl <$> pure name <*> mkTy dims optTy
         R.InstId parent name conns -> do
             n' <- getNode parent
             case n' of
                 R.ModuleInstantiation mod params _ ->
                     InstDecl <$> pure name <*> moduleRef mod <*> mapM mkExpr params
                 _ -> error $ "expected module instantiation at " ++ show i
+        R.TypeId name ty ->
+            TypedefDecl <$> pure name <*> mkTy Nothing (Just ty)
         _ -> error $ "expected declaration at " ++ show i
+
+mkTy :: Maybe NodeId -> Maybe NodeId -> FromRawM Ty
+mkTy Nothing Nothing = return TInfer
+mkTy (Just dims) Nothing = error $
+    "impossible: decl has dims but no datatype? (dims = " ++ show dims ++ ")"
+mkTy varDims (Just i) = do
+    n <- getNode i
+    unpackedDims <- mkDims varDims
+    case n of
+        R.DataType ty _signed dims -> do
+            packedDims <- mkDims dims
+            return $ TTy ty packedDims unpackedDims
+        R.Enum ty _variants -> TEnum <$> mkTy Nothing ty
+        R.TypeRef def -> TRef <$> declRef def
+        _ -> error $ "expected datatype at " ++ show i
 
 mkItems :: NodeId -> FromRawM [Item]
 mkItems i = do
@@ -145,13 +162,13 @@ mkDeclItems :: NodeId -> FromRawM [Item]
 mkDeclItems i = do
     n <- getNode i
     case n of
-        R.Variable _ _ (Just init) _ ->
+        R.Variable _ _ _ (Just init) _ ->
             toList $ InitVar <$> declRef i <*> mkExpr init
-        R.Variable _ _ _ _ -> return []
-        R.ParamId _ (Just init) _ ->
+        R.Variable _ _ _ _ _ -> return []
+        R.ParamId _ _ (Just init) _ ->
             toList $ InitVar <$> declRef i <*> mkExpr init
-        R.ParamId _ _ _ -> return []
-        R.TypeId -> return []
+        R.ParamId _ _ _ _ -> return []
+        R.TypeId _ _ -> declRef i >> return []
         R.InstId _ _ portConns ->
             toList $ InitInst <$> declRef i <*> mapM mkExpr portConns
         _ -> error $ "expected item-like decl at " ++ show i
@@ -228,12 +245,36 @@ mkEvent i = do
             Event <$> pure optEdge <*> mkExprVar e
         _ -> error $ "expected EventExpression at " ++ show i
 
+mkRange :: NodeId -> FromRawM (Range, Maybe NodeId)
+mkRange i = do
+    n <- getNode i
+    case n of
+        -- Special case - [$] shows up in some testbenches.  For now we encode
+        -- it as `Range UnknownExpr UnknownExpr`.
+        R.Range l Nothing next -> do
+            n' <- getNode l
+            case n' of
+                R.Dollar -> return (Range UnknownExpr UnknownExpr, next)
+                _ -> error $ "expected double-ended Range or [$] at " ++ show i
+        R.Range l (Just r) next -> do
+            range <- Range <$> mkExpr l <*> mkExpr r
+            return (range, next)
+        _ -> error $ "expected double-ended Range or [$] at " ++ show i
+
+mkDims :: Maybe NodeId -> FromRawM [Range]
+mkDims Nothing = return []
+mkDims (Just i) = do
+    (r, next) <- mkRange i
+    rs <- mkDims next
+    return $ r : rs
+
 mkIndex :: NodeId -> FromRawM Index
 mkIndex i = do
     n <- getNode i
     case n of
-        R.Range l (Just r) -> IRange <$> mkExpr l <*> mkExpr r
-        R.Range l Nothing -> ISingle <$> mkExpr l
+        R.Range _ _ (Just _) -> error $ "unexpected nested ranges in expr at " ++ show i
+        R.Range l (Just r) _ -> IRange <$> mkExpr l <*> mkExpr r
+        R.Range l Nothing _ -> ISingle <$> mkExpr l
         _ -> ISingle <$> mkExpr i
 
 
