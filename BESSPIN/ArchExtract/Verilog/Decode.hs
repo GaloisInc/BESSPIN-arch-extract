@@ -20,6 +20,7 @@ import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
 
 import BESSPIN.ArchExtract.Verilog.Raw
+import BESSPIN.ArchExtract.Verilog.Token
 
 
 data S = S
@@ -402,9 +403,9 @@ clsNode cls = case T.unpack cls of
         rval <- optNode
         oper <- integer
         case (oper, rval) of
-            (413, Just rval) -> return $ BlockingAssign lval rval
-            (498, Nothing) -> return $ BlockingAssignInPlace lval
-            (499, Nothing) -> return $ BlockingAssignInPlace lval
+            (VERI_EQUAL_ASSIGN, Just rval) -> return $ BlockingAssign lval rval
+            (VERI_INC_OP, Nothing) -> return $ BlockingAssignInPlace lval
+            (VERI_DEC_OP, Nothing) -> return $ BlockingAssignInPlace lval
 
     "N7Verific25VeriDelayControlStatementE" -> do
         node    -- delay
@@ -523,46 +524,46 @@ portDir = optPortDir >>= \x -> case x of
 optPortDir :: DecodeM (Maybe PortDir)
 optPortDir = integer >>= \x -> case x of
     0 -> return Nothing
-    329 -> return $ Just InOut
-    330 -> return $ Just Input
-    346 -> return $ Just Output
+    VERI_INOUT -> return $ Just InOut
+    VERI_INPUT -> return $ Just Input
+    VERI_OUTPUT -> return $ Just Output
     _ -> fail $ "unknown PortDir enum: " ++ show x
 
 optEdge :: DecodeM (Maybe Edge)
 optEdge = integer >>= \x -> case x of
     0 -> return Nothing
-    338 -> return $ Just NegEdge
-    349 -> return $ Just PosEdge
+    VERI_NEGEDGE -> return $ Just NegEdge
+    VERI_POSEDGE -> return $ Just PosEdge
     _ -> fail $ "unknown Edge enum: " ++ show x
 
 alwaysKind :: DecodeM AlwaysKind
 alwaysKind = integer >>= \x -> case x of
-    292 -> return AkPlain
-    455 -> return AkComb
-    456 -> return AkFf
-    457 -> return AkLatch
+    VERI_ALWAYS -> return AkPlain
+    VERI_ALWAYS_COMB -> return AkComb
+    VERI_ALWAYS_FF -> return AkFf
+    VERI_ALWAYS_LATCH -> return AkLatch
     _ -> fail $ "unknown AlwaysKind enum: " ++ show x
 
 baseType :: DecodeM BaseType
 baseType = integer >>= \x -> case x of
-    331 -> return TInteger
-    358 -> return TReg
-    380 -> return TTri
-    450 {- VERI_STRINGTYPE -} -> return TString
-    476 -> return TInt
-    478 -> return TLogic
+    VERI_INTEGER -> return TInteger
+    VERI_REG -> return TReg
+    VERI_TRI -> return TTri
+    VERI_STRINGTYPE -> return TString
+    VERI_INT -> return TInt
+    VERI_LOGIC -> return TLogic
     _ -> fail $ "unknown BaseType enum: " ++ show x
 
 signing :: DecodeM Bool
 signing = integer >>= \x -> case x of
     0 -> return False
-    442 {- signed -} -> return True
-    443 {- unsigned -} -> return False
+    VERI_SIGNED -> return True
+    VERI_UNSIGNED -> return False
     _ -> fail $ "unknown Signing enum: " ++ show x
 
 declKindIsTypedef :: DecodeM Bool
 declKindIsTypedef = integer >>= \x -> case x of
-    490 -> return True
+    VERI_TYPEDEF -> return True
     _ -> return False
 
 
