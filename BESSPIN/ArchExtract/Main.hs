@@ -119,6 +119,7 @@ main = do
     writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
     -}
 
+    {-
     let a' = Design $ fmap (
             mapAnn (\stage -> defaultAnn
                 { annColor = case stage of
@@ -141,10 +142,13 @@ main = do
                 , (("M" `T.isSuffixOf`), Just 4)
                 , (("W" `T.isSuffixOf`), Just 5)
                 ]) $ designMods a
+    -}
+    let a' = Design $ fmap (mapAnn (\stage -> defaultAnn)) $ designMods a
     let a = a'
 
 
-    --let mod = a `designMod` 3
+    --let mod = a `designMod` 8
+    --do
     forM_ (designMods a) $ \mod -> do
         putStrLn " ----------------------"
         putStrLn $ T.unpack $ moduleName mod

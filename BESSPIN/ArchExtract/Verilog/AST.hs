@@ -4,6 +4,8 @@ module BESSPIN.ArchExtract.Verilog.AST
     , PortDir(..)
     , Edge(..)
     , BaseType(..)
+    , UnOp(..)
+    , BinOp(..)
     ) where
 
 import Control.Monad
@@ -12,7 +14,13 @@ import Data.Data
 import Data.Sequence (Seq)
 import Data.Text (Text)
 
-import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..), Edge(..), BaseType(..))
+import BESSPIN.ArchExtract.Verilog.Raw
+    ( PortDir(..)
+    , Edge(..)
+    , BaseType(..)
+    , UnOp(..)
+    , BinOp(..)
+    )
 
 
 -- Verilog AST.  This only supports the constructs we currently use for
@@ -143,6 +151,10 @@ data Expr =
     Const
     { constText :: Text
     } |
+    ConstBool
+    { constText :: Text
+    , constBoolVal :: Bool
+    } |
     Concat
     { concatExprs :: [Expr]
     } |
@@ -156,10 +168,12 @@ data Expr =
     , ifExprElse :: Expr
     } |
     Unary
-    { unaryArg :: Expr
+    { unaryOp :: UnOp
+    , unaryArg :: Expr
     } |
     Binary
-    { binaryLeft :: Expr
+    { binaryOp :: BinOp
+    , binaryLeft :: Expr
     , binaryRight :: Expr
     } |
     Field

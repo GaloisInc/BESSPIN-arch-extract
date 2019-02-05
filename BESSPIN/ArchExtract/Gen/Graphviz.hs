@@ -106,6 +106,7 @@ logicShowsPorts :: Logic a -> Bool
 logicShowsPorts l = case logicKind l of
     LkInst _ -> True
     LkRegister _ -> True
+    LkDFlipFlop _ _ -> True
     _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
@@ -265,7 +266,9 @@ netNode cfg idx net =
 
 
 logicLabel LkOther = T.pack "(logic)"
+logicLabel LkExpr = T.pack "(expr)"
 logicLabel (LkRegister name) = "(register " <> name <> ")"
+logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
@@ -291,6 +294,9 @@ logicPortNames d l@(Logic { logicKind = LkInst inst }) =
         fmap portName $ moduleOutputs mod)
   where
     mod = d `designMod` instModId inst
+logicPortNames d l@(Logic { logicKind = LkDFlipFlop _ numResets }) =
+    ( "D" <| "clk" <| S.fromList ["rst" <> T.pack (show i) | i <- [0 .. numResets - 1]]
+    , "Q" <| S.empty )
 logicPortNames d l =
     (S.fromList $ map (T.pack . show) [0 .. maxInput],
         S.fromList $ map (T.pack . show) [0 .. maxOutput])
@@ -305,6 +311,8 @@ logicName d l@(Logic { logicKind = LkInst inst }) =
         H.Str $ TL.fromStrict $ instName inst]
 logicName d l@(Logic { logicKind = LkRegister name }) =
     [H.Str $ TL.fromStrict $ "(register " <> name <> ")"]
+logicName d l@(Logic { logicKind = LkDFlipFlop name _ }) =
+    [H.Str $ TL.fromStrict $ "(dff " <> name <> ")"]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
 logicTable :: Cfg -> Design a -> Int -> Logic Ann -> H.Label
@@ -358,6 +366,7 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
         Just (TEnum ty) -> goTy labelAttr (Just ty)
         Just (TAlias _ ty) -> goTy labelAttr (Just ty)
         Just TSimVal -> [gray]
+        Just TUnknown -> []
       where
         busLabel False False = ""
         busLabel True False = "*"

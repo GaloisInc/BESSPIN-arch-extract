@@ -58,6 +58,11 @@ data LogicKind =
     LkInst Inst |
     LkNetAlias |
     LkRegister Text |
+    LkDFlipFlop
+        { lkDffName :: Text
+        , lkDffNumResets :: Int
+        } |
+    LkExpr |
     LkOther
     deriving (Show, Eq, Typeable, Data)
 
@@ -106,7 +111,8 @@ data Ty =
     , tAliasResolved :: Ty
     } |
     -- Type for values used only in simulation (int, string, etc).
-    TSimVal
+    TSimVal |
+    TUnknown
     deriving (Show, Typeable, Data)
 
 

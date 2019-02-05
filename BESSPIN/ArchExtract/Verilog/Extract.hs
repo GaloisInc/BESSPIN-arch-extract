@@ -27,6 +27,7 @@ import BESSPIN.ArchExtract.Architecture hiding (moduleNets)
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.AST
 import qualified BESSPIN.ArchExtract.Verilog.AST as V
+import BESSPIN.ArchExtract.Verilog.Match
 import BESSPIN.ArchExtract.Simplify
 import BESSPIN.ArchExtract.Lens
 
@@ -65,6 +66,14 @@ addDeclNet no x ty = do
     id <- addNet x
     _esDeclNets %= M.insert no (id, ty)
     return id
+
+freshNet' baseName = do
+    idx <- gets $ S.length . A.moduleNets . esModule
+    let name = baseName <> "$" <> T.pack (show idx)
+    addNet $ Net name prioFresh S.empty S.empty ()
+
+freshNet = freshNet' "tmp"
+
 
 lookupNet :: NetOrigin -> ExtractM (Maybe (NetId, A.Ty))
 lookupNet no = use $ _esDeclNets . at no
@@ -125,7 +134,7 @@ buildMod :: Seq V.Module -> V.Module -> A.Module ()
 buildMod vMods vMod = esModule $ execState go initState
   where
     initMod = A.Module
-        { A.moduleName = V.moduleName vMod
+        { A.moduleName = V.moduleName vMod 
         , A.moduleInputs = S.empty
         , A.moduleOutputs = S.empty
         , A.moduleLogics = S.empty
@@ -174,6 +183,7 @@ addDeclNetFromParts (NetParts name prio origin ty) =
 prioExtPort = 3
 prioInstPort = 2
 prioWire = 4
+prioFresh = 1
 prioDcNet = -1
 
 -- Add all declared nets in `vMod`.  The nets are included in `esDeclNets` so
@@ -281,6 +291,20 @@ convItem vMod (InitInst declId portConns) = do
         when (isOutput $ V.portDeclDir vPort) $
             mkLogic LkNetAlias (exprVarDecls conn) [NoInstPort declId portIdx]
 convItem vMod (ContAssign l r) = convAssign l r
+convItem vMod item@V.Always{} | traceShow ("always in", V.moduleName vMod,
+    "inferred:", inferDFlipFlop item) False = undefined
+convItem vMod item@V.Always{} | Right dffs <- inferDFlipFlop item = forM_ dffs $ \dff -> do
+    clkPin <- rvalPin $ dffClk dff
+    dPin <- rvalPin $ dffD dff
+    arstPins <- mapM rvalPin $ S.fromList $ dffAsyncResets dff
+    (net, ty) <- findNet $ NoDecl $ dffQ dff
+    let qPin = Pin net ty
+    name <- findNetName $ NoDecl $ dffQ dff
+    addLogic $ Logic
+        (LkDFlipFlop name $ S.length arstPins)
+        (dPin <| clkPin <| arstPins)
+        (S.singleton qPin)
+        ()
 -- Assignments inside edge-sensitive `Always` blocks generate registers.
 convItem vMod (Always evts body) | any (isJust . eventEdge) evts =
     mapM_ (\(lv, rvs) -> do
@@ -319,17 +343,35 @@ rvalKind :: Expr -> LogicKind
 rvalKind (Var defId) = LkNetAlias
 rvalKind _ = LkOther
 
--- Add a Logic node that reads inputs from `rhs` and outputs to `lhs`.
+-- Add a Logic node for 
 mkLogic :: LogicKind -> [NetOrigin] -> [NetOrigin] -> ExtractM ()
 mkLogic kind lhs rhs = do
-    inPins <- mconcat <$> mapM go rhs
-    outPins <- mconcat <$> mapM go lhs
+    inPins <- netPins rhs
+    outPins <- netPins lhs
     void $ addLogic $ Logic kind inPins outPins ()
+
+netPins :: [NetOrigin] -> ExtractM (Seq Pin)
+netPins nos = mconcat <$> mapM go nos
   where
-    go :: NetOrigin -> ExtractM (Seq Pin)
     go no = lookupNet no >>= \nt -> case nt of
         Nothing -> return S.empty
         Just (net, ty) -> return $ S.singleton $ Pin net ty
+
+-- Get a single pin representing the output of an expression.  Generates a new
+-- `Logic` and `Net` if needed.
+rvalPin :: Expr -> ExtractM Pin
+rvalPin (Var v) = lookupNet (NoDecl v) >>= \nt -> case nt of
+    Just (net, ty) -> return $ Pin net ty
+    -- If there's no net for this var, it must be a `ParamDecl`.  Treat it as
+    -- an unknown expression, which will generate a 0-input `Logic`.
+    Nothing -> rvalPin UnknownExpr
+rvalPin e = do
+    inPins <- netPins $ exprVarDecls e
+    outNet <- freshNet
+    let ty = TUnknown -- TODO
+    addLogic $ Logic LkOther inPins (S.singleton $ Pin outNet ty) ()
+    return $ Pin outNet ty
+    
 
 -- Walk a statement to find all assignments inside.  For each one, emit a tuple
 -- `(lval, rval, impVars)`, where `impVars` is the set of implicit
