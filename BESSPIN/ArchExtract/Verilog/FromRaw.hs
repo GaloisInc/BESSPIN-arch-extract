@@ -63,6 +63,16 @@ moduleRef i = mkRef modules (\x s -> s { modules = x }) mkModule i
 declRef :: NodeId -> FromRawM Int
 declRef i = mkRef decls (\x s -> s { decls = x }) mkDecl i
 
+getModule :: Int -> FromRawM Module
+getModule i = do
+    Numbering _ xs <- gets modules
+    return $ xs `S.index` i
+
+getDecl :: Int -> FromRawM Decl
+getDecl i = do
+    Numbering _ xs <- gets decls
+    return $ xs `S.index` i
+
 collectDefs :: (S -> Numbering a) -> (Numbering a -> S -> S) ->
     FromRawM b -> FromRawM (b, Seq a)
 collectDefs getN setN m = do
@@ -214,7 +224,14 @@ mkExpr :: NodeId -> FromRawM Expr
 mkExpr i = do
     n <- getNode i
     case n of
-        R.IdRef i -> Var <$> declRef i
+        R.IdRef i -> do
+            declId <- declRef i
+            decl <- getDecl declId
+            case decl of
+                VarDecl {} -> return $ Var declId
+                PortDecl {} -> return $ Var declId
+                ParamDecl {} -> return $ Param declId
+                _ -> error $ "expected reference to var, port, or param at " ++ show i
         R.IndexedId base ix -> Index <$> mkExpr base <*> mkIndex ix
         R.IndexedMemoryId base ixs -> MemIndex <$> mkExpr base <*> mapM mkIndex ixs
         R.ConstVal t -> return $ Const t

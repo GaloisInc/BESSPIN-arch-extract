@@ -129,6 +129,9 @@ data Expr =
     Var
     { varDeclId :: Int
     } |
+    Param
+    { paramDeclId :: Int
+    } |
     Index
     { indexBase :: Expr
     , indexIndex :: Index
