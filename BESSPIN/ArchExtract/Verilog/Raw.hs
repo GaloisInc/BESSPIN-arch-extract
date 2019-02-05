@@ -1,5 +1,7 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module BESSPIN.ArchExtract.Verilog.Raw where
 
+import Data.Data
 import Data.Map (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -7,7 +9,7 @@ import Data.Word
 
 
 newtype NodeId = NodeId { unwrapNodeId :: Int }
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq, Ord, Data, Typeable)
 
 data Node =
     Module
@@ -188,19 +190,19 @@ data Node =
     Unknown
     { unknownClass :: Text
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data PortDir = Input | Output | InOut
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data Edge = PosEdge | NegEdge
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data BaseType = TLogic | TWire | TReg | TTri | TInt | TInteger | TString
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data UnOp =
     UNeg |
@@ -209,7 +211,7 @@ data UnOp =
     UReduce BinOp |
     UReduceNot BinOp |
     UOther
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data BinOp =
     BAdd | BSub | BMul | BDiv | BMod |
@@ -218,10 +220,10 @@ data BinOp =
     BEq | BNe | BLt | BLe | BGt | BGe |
     BShl | BShr |
     BOther
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data Span = Span !Word32 !Word32
-    deriving (Show, Eq)
+    deriving (Show, Eq, Data, Typeable)
 
 data FileInfo = FileInfo Text Span
-    deriving (Show)
+    deriving (Show, Data, Typeable)

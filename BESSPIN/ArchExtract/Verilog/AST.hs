@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module BESSPIN.ArchExtract.Verilog.AST
     ( module BESSPIN.ArchExtract.Verilog.AST
     , PortDir(..)
@@ -7,6 +8,7 @@ module BESSPIN.ArchExtract.Verilog.AST
 
 import Control.Monad
 
+import Data.Data
 import Data.Sequence (Seq)
 import Data.Text (Text)
 
@@ -19,7 +21,7 @@ import BESSPIN.ArchExtract.Verilog.Raw (PortDir(..), Edge(..), BaseType(..))
 data Design = Design
     { designModules :: Seq Module
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Module = Module
     { moduleName :: Text
@@ -28,7 +30,7 @@ data Module = Module
     , modulePorts :: [Int]
     , moduleItems :: [Item]
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Decl =
     PortDecl
@@ -53,7 +55,7 @@ data Decl =
     , instanceModId :: Int
     , instanceParamVals :: [Expr]
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Ty =
     TTy
@@ -69,7 +71,7 @@ data Ty =
     { tRefDeclId :: Int
     } |
     TInfer
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Item =
     InitVar
@@ -92,7 +94,7 @@ data Item =
     Initial
     { initialBody :: [Stmt]
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Stmt =
     If
@@ -121,7 +123,7 @@ data Stmt =
     BlockingUpdate
     { blockingUpdateLval :: Expr
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Expr =
     Var
@@ -167,16 +169,16 @@ data Expr =
     } |
     UnknownExpr
     {}
-    deriving (Show)
+    deriving (Show, Eq, Data, Typeable)
 
 data Event = Event
     { eventEdge :: Maybe Edge
     , eventVarDeclId :: Int
     }
-    deriving (Show)
+    deriving (Show, Data, Typeable)
 
 data Range = Range Expr Expr
-    deriving (Show)
+    deriving (Show, Eq, Data, Typeable)
 
 data Index = ISingle Expr | IRange Expr Expr
-    deriving (Show)
+    deriving (Show, Eq, Data, Typeable)

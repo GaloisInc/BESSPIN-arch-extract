@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, TemplateHaskell, Rank2Types #-}
 module BESSPIN.ArchExtract.Architecture where
 
 import Control.Monad.State
@@ -8,6 +8,9 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import Data.Typeable
+import Lens.Micro.Platform
+
+import BESSPIN.ArchExtract.Lens
 
 
 -- The ID of a module is its position in `designMods`.
@@ -216,3 +219,44 @@ zipAnn x y = scatterAnn (zip (gatherAnn x) (gatherAnn y)) x
 
 zipAnnWith :: Annotated t => (a -> b -> c) -> t a -> t b -> t c
 zipAnnWith f x y = scatterAnn (zipWith f (gatherAnn x) (gatherAnn y)) x
+
+
+
+-- Lenses
+
+makeLenses' ''Design
+makeLenses' ''Module
+makeLenses' ''Port
+makeLenses' ''Logic
+makeLenses' ''Net
+makeLenses' ''Inst
+makeLenses' ''Pin
+makeLenses' ''Ty
+
+_designMod :: Int -> Lens' (Design ann) (Module ann)
+_designMod i = _designMods . singular (ix i)
+
+_moduleInput :: Int -> Lens' (Module ann) Port
+_moduleInput i = _moduleInputs . singular (ix i)
+_moduleOutput :: Int -> Lens' (Module ann) Port
+_moduleOutput i = _moduleOutputs . singular (ix i)
+_moduleSidePort Source i = _moduleInputs i
+_moduleSidePort Sink i = _moduleOutputs i
+_moduleLogic :: Int -> Lens' (Module ann) (Logic ann)
+_moduleLogic i = _moduleLogics . singular (ix i)
+_moduleNet :: NetId -> Lens' (Module ann) (Net ann)
+_moduleNet i = _moduleNets . singular (ix $ unwrapNetId i)
+
+_logicInput :: Int -> Lens' (Logic ann) Pin
+_logicInput i = _logicInputs . singular (ix i)
+_logicOutput :: Int -> Lens' (Logic ann) Pin
+_logicOutput i = _logicOutputs . singular (ix i)
+_logicSidePin Source i = _logicOutput i
+_logicSidePin Sink i = _logicInput i
+
+_netSource :: Int -> Lens' (Net ann) Conn
+_netSource i = _netSources . singular (ix i)
+_netSink :: Int -> Lens' (Net ann) Conn
+_netSink i = _netSinks . singular (ix i)
+_netSideConn Source i = _netSource i
+_netSideConn Sink i = _netSink i

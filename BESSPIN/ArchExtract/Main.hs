@@ -153,8 +153,8 @@ main = do
                 (defaultCfg
                     { cfgDrawNets = True
                     , cfgDrawOnesidedNets = False
-                    , cfgDrawLogics = False
-                    , cfgDedupEdges = True
+                    , cfgDrawLogics = True
+                    , cfgDedupEdges = False
                     , cfgShortenNetNames = False
                     , cfgPrefix = moduleName mod
                     , cfgPipelineStages = 5
