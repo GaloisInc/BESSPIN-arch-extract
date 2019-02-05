@@ -152,14 +152,17 @@ describeMod :: V.Module -> Text
 describeMod vMod = T.unlines $
     ["module " <> V.moduleName vMod] ++
     ["  decls:"] ++
-    zipWith (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
-        [0..] (toList $ V.moduleDecls vMod) ++
+    toList (S.mapWithIndex
+        (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
+        (V.moduleDecls vMod)) ++
     ["  ports:"] ++
-    zipWith (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
-        [0..] (V.modulePorts vMod) ++
+    toList (S.mapWithIndex
+        (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
+        (V.modulePorts vMod)) ++
     ["  items:"] ++
-    zipWith (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
-        [0..] (V.moduleItems vMod)
+    toList (S.mapWithIndex
+        (\i x -> "    " <> T.pack (show i) <> ": " <> T.pack (show x))
+        (V.moduleItems vMod))
 
 
 -- Building `moduleNets` from `V.moduleDecls`
@@ -208,7 +211,7 @@ declNet vMods vMod i (V.InstDecl name modId _) =
             let PortDecl portName vTy _ = moduleDecls vInstMod `S.index` portIdx in
             let ty = convTy vInstMod vTy in
             NetParts (name <> T.pack "." <> portName) prioInstPort (NoInstPort i portIdx) ty)
-        (modulePorts vInstMod)
+        (toList $ modulePorts vInstMod)
 
 convTy :: V.Module -> V.Ty -> A.Ty
 convTy _ (V.TTy base packed unpacked) =
@@ -262,7 +265,7 @@ convDecl idx (V.InstDecl name modId paramVals) = do
 dirPins :: [PortDir] -> V.Module -> [Int]
 dirPins dirs vMod = filter (\portIdx ->
         V.portDeclDir (V.moduleDecls vMod `S.index` portIdx) `elem` dirs)
-    (modulePorts vMod)
+    (toList $ modulePorts vMod)
 
 
 -- Building `moduleLogics` from `V.moduleItems`
@@ -283,8 +286,7 @@ convItem vMod (InitVar declId e) = convAssign (Var declId) e
 convItem vMod (InitInst declId portConns) = do
     let vInst = V.moduleDecls vMod `S.index` declId
     vInstMod <- findModule $ V.instanceModId vInst
-    let portDecls = map (\i -> V.moduleDecls vInstMod `S.index` i) (V.modulePorts vInstMod)
-    forM_ (zip (V.modulePorts vInstMod) portConns) $ \(portIdx, conn) -> do
+    forM_ (zip (toList $ V.modulePorts vInstMod) portConns) $ \(portIdx, conn) -> do
         let vPort = V.moduleDecls vInstMod `S.index` portIdx
         when (isInput $ V.portDeclDir vPort) $
             mkLogic (rvalKind conn) [NoInstPort declId portIdx] (exprVarDecls conn)

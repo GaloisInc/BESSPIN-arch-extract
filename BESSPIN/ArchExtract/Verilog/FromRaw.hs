@@ -90,10 +90,6 @@ collectDecls :: FromRawM a -> FromRawM (a, Seq Decl)
 collectDecls m = collectDefs decls (\x s -> s { decls = x }) m
 
 
-toList :: FromRawM a -> FromRawM [a]
-toList m = m >>= \x -> return [x]
-
-
 mkDesign :: [NodeId] -> FromRawM Design
 mkDesign is = do
     ((), mods) <- collectModules $ mapM_ moduleRef is
@@ -107,11 +103,11 @@ mkModule i = do
             (items, decls) <- collectDecls $ do
                 mapM_ declRef ports
                 mapM_ declRef params
-                items <- concat <$> mapM mkItems items
+                items <- mconcat <$> mapM mkItems items
                 return items
             let ports = S.foldMapWithIndex (\i d -> case d of
-                    PortDecl _ _ _ -> [i]
-                    _ -> []) decls
+                    PortDecl _ _ _ -> S.singleton i
+                    _ -> S.empty) decls
             return $ Module name decls ports items
         _ -> error $ "expected module at " ++ show i
 
@@ -150,37 +146,37 @@ mkTy varDims (Just i) = do
         R.TypeRef def -> TRef <$> declRef def
         _ -> error $ "expected datatype at " ++ show i
 
-mkItems :: NodeId -> FromRawM [Item]
+mkItems :: NodeId -> FromRawM (Seq Item)
 mkItems i = do
     n <- getNode i
     case n of
-        R.DataDecl ids -> concat <$> mapM mkDeclItems ids
-        R.NetDecl ids -> concat <$> mapM mkDeclItems ids
-        R.ModuleInstantiation _ _ ids -> concat <$> mapM mkDeclItems ids
-        R.ContinuousAssign assigns ->
+        R.DataDecl ids -> mconcat <$> mapM mkDeclItems ids
+        R.NetDecl ids -> mconcat <$> mapM mkDeclItems ids
+        R.ModuleInstantiation _ _ ids -> mconcat <$> mapM mkDeclItems ids
+        R.ContinuousAssign assigns -> liftM S.fromList $
             forM assigns $ \i -> getNode i >>= \n -> case n of
                 R.NetRegAssign l r -> ContAssign <$> mkExpr l <*> mkExpr r
                 _ -> error $ "expected NetRegAssign at " ++ show i
         R.AlwaysConstruct kind body -> getNode body >>= \n' -> case n' of
             R.EventControlStatement evts s ->
-                toList $ Always <$> mapM mkEvent evts <*> mkStmts s
-            _ -> toList $ Always <$> pure [] <*> mkStmts body
-        R.InitialConstruct body -> toList $ Initial <$> mkStmts body
-        _ -> trace ("unknown mod item at " ++ show i) $ return []
+                liftM S.singleton $ Always <$> mapM mkEvent evts <*> mkStmts s
+            _ -> liftM S.singleton $ Always <$> pure [] <*> mkStmts body
+        R.InitialConstruct body -> liftM S.singleton $ Initial <$> mkStmts body
+        _ -> trace ("unknown mod item at " ++ show i) $ return S.empty
 
-mkDeclItems :: NodeId -> FromRawM [Item]
+mkDeclItems :: NodeId -> FromRawM (Seq Item)
 mkDeclItems i = do
     n <- getNode i
     case n of
         R.Variable _ _ _ (Just init) _ ->
-            toList $ InitVar <$> declRef i <*> mkExpr init
-        R.Variable _ _ _ _ _ -> return []
+            liftM S.singleton $ InitVar <$> declRef i <*> mkExpr init
+        R.Variable _ _ _ _ _ -> return S.empty
         R.ParamId _ _ (Just init) _ ->
-            toList $ InitVar <$> declRef i <*> mkExpr init
-        R.ParamId _ _ _ _ -> return []
-        R.TypeId _ _ -> declRef i >> return []
+            liftM S.singleton $ InitVar <$> declRef i <*> mkExpr init
+        R.ParamId _ _ _ _ -> return S.empty
+        R.TypeId _ _ -> declRef i >> return S.empty
         R.InstId _ _ portConns ->
-            toList $ InitInst <$> declRef i <*> mapM mkExpr portConns
+            liftM S.singleton $ InitInst <$> declRef i <*> mapM mkExpr portConns
         _ -> error $ "expected item-like decl at " ++ show i
 
 mkStmts :: NodeId -> FromRawM [Stmt]
@@ -189,22 +185,22 @@ mkStmts i = do
     case n of
         R.SeqBlock ds ss -> mapM_ declRef ds >> concat <$> mapM mkStmts ss
         R.EventControlStatement _ s -> mkStmts s
-        R.ConditionalStatement cond then_ (Just else_) -> toList $
+        R.ConditionalStatement cond then_ (Just else_) -> liftM pure $
             If <$> mkExpr cond <*> mkStmts then_ <*> (Just <$> mkStmts else_)
-        R.ConditionalStatement cond then_ Nothing -> toList $
+        R.ConditionalStatement cond then_ Nothing -> liftM pure $
             If <$> mkExpr cond <*> mkStmts then_ <*> pure Nothing
-        R.CaseStatement cond cases -> toList $
+        R.CaseStatement cond cases -> liftM pure $
             Case <$> mkExpr cond <*> mapM mkCase cases
-        R.For inits cond steps body -> toList $
+        R.For inits cond steps body -> liftM pure $
             For <$> (concat <$> mapM mkStmts inits)
                 <*> mkExpr cond
                 <*> (concat <$> mapM mkStmts steps)
                 <*> mkStmts body
-        R.NonBlockingAssign l r -> toList $
+        R.NonBlockingAssign l r -> liftM pure $
             NonBlockingAssign <$> mkExpr l <*> mkExpr r
-        R.BlockingAssign l r -> toList $
+        R.BlockingAssign l r -> liftM pure $
             BlockingAssign <$> mkExpr l <*> mkExpr r
-        R.BlockingAssignInPlace l -> toList $
+        R.BlockingAssignInPlace l -> liftM pure $
             BlockingUpdate <$> mkExpr l
         R.DelayControlStatement s -> mkStmts s
         R.NullStatement -> return []

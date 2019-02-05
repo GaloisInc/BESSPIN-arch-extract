@@ -35,8 +35,8 @@ data Module = Module
     { moduleName :: Text
     , moduleDecls :: Seq Decl
     -- Indices of `PortDecl`s in `moduleDecls`
-    , modulePorts :: [Int]
-    , moduleItems :: [Item]
+    , modulePorts :: Seq Int
+    , moduleItems :: Seq Item
     }
     deriving (Show, Data, Typeable)
 
