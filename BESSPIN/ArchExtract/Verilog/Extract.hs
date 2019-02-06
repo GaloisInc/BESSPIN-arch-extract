@@ -28,6 +28,7 @@ import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.AST
 import qualified BESSPIN.ArchExtract.Verilog.AST as V
 import BESSPIN.ArchExtract.Verilog.Match
+import BESSPIN.ArchExtract.Verilog.TypeCheck
 import BESSPIN.ArchExtract.Simplify
 import BESSPIN.ArchExtract.Lens
 
@@ -215,7 +216,7 @@ declNet vMods vMod i (V.InstDecl name modId _) =
 
 convTy :: V.Module -> V.Ty -> A.Ty
 convTy _ (V.TTy base packed unpacked) =
-    let wire = A.TWire (not $ null packed) (not $ null unpacked) in
+    let wire = A.TWire (length packed) (length unpacked) in
     let sim = A.TSimVal in
     case base of
         V.TLogic -> wire
@@ -368,11 +369,16 @@ rvalPin (Var v) = lookupNet (NoDecl v) >>= \nt -> case nt of
     Nothing -> rvalPin UnknownExpr
 rvalPin e = do
     inPins <- netPins $ exprVarDecls e
-    let ty = TUnknown -- TODO
+    declNets <- gets esDeclNets
+    let ty = exprType (declVarTy declNets) e
     outNet <- freshNet ty
     addLogic $ Logic LkOther inPins (S.singleton $ Pin outNet ty) ()
     return $ Pin outNet ty
-    
+  where
+    declVarTy declNets idx = case M.lookup (NoDecl idx) declNets of
+        Nothing -> TUnknown
+        Just (_, ty) -> ty
+
 
 -- Walk a statement to find all assignments inside.  For each one, emit a tuple
 -- `(lval, rval, impVars)`, where `impVars` is the set of implicit

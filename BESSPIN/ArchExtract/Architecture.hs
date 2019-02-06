@@ -101,8 +101,8 @@ data Conn = ExtPort Int | LogicPort Int Int
 
 data Ty =
     TWire
-    { tWireWidth :: Bool
-    , tWireDepth :: Bool
+    { tWireWidths :: Int
+    , tWireDepths :: Int
     } |
     TEnum
     { tEnumBase :: Ty

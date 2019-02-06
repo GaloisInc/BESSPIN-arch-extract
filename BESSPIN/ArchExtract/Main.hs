@@ -147,7 +147,7 @@ main = do
     let a = a'
 
 
-    --let mod = a `designMod` 8
+    --let mod = a `designMod` 3
     --do
     forM_ (designMods a) $ \mod -> do
         putStrLn " ----------------------"
@@ -158,10 +158,10 @@ main = do
                     { cfgDrawNets = True
                     , cfgDrawOnesidedNets = False
                     , cfgDrawLogics = True
-                    , cfgDedupEdges = False
+                    , cfgDedupEdges = True
                     , cfgShortenNetNames = False
                     , cfgPrefix = moduleName mod
-                    , cfgPipelineStages = 5
+                    , cfgPipelineStages = 0
                     })
                 mod
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g

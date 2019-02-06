@@ -364,17 +364,17 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
 
     goTy labelAttr ty = case ty of
         Nothing -> []
-        Just (TWire False False) -> []
+        Just (TWire 0 0) -> []
         Just (TWire w d) -> [labelAttr $ StrLabel $ TL.fromStrict $ busLabel w d, bold]
         Just (TEnum ty) -> goTy labelAttr (Just ty)
         Just (TAlias _ ty) -> goTy labelAttr (Just ty)
         Just TSimVal -> [gray]
         Just TUnknown -> []
       where
-        busLabel False False = ""
-        busLabel True False = "*"
-        busLabel False True = "1x*"
-        busLabel True True = "*x*"
+        busLabel 0 0 = ""
+        busLabel _ 0 = "*"
+        busLabel 0 _ = "1x*"
+        busLabel _ _ = "*x*"
         bold = Style [SItem Bold []]
         gray = Color $ toColorList [RGB 150 150 150]
 
