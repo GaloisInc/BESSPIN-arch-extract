@@ -85,6 +85,7 @@ data Net ann = Net
     , netNamePriority :: Int
     , netSources :: Seq Conn
     , netSinks :: Seq Conn
+    , netTy :: Ty
     , netAnn :: ann
     }
     deriving (Show, Typeable, Data)
@@ -201,12 +202,13 @@ instance Annotated Logic where
         <*> nextAnn
 
 instance Annotated Net where
-    gatherAnn (Net _ _ _ _ ann) = [ann]
-    scatterAnn' (Net name prio sources sinks _) = Net
+    gatherAnn (Net _ _ _ _ _ ann) = [ann]
+    scatterAnn' (Net name prio sources sinks ty _) = Net
         <$> pure name
         <*> pure prio
         <*> pure sources
         <*> pure sinks
+        <*> pure ty
         <*> nextAnn
 
 scatterAnn anns x = case runState (scatterAnn' x) anns of

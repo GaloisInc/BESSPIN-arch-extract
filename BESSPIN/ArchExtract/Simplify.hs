@@ -173,7 +173,7 @@ type NetM a b = State (Seq (Net a)) b
 
 mkNet :: Monoid a => Text -> Int -> NetM a NetId
 mkNet name prio = state $ \nets ->
-    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty mempty)
+    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty TUnknown mempty)
     
 
 

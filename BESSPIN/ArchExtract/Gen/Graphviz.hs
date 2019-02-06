@@ -349,7 +349,10 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
         (logicKey cfg idx,
             Just $ joinKey [sideKey side, T.pack $ show portIdx],
             Just $ pinTy $ logicSidePin (mod `moduleLogic` idx) side portIdx)
-    go (PNet idx) = (netKey cfg idx, Nothing, Nothing)
+    go (PNet idx) =
+        (netKey cfg idx,
+            Nothing,
+            Just $ netTy $ mod `moduleNet` NetId idx)
     go (PBasicLogic idx) = (logicKey cfg idx, Nothing, Nothing)
 
     (end1, port1, ty1) = go n1

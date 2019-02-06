@@ -67,12 +67,12 @@ addDeclNet no x ty = do
     _esDeclNets %= M.insert no (id, ty)
     return id
 
-freshNet' baseName = do
+freshNet' baseName ty = do
     idx <- gets $ S.length . A.moduleNets . esModule
     let name = baseName <> "$" <> T.pack (show idx)
-    addNet $ Net name prioFresh S.empty S.empty ()
+    addNet $ Net name prioFresh S.empty S.empty ty ()
 
-freshNet = freshNet' "tmp"
+freshNet ty = freshNet' "tmp" ty
 
 
 lookupNet :: NetOrigin -> ExtractM (Maybe (NetId, A.Ty))
@@ -180,7 +180,7 @@ type NetMap = Map NetOrigin (NetId, A.Ty)
 
 addDeclNetFromParts :: NetParts -> ExtractM NetId
 addDeclNetFromParts (NetParts name prio origin ty) =
-    addDeclNet origin (Net name prio S.empty S.empty ()) ty
+    addDeclNet origin (Net name prio S.empty S.empty ty ()) ty
 
 
 prioExtPort = 3
@@ -368,8 +368,8 @@ rvalPin (Var v) = lookupNet (NoDecl v) >>= \nt -> case nt of
     Nothing -> rvalPin UnknownExpr
 rvalPin e = do
     inPins <- netPins $ exprVarDecls e
-    outNet <- freshNet
     let ty = TUnknown -- TODO
+    outNet <- freshNet ty
     addLogic $ Logic LkOther inPins (S.singleton $ Pin outNet ty) ()
     return $ Pin outNet ty
     
