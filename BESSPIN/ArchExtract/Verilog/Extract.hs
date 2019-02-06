@@ -229,7 +229,6 @@ convTy vMod (V.TEnum ty) = A.TEnum $ convTy vMod ty
 convTy vMod (V.TRef declId) =
     let V.TypedefDecl name ty = V.moduleDecls vMod `S.index` declId in
     A.TAlias name $ convTy vMod ty
-convTy vMod V.TInfer = A.TWire False False -- TODO
 
 
 -- Building `moduleInputs`, `moduleOutputs`, and `moduleInsts` from

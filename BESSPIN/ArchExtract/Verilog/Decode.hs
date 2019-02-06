@@ -285,7 +285,7 @@ clsNode cls = case T.unpack cls of
         return $ TypeId name ty
 
     "N7Verific12VeriDataTypeE" -> do
-        -- The `Nothing` case happens when the net uses the default ned type.
+        -- The `Nothing` case happens when the net uses the default net type.
         -- We blindly assume the default is `wire`.
         --
         -- Note this is different from the case of implicitly-declared nets,

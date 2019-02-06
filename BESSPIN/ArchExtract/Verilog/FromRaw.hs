@@ -132,7 +132,9 @@ mkDecl i = do
         _ -> error $ "expected declaration at " ++ show i
 
 mkTy :: Maybe NodeId -> Maybe NodeId -> FromRawM Ty
-mkTy Nothing Nothing = return TInfer
+-- SV standard 1800-2012 sec. 6.10: implicitly declared nets default to scalar
+-- (1-bit) type.
+mkTy Nothing Nothing = return $ TTy TWire [] []
 mkTy (Just dims) Nothing = error $
     "impossible: decl has dims but no datatype? (dims = " ++ show dims ++ ")"
 mkTy varDims (Just i) = do

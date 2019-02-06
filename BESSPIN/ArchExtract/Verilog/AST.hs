@@ -77,8 +77,7 @@ data Ty =
     } |
     TRef
     { tRefDeclId :: Int
-    } |
-    TInfer
+    }
     deriving (Show, Data, Typeable)
 
 data Item =
