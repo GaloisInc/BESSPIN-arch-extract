@@ -56,8 +56,6 @@ aggregateModule modId boundaryNets excludeNets d =
     connTaken (ExtPort _) = False
     connTaken (LogicPort i _) = i `Set.member` takenLogics
 
-    inferNetTy i net = TSimVal -- TODO
-
     -- List of nets that will become input ports.  These are nets that pass
     -- data from a non-taken logic to a taken one.
     inPorts :: Seq Port
@@ -65,15 +63,13 @@ aggregateModule modId boundaryNets excludeNets d =
             guard $ NetId i `Set.member` takenNets
             guard $ any (not . connTaken) (netSources net)
             guard $ any connTaken (netSinks net)
-            let ty = inferNetTy i net
-            return $ Port (head $ T.lines $ netName net) (NetId i) ty
+            return $ Port (head $ T.lines $ netName net) (NetId i) (netTy net)
         ) (moduleNets mod)
     outPorts = S.foldMapWithIndex (\i net -> do
             guard $ NetId i `Set.member` takenNets
             guard $ any connTaken (netSources net)
             guard $ any (not . connTaken) (netSinks net)
-            let ty = inferNetTy i net
-            return $ Port (head $ T.lines $ netName net) (NetId i) ty
+            return $ Port (head $ T.lines $ netName net) (NetId i) (netTy net)
         ) (moduleNets mod)
 
     inPins = fmap (\p -> Pin (portNet p) (portTy p)) inPorts

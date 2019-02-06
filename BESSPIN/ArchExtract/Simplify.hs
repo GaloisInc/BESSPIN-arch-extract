@@ -29,7 +29,7 @@ mapMods f d = Design $ fmap f $ designMods d
 
 -- Rebuild the `netSources` and `netSinks` connection lists for all nets in
 -- `mod`, based on the `Inputs` and `Outputs` lists for the module itself and
--- all its `ModInst`s and `Logic`s.
+-- all its `Logic`s.
 reconnectNets :: Module a -> Module a
 reconnectNets mod = runST $ do
     sources <- newArray (NetId 0, NetId $ S.length (moduleNets mod) - 1) S.empty
@@ -86,37 +86,6 @@ filterNets f mod = mod' { moduleNets = nets' }
             error $ "net " ++ show (T.unpack name) ++
                 " (" ++ show netId ++ ") was deleted while still in use"
 
--- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
--- nets with the other.
-mergeAliasedNets :: Module a -> Module a
-mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
-
--- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
--- all of its input and output nets are merged into a single net, indicating
--- that data can flow freely from any input to any output.
-filterLogics :: (Int -> Logic a -> Bool) -> Module a -> Module a
-filterLogics f mod =
-    runNetMerge act (mod { moduleLogics = logics' })
-  where
-    logics' = filterWithIndex f $ moduleLogics mod
-    act = do
-        void $ flip S.traverseWithIndex (moduleLogics mod) $ \idx l -> do
-            when (not $ f idx l) $ do
-                mergeNetSeq $ fmap pinNet (logicInputs l) <> fmap pinNet (logicOutputs l)
-
--- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
--- connected to the same nets.
-filterInstsToLogic :: (Int -> Logic a -> Inst -> Bool) -> Module a -> Module a
-filterInstsToLogic f mod =
-    reconnectNets $ mod { moduleLogics = logics' }
-  where
-    logics' = S.mapWithIndex (\i logic ->
-        if not $ check i logic then logic { logicKind = LkOther } else logic) (moduleLogics mod)
-    check i logic = case logicKind logic of
-        LkInst inst -> f i logic inst
-        _ -> True
-
-
 -- Disconnect all connection points selected by predicate `f` from their
 -- current nets.  Since each connection point must be connected to some net,
 -- this function adds a new, otherwise-empty net for each disconnected `Conn`.
@@ -152,10 +121,11 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
             <*> pure ann
 
     goNet conn side netId name =
-        if f conn side netId (nets `S.index` unwrapNetId netId) then
+        let net = nets `S.index` unwrapNetId netId in
+        if f conn side netId net then
             return netId
         else
-            mkNet name prioDcNet
+            mkNet name prioDcNet (netTy net)
 
     dcName netId base = T.pack "dc$" <> base <> T.singleton '$' <>
         T.pack (show $ unwrapNetId netId)
@@ -167,14 +137,42 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
 
 prioDcNet = -1
 
-
-
 type NetM a b = State (Seq (Net a)) b
 
-mkNet :: Monoid a => Text -> Int -> NetM a NetId
-mkNet name prio = state $ \nets ->
-    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty TUnknown mempty)
-    
+mkNet :: Monoid a => Text -> Int -> Ty -> NetM a NetId
+mkNet name prio ty = state $ \nets ->
+    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty ty mempty)
+
+
+-- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
+-- nets with the other.
+mergeAliasedNets :: Module a -> Module a
+mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
+
+-- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
+-- all of its input and output nets are merged into a single net, indicating
+-- that data can flow freely from any input to any output.
+filterLogics :: (Int -> Logic a -> Bool) -> Module a -> Module a
+filterLogics f mod =
+    runNetMerge act (mod { moduleLogics = logics' })
+  where
+    logics' = filterWithIndex f $ moduleLogics mod
+    act = do
+        void $ flip S.traverseWithIndex (moduleLogics mod) $ \idx l -> do
+            when (not $ f idx l) $ do
+                mergeNetSeq $ fmap pinNet (logicInputs l) <> fmap pinNet (logicOutputs l)
+
+-- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
+-- connected to the same nets.
+filterInstsToLogic :: (Int -> Logic a -> Inst -> Bool) -> Module a -> Module a
+filterInstsToLogic f mod =
+    reconnectNets $ mod { moduleLogics = logics' }
+  where
+    logics' = S.mapWithIndex (\i logic ->
+        if not $ check i logic then logic { logicKind = LkOther } else logic) (moduleLogics mod)
+    check i logic = case logicKind logic of
+        LkInst inst -> f i logic inst
+        _ -> True
 
 
 type NetMergeLabel = Set (Int, NetId)
