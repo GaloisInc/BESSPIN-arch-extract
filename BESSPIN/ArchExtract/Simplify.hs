@@ -5,6 +5,8 @@ import Control.Monad
 import Control.Monad.ST
 import Control.Monad.State
 import Data.Array.ST
+import Data.Foldable
+import Data.Function (on)
 import Data.Generics
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -147,36 +149,33 @@ mkNet name prio ty = state $ \nets ->
 -- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased
 -- nets with the other.
 mergeAliasedNets :: Module a -> Module a
-mergeAliasedNets mod = filterLogics (\_ l -> logicKind l /= LkNetAlias) mod
+mergeAliasedNets mod =
+    substNetsByMap substMap revMap $
+    filterLogics (\_ l -> logicKind l /= LkNetAlias) $
+    mod
+  where
+    (substMap, revMap) = runNetMerge mod $ do
+        forM_ (moduleLogics mod) $ \l ->
+            when (logicKind l == LkNetAlias) $ do
+                -- Sanity checks
+                when (S.length (logicInputs l) /= 1 || S.length (logicOutputs l) /= 1) $
+                    traceShowM ("warning: malformed net alias",
+                        "inputs", logicInputs l, "outputs", logicOutputs l)
+                let allNets = fmap pinNet $ logicInputs l <> logicOutputs l
+                let tys = fmap (\i -> netTy $ mod `moduleNet` i) allNets
+                when (not (S.null tys) && not (all (== tys `S.index` 0) tys)) $
+                    traceShowM ("warning: illtyped net alias",
+                        "nets", allNets, "tys", tys)
+                -- Actually merge the nets
+                mergeNetSeq allNets
 
--- Delete logic items rejected by predicate `f`.  When a logic item is deleted,
--- all of its input and output nets are merged into a single net, indicating
--- that data can flow freely from any input to any output.
+-- Delete logic items rejected by predicate `f`.  Has no effect on nets, except
+-- to disconnect them from each deleted logic.
 filterLogics :: (Int -> Logic a -> Bool) -> Module a -> Module a
-filterLogics f mod =
-    runNetMerge act (mod { moduleLogics = logics' })
-  where
-    logics' = filterWithIndex f $ moduleLogics mod
-    act = do
-        void $ flip S.traverseWithIndex (moduleLogics mod) $ \idx l -> do
-            when (not $ f idx l) $ do
-                mergeNetSeq $ fmap pinNet (logicInputs l) <> fmap pinNet (logicOutputs l)
-
--- Replace each module instantiation rejected by `f` with an `LkOther` `Logic`
--- connected to the same nets.
-filterInstsToLogic :: (Int -> Logic a -> Inst -> Bool) -> Module a -> Module a
-filterInstsToLogic f mod =
-    reconnectNets $ mod { moduleLogics = logics' }
-  where
-    logics' = S.mapWithIndex (\i logic ->
-        if not $ check i logic then logic { logicKind = LkOther } else logic) (moduleLogics mod)
-    check i logic = case logicKind logic of
-        LkInst inst -> f i logic inst
-        _ -> True
+filterLogics f mod = mod { moduleLogics = filterWithIndex f $ moduleLogics mod }
 
 
-type NetMergeLabel = Set (Int, NetId)
-type NetMergePoint s = UF.Point s NetMergeLabel
+type NetMergePoint s = UF.Point s (Seq NetId)
 type NetMergeM s a = StateT (STArray s NetId (NetMergePoint s)) (ST s) a
 
 mergeNets :: NetId -> NetId -> NetMergeM s ()
@@ -191,66 +190,65 @@ mergeNetSeq ids = case S.viewl ids of
     S.EmptyL -> return ()
     id1 S.:< ids -> forM_ ids $ \id2 -> mergeNets id1 id2
 
-runNetMerge :: (forall s. NetMergeM s ()) -> Module a -> Module a
-runNetMerge m mod =
+-- Replace nets as indicated by the `substMap` and `revMap` produced by
+-- `runNetMerge`.
+substNetsByMap :: Map NetId NetId -> Map NetId (Seq NetId) -> Module a -> Module a
+substNetsByMap substMap revMap mod =
     reconnectNets $
     filterNets (\netId net -> substMap M.! netId == netId) $
     renameNets $
     mapNetIds (\netId -> substMap M.! netId) $
     mod
   where
-    -- Map each net's ID to the ID of its replacement.  For nets that haven't
-    -- been merged with anything, this maps the ID to itself.
-    substMap :: Map NetId NetId
-    -- Map from each non-replaced net's ID to its new name.
-    nameMap :: Map NetId Text
-    (substMap, nameMap) = runST $ do
-        -- Build an array, containing one union-find "point" for each net.  The
-        -- point descriptors are (-prio, id), so that taking the `min` of two
-        -- descriptors gives the higher-priority one, or (in case of a tie) the
-        -- one with higher ID.
-        arr <- newArray_ (NetId 0, NetId $ S.length (moduleNets mod) - 1)
-            :: ST s (STArray s NetId (NetMergePoint s))
-        (lo, hi) <- getBounds arr
-        forM_ [lo .. hi] $ \netId -> do
-            let net = moduleNets mod `S.index` unwrapNetId netId
-            pt <- UF.fresh $ Set.singleton (- netNamePriority net, netId)
-            writeArray arr netId pt
+    nameFromIds ids = name
+      where
+        cands = fmap (\i -> (i, mod `moduleNet` i)) ids
+        sortedCands = S.unstableSortBy (compare `on` \(i,n) ->
+            (-netNamePriority n, i)) cands
+        name = T.unlines $ toList $ fmap (\(i,n) -> netName n) sortedCands
 
-        -- Run user action to merge some nets together.
-        evalStateT m arr
-
-        -- Build a map from each net to its union-find representative.
-        substMap <- M.fromList <$> forM [lo .. hi] (\oldId -> do
-            pt <- readArray arr oldId
-            desc <- UF.descriptor pt
-            let newId = snd $ Set.findMin desc
-            return (oldId, newId))
-
-        nameMap <- mconcat <$> forM [lo .. hi] (\oldId -> do
-            pt <- readArray arr oldId
-            desc <- UF.descriptor pt
-            let newId = snd $ Set.findMin desc
-            if newId == oldId then
-                let newName = T.unlines $
-                        map (\(_,id) -> netName $
-                            moduleNets mod `S.index` unwrapNetId id) $
-                        Set.toList desc in
-                return $ M.singleton newId newName
-            else
-                return M.empty
-            )
-
-        return (substMap, nameMap)
-
-    renameNet idx n =
-        let newName = case M.lookup (NetId idx) nameMap of
-                Nothing -> netName n
-                Just name -> name
-        in
-        n { netName = newName }
+    renameNet idx net | Just ids <- M.lookup (NetId idx) revMap =
+        net { netName = nameFromIds ids }
+    renameNet idx net = net
 
     renameNets mod = mod { moduleNets = S.mapWithIndex renameNet $ moduleNets mod }
+
+-- Run a `NetMergeM` action on a module, returning a map of net substitutions.
+-- The first output maps each `NetId` in `mod` to the representative NetId of
+-- its equivalence class, and the second maps each representative of a
+-- nontrivial class to the set of NetIds in the class.
+runNetMerge :: Module a -> (forall s. NetMergeM s ()) -> (Map NetId NetId, Map NetId (Seq NetId))
+runNetMerge mod m = runST $ do
+    -- Build an array, containing one union-find "point" for each net.  The
+    -- point descriptors are lists of NetIds, .
+    arr <- newArray_ (NetId 0, NetId $ S.length (moduleNets mod) - 1)
+        :: ST s (STArray s NetId (NetMergePoint s))
+    (lo, hi) <- getBounds arr
+    forM_ [lo .. hi] $ \netId -> do
+        pt <- UF.fresh $ S.singleton netId
+        writeArray arr netId pt
+
+    -- Run user action to merge some nets together.
+    evalStateT m arr
+
+    -- Build a map from each net to its union-find representative.
+    substMap <- M.fromList <$> forM [lo .. hi] (\oldId -> do
+        pt <- readArray arr oldId
+        desc <- UF.descriptor pt
+        let newId = desc `S.index` 0
+        return (oldId, newId))
+
+    revMap <- mconcat <$> forM [lo .. hi] (\oldId -> do
+        pt <- readArray arr oldId
+        desc <- UF.descriptor pt
+        let newId = desc `S.index` 0
+        if S.length desc > 1 && newId == oldId then
+            return $ M.singleton newId desc
+        else
+            return M.empty
+        )
+
+    return (substMap, revMap)
 
 
 filterWithIndex :: (Int -> a -> Bool) -> Seq a -> Seq a

@@ -121,7 +121,7 @@ extractArch vDes =
 
 extractMod :: Seq V.Module -> V.Module -> A.Module ()
 extractMod vMods vMod =
-    filterLogics (\_ l -> logicKind l /= LkNetAlias) $
+    mergeAliasedNets $
     -- Break up "uninteresting" nets early, before they can get merged with
     -- other nets.
     disconnect (\_ _ _ net ->

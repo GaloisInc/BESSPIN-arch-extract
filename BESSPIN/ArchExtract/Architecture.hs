@@ -114,7 +114,7 @@ data Ty =
     -- Type for values used only in simulation (int, string, etc).
     TSimVal |
     TUnknown
-    deriving (Show, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data)
 
 
 -- Enum for indicating a side of a net, logic, or module.  For clarity, these
