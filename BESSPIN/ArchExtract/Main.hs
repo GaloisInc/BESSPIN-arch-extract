@@ -11,6 +11,7 @@ import qualified Data.Text as T
 import Data.Word
 
 import Language.Clafer
+import Language.Clafer.Front.PrintClafer
 import Data.GraphViz.Attributes.Colors
 import Data.GraphViz.Attributes.Colors.X11
 
@@ -18,7 +19,7 @@ import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
 import BESSPIN.ArchExtract.Architecture
---import BESSPIN.ArchExtract.Gen.Clafer
+import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 
 import BESSPIN.ArchExtract.Aggregate
@@ -72,8 +73,10 @@ main = do
     let exc = flip netsNamed mod $
             []
 
+{-
     let a' = aggregateModule 3 nets1 exc1 a
     let a = aggregateModule 3 nets exc a'
+-}
 
     let mod = designMods a `S.index` 3
 
@@ -147,6 +150,7 @@ main = do
     let a = a'
 
 
+{-
     --let mod = a `designMod` 3
     --do
     forM_ (designMods a) $ \mod -> do
@@ -165,3 +169,6 @@ main = do
                     })
                 mod
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
+-}
+
+    writeFile "out.cfr" $ render $ prt 0 $ genClafer a

@@ -1,62 +1,202 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Gen.Clafer where
 
+import Data.Foldable
 import qualified Data.Map as M
+import Data.Sequence (Seq)
+import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 
 import Debug.Trace
 
-import Language.Clafer
+import Language.Clafer hiding (Module)
 import Language.Clafer.Common
 import Language.Clafer.Front.AbsClafer hiding (Module)
 import qualified Language.Clafer.Front.AbsClafer as C
 import Language.Clafer.Front.PrintClafer
 import qualified Language.Clafer.ClaferArgs as Args
 
-import BESSPIN.ArchExtract.Verilog.AST hiding (Module)
-import qualified BESSPIN.ArchExtract.Verilog.AST as V
+import BESSPIN.ArchExtract.Architecture
 
-convName x = T.unpack x ++ "_"
+joinName parts = T.intercalate "_" parts
 
-cfrModule :: Text -> [Element] -> Element
-cfrModule name elts = Subclafer noSpan $ Clafer noSpan
-    (Abstract noSpan)
+mkPath :: [Text] -> Exp
+mkPath (name : names) = foldl (\e n -> EJoin noSpan e (go n)) (go name) names
+  where
+    go :: Text -> Exp
+    go n = ClaferId noSpan $ Path noSpan [ModIdIdent noSpan $ mkIdent $ T.unpack n]
+
+mkClafer :: Text -> (Span -> Abstract) -> Maybe [Text] -> [Element] -> Element
+mkClafer name abs super elts = Subclafer noSpan $ Clafer noSpan
+    (abs noSpan)
     []
     (GCardEmpty noSpan)
-    (mkIdent $ convName name)
-    (SuperEmpty noSpan)
+    (mkIdent $ T.unpack name)
+    (case super of
+        Just names -> SuperSome noSpan $ mkPath names
+        Nothing -> SuperEmpty noSpan)
     (ReferenceEmpty noSpan)
     (CardEmpty noSpan)
     (InitEmpty noSpan)
     (TransitionEmpty noSpan)
     (ElementsList noSpan elts)
 
-cfrModInst :: Text -> Text -> Element
-cfrModInst modName instName = Subclafer noSpan $ Clafer noSpan
+mkRef :: Text -> Exp -> Element
+mkRef name target = Subclafer noSpan $ Clafer noSpan
     (AbstractEmpty noSpan)
     []
     (GCardEmpty noSpan)
-    (mkIdent $ convName instName)
-    (SuperSome noSpan $ ClaferId noSpan $
-        Path noSpan [ModIdIdent noSpan $ mkIdent $ convName modName])
-    (ReferenceEmpty noSpan)
+    (mkIdent $ T.unpack name)
+    (SuperEmpty noSpan)
+    (ReferenceSet noSpan target)
     (CardEmpty noSpan)
     (InitEmpty noSpan)
     (TransitionEmpty noSpan)
     (ElementsEmpty noSpan)
 
+mkIntLit :: Int -> Exp
+mkIntLit i = EInt noSpan $ PosInteger ((0, 0), show i)
+
+mkStrLit :: Text -> Exp
+mkStrLit s = EStr noSpan $ PosString ((0, 0), show $ T.unpack s)
+
+mkEqCon :: Exp -> Exp -> Element
+mkEqCon a b = Subconstraint noSpan $ Constraint noSpan [EEq noSpan a b]
+
+mkEqCon' :: [Text] -> Exp -> Element
+mkEqCon' ts b = mkEqCon (mkPath ts) b
+
+mkSet :: [Exp] -> Exp
+mkSet [] = error "mkSet: no expressions"
+mkSet es = foldl1 (EUnionCom noSpan) es
+
+mkEqSetCon' :: [Text] -> [Exp] -> [Element]
+mkEqSetCon' ts [] =
+    [ mkEqCon (ECard noSpan $ mkPath ts) (mkIntLit 0)
+    ]
+mkEqSetCon' ts es =
+    [ mkEqCon (ECard noSpan $ mkPath ts) (mkIntLit $ length es)
+    , mkEqCon' ts (mkSet es)
+    ]
+
+concrete = AbstractEmpty
 
 
-genClafer v = C.Module noSpan $ map (ElementDecl noSpan) $ map go v ++ [root]
+cfrPortName Source idx = joinName ["port", "in", T.pack (show idx)]
+cfrPortName Sink idx = joinName ["port", "out", T.pack (show idx)]
+cfrLogicName idx = joinName ["logic", T.pack (show idx)]
+cfrNetName idx subIdx = joinName ["net", T.pack (show idx), T.pack (show subIdx)]
+
+convModule :: Design a -> Module a -> [Element]
+convModule design mod = [ modCfr ]
   where
-    modMap = M.fromList [(moduleId m, m) | m <- v]
+    name = moduleName mod
+    implName = joinName ["origin"]
+    modName = joinName ["module", name]
 
-    go (m@ModuleDecl {}) = cfrModule (moduleName m) (concatMap goItem $ moduleItems m)
-    goItem (mi@Instance {}) = case M.lookup (instanceModId mi) modMap of
-        Just m -> [cfrModInst (moduleName m) (instanceName mi)]
-        Nothing -> trace ("warning: mod ref to unknown ID " ++ show (instanceModId mi)) []
+    impl = mkClafer implName concrete (Just ["verilog_implementation"])
+        [ mkEqCon' ["name"] (mkStrLit name)
+        -- TODO: file
+        ]
 
-    root = cfrModInst (T.pack "leg") (T.pack "root")
+    inPorts = [mkPath [cfrPortName Source i] | i <- [0 .. S.length (moduleInputs mod) - 1]]
+    outPorts = [mkPath [cfrPortName Sink i] | i <- [0 .. S.length (moduleOutputs mod) - 1]]
+
+    modCfr = mkClafer modName Abstract (Just ["component"]) (
+        [ mkEqCon' ["name"] (mkStrLit name)
+        , impl
+        , mkEqCon' ["refinement"] (mkPath [implName])
+        ]
+        ++ S.foldMapWithIndex (convLogic design) (moduleLogics mod)
+        ++ S.foldMapWithIndex convNet (moduleNets mod)
+        ++ toList (S.mapWithIndex (convPort Source) (moduleInputs mod))
+        ++ toList (S.mapWithIndex (convPort Sink) (moduleOutputs mod))
+        ++ mkEqSetCon' ["parts"] [mkPath [cfrLogicName i] |
+            i <- [0 .. S.length (moduleLogics mod) - 1]]
+        ++ mkEqSetCon' ["in_ports"] inPorts
+        ++ mkEqSetCon' ["unbound_in_ports"] inPorts
+        ++ mkEqSetCon' ["out_ports"] outPorts
+        ++ mkEqSetCon' ["unbound_out_ports"] outPorts
+        )
+
+convLogic :: Design a -> Int -> Logic a -> [Element]
+convLogic design idx logic@(Logic { logicKind = LkInst inst }) =
+    let instMod = design `designMod` instModId inst in
+    let instModName = joinName ["module", moduleName instMod] in
+    [ mkClafer (cfrLogicName idx) concrete (Just [instModName])
+        [ mkEqCon' ["name"] (mkStrLit $ instName inst)
+        ] ]
+convLogic _ idx logic =
+    let displayName = case logicKind logic of
+            LkRegister t -> Just t
+            LkDFlipFlop t _ -> Just t
+            _ -> Nothing
+    in
+    let inPorts = toList $ S.mapWithIndex (convPin Source) $ logicInputs logic in
+    let outPorts = toList $ S.mapWithIndex (convPin Sink) $ logicOutputs logic in
+    let inPortExps = [mkPath [cfrPortName Source i] | i <- [0 .. length inPorts - 1]] in
+    let outPortExps = [mkPath [cfrPortName Sink i] | i <- [0 .. length outPorts - 1]] in
+    let nameCon = case displayName of
+            Nothing -> []
+            Just t -> [mkEqCon' ["name"] (mkStrLit t)]
+    in
+    [ mkClafer (cfrLogicName idx) concrete (Just ["logic"])
+        ( inPorts
+        ++ outPorts
+        ++ nameCon
+        ++ mkEqSetCon' ["in_ports"] inPortExps
+        ++ mkEqSetCon' ["unbound_in_ports"] inPortExps
+        ++ mkEqSetCon' ["out_ports"] outPortExps
+        ++ mkEqSetCon' ["unbound_out_ports"] outPortExps
+        ) ]
+
+flipSide Source = Sink
+flipSide Sink = Source
+
+convNet :: Int -> Net a -> [Element]
+convNet idx net =
+    [ mkClafer (cfrNetName idx j) concrete (Just ["connector"])
+        [ mkEqCon' ["name"] (mkStrLit $ netName net)
+        , mkEqCon' ["first"] (mkPath $ connComponent conn1)
+        , mkEqCon' ["first_port"] (mkPath $ connComponent conn1 ++ connPort Source conn1)
+        , mkEqCon' ["second"] (mkPath $ connComponent conn2)
+        , mkEqCon' ["second_port"] (mkPath $ connComponent conn2 ++ connPort Sink conn2)
+        -- TODO: type
+        ]
+    | (j, (conn1, conn2)) <- zip [0..] pairs ]
+  where
+    pairs = [(a,b) | a <- toList $ netSources net, b <- toList $ netSinks net]
+
+    connComponent (ExtPort _) = ["parent"]
+    connComponent (LogicPort i _) = ["parent", cfrLogicName i]
+
+    connPort side (ExtPort i) = [cfrPortName side i]
+    connPort side (LogicPort _ j) = [cfrPortName (flipSide side) j]
+
+
+convPort :: Side -> Int -> Port -> Element
+convPort side idx port =
+    mkClafer (cfrPortName side idx) concrete (Just ["port"])
+        [ mkEqCon' ["name"] (mkStrLit $ portName port)
+        , mkClafer (if side == Source then "input" else "output") concrete Nothing []
+        , mkClafer "unbound" concrete Nothing []
+        -- TODO: type
+        ]
+
+convPin :: Side -> Int -> Pin -> Element
+convPin side idx pin =
+    mkClafer (cfrPortName side idx) concrete (Just ["port"])
+        [ mkClafer (if side == Source then "input" else "output") concrete Nothing []
+        , mkClafer "unbound" concrete Nothing []
+        -- TODO: type
+        ]
+
+
+
+genClafer design = C.Module noSpan $ map (ElementDecl noSpan) elts
+  where
+    elts = concatMap (convModule design) (toList $ designMods design)
 
 putAst a = do
     env <- getEnv
