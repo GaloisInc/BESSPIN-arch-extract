@@ -269,6 +269,10 @@ struct Encoder {
     // the `x` pointer is null.
     void tree_node(VeriTreeNode* x);
 
+    // Helper function to resolve and emit the list of parameter values for a
+    // module instantiation.
+    void mod_inst_params(VeriModuleInstantiation* mi);
+
     // Helper function to resolve and emit the list of port connections for a
     // module instantiation.
     void mod_inst_ports(VeriInstId* ii);
@@ -366,8 +370,7 @@ void Encoder::tree_node(VeriTreeNode* x) {
         sub.tree_nodes(m->GetPackageImportDecls());
     } else if (auto mi = exact_cast<VeriModuleInstantiation>(x)) {
         sub.tree_node(mi->GetInstantiatedModule());
-        // TODO: handle params like InstId ports
-        sub.tree_nodes(mi->GetParamValues());
+        sub.mod_inst_params(mi);
         sub.tree_nodes(mi->GetInstances());
     } else if (auto ii = exact_cast<VeriInstId>(x)) {
         sub.tree_node(ii->GetModuleItem());
@@ -562,15 +565,68 @@ void Encoder::tree_node(VeriTreeNode* x) {
     } else if (auto c = exact_cast<VeriCast>(x)) {
         sub.tree_node(c->GetTargetType());
         sub.tree_node(c->GetExpr());
+    } else if (auto sfc = exact_cast<VeriSystemFunctionCall>(x)) {
+        sub.string(sfc->GetName());
+        sub.uint(sfc->GetFunctionType());
+        sub.tree_nodes(sfc->GetArgs());
 
     // Explicitly unsupported nodes
     } else if (auto ste = exact_cast<VeriSystemTaskEnable>(x)) {
-    } else if (auto sfc = exact_cast<VeriSystemFunctionCall>(x)) {
     } else if (auto te = exact_cast<VeriTaskEnable>(x)) {
 
     } else {
         std::cerr << "unsupported AST node: " << typeid(*x).name() << "\n";
         ++num_unsupported;
+    }
+}
+
+void Encoder::mod_inst_params(VeriModuleInstantiation* mi) {
+    // We want to encode an array of the actual parameters that matches the
+    // order of the corresponding formal parameters.
+
+    VeriModule* module = mi->GetInstantiatedModule();
+
+    if (module == nullptr) {
+        // Get the first InstId so we can (hopefully) obtain a useful name to
+        // show the user.
+        Array* insts = mi->GetInstances();
+        const char* name = "(null)";
+        if (insts && insts->Size() > 0) {
+            if (auto ii = exact_cast<VeriInstId>((VeriTreeNode*)insts->At(0))) {
+                name = ii->Name();
+            }
+        }
+
+        std::cerr << "warning: module instantiation " << name
+            << " references undefined module "
+            << mi->GetModuleName()
+            << "\n";
+
+        Array* exprs = mi->GetParamValues();
+        Encoder sub(this->array(exprs->Size()));
+        size_t i;
+        VeriExpression* e;
+        FOREACH_ARRAY_ITEM(exprs, i, e) {
+            sub.tree_node(e);
+        }
+        return;
+    }
+
+    // Walk over the formals, encoding each corresponding actual.
+
+    Array* formal_params = module->GetParameters();
+
+    if (formal_params == nullptr) {
+        Encoder sub(this->array(0));
+        return;
+    }
+
+    Encoder sub(this->array(formal_params->Size()));
+    size_t i;
+    VeriIdDef* formal;
+    FOREACH_ARRAY_ITEM(formal_params, i, formal) {
+        VeriExpression* actual = mi->GetActualExpression(formal);
+        sub.tree_node(actual);
     }
 }
 

@@ -7,6 +7,8 @@ import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as T
 
 import BESSPIN.ArchExtract.Verilog.AST
 import BESSPIN.ArchExtract.Verilog.Raw (NodeId, Node)
@@ -19,6 +21,7 @@ data Numbering v = Numbering (Map NodeId Int) (Seq v)
 
 data S = S
     { nodeMap :: Map NodeId Node
+    , blackboxModules :: Set Text
     , modules :: Numbering Module
     , decls :: Numbering Decl
     }
@@ -100,15 +103,21 @@ mkModule i = do
     n <- getNode i
     case n of
         R.Module name ports params items -> do
+            blackbox <- gets $ Set.member name . blackboxModules
             (items, decls) <- collectDecls $ do
                 mapM_ declRef ports
                 mapM_ declRef params
-                items <- mconcat <$> mapM mkItems items
-                return items
+                if not blackbox then 
+                    mconcat <$> mapM mkItems items
+                else
+                    return S.empty
             let ports = S.foldMapWithIndex (\i d -> case d of
                     PortDecl _ _ _ -> S.singleton i
                     _ -> S.empty) decls
-            return $ Module name decls ports items
+            let params = S.foldMapWithIndex (\i d -> case d of
+                    ParamDecl _ _ _ -> S.singleton i
+                    _ -> S.empty) decls
+            return $ Module name decls ports params items
         _ -> error $ "expected module at " ++ show i
 
 mkDecl :: NodeId -> FromRawM Decl
@@ -120,12 +129,12 @@ mkDecl i = do
         R.Variable name optTy dims init Nothing ->
             VarDecl <$> pure name <*> mkTy dims optTy
         R.ParamId name optTy init dims ->
-            ParamDecl <$> pure name <*> mkTy dims optTy
+            ParamDecl <$> pure name <*> mkTy dims optTy <*> mapM mkExpr init
         R.InstId parent name conns -> do
             n' <- getNode parent
             case n' of
                 R.ModuleInstantiation mod params _ ->
-                    InstDecl <$> pure name <*> moduleRef mod <*> mapM mkExpr params
+                    InstDecl <$> pure name <*> moduleRef mod <*> mapM (mapM mkExpr) params
                 _ -> error $ "expected module instantiation at " ++ show i
         R.TypeId name ty ->
             TypedefDecl <$> pure name <*> mkTy Nothing (Just ty)
@@ -233,7 +242,10 @@ mkExpr i = do
         R.IndexedId base ix -> Index <$> mkExpr base <*> mkIndex ix
         R.IndexedMemoryId base ixs -> MemIndex <$> mkExpr base <*> mapM mkIndex ixs
         R.ConstVal t -> return $ Const t
-        R.IntVal t -> return $ Const t
+        R.IntVal t i
+            | toInteger (minBound :: Int) <= i && i <= toInteger (maxBound :: Int) ->
+                return $ ConstInt t (fromInteger i)
+            | otherwise -> return $ Const t
         R.RealVal t -> return $ Const t
         R.Concat es -> Concat <$> mapM mkExpr es
         R.MultiConcat rep es -> MultiConcat <$> mkExpr rep <*> mapM mkExpr es
@@ -244,6 +256,10 @@ mkExpr i = do
         R.SelectedName base name -> Field <$> mkExpr base <*> pure name
         R.MultiAssignmentPattern rep es ->
             AssignPat <$> mkExpr rep <*> mapM mkExpr es
+        R.SystemFunctionCall name es -> case T.unpack name of
+            "clog2" -> Builtin BkClog2 <$> mapM mkExpr es
+            _ -> trace ("unknown system function call at " ++ show i) $
+                return UnknownExpr
         _ -> trace ("unknown expression at " ++ show i) $ return UnknownExpr
         --_ -> error $ "expected expression at " ++ show i
 
@@ -293,6 +309,6 @@ mkIndex i = do
         _ -> ISingle <$> mkExpr i
 
 
-fromRaw :: Map NodeId Node -> [NodeId] -> Design
-fromRaw nodes modIds = evalState (mkDesign modIds) $
-    S nodes (Numbering M.empty S.empty) (Numbering M.empty S.empty)
+fromRaw :: Map NodeId Node -> Set Text -> [NodeId] -> Design
+fromRaw nodes blackboxModules modIds = evalState (mkDesign modIds) $
+    S nodes blackboxModules (Numbering M.empty S.empty) (Numbering M.empty S.empty)

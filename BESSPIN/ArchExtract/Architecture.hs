@@ -30,10 +30,18 @@ data Design ann = Design
 
 data Module ann = Module
     { moduleName :: Text
+    , moduleParams :: Seq Param
     , moduleInputs :: Seq Port
     , moduleOutputs :: Seq Port
     , moduleLogics :: Seq (Logic ann)
     , moduleNets :: Seq (Net ann)
+    }
+    deriving (Show, Typeable, Data)
+
+
+data Param = Param
+    { paramName :: Text
+    , paramDefault :: Maybe ConstExpr
     }
     deriving (Show, Typeable, Data)
 
@@ -69,6 +77,7 @@ data LogicKind =
 data Inst = Inst 
     { instModId :: ModId
     , instName :: Text
+    , instParams :: Seq (Maybe ConstExpr)
     }
     deriving (Show, Eq, Typeable, Data)
 
@@ -117,6 +126,18 @@ data Ty =
     deriving (Show, Eq, Typeable, Data)
 
 
+data ConstExpr =
+      EIntLit Int
+    | EParam Int
+    | EBinOp ConstBinOp ConstExpr ConstExpr
+    | ELog2 ConstExpr
+    deriving (Show, Eq, Typeable, Data)
+
+data ConstBinOp =
+    CbAdd | CbSub | CbMul
+    deriving (Show, Eq, Typeable, Data)
+
+
 -- Enum for indicating a side of a net, logic, or module.  For clarity, these
 -- are named `Source` and `Sink` instead of `Input` and `Output` because
 -- `Input`/`Output` have opposite meanings on external ports vs. logic.
@@ -130,6 +151,9 @@ data Side = Source | Sink
 
 designMod :: Design ann -> ModId -> Module ann
 designMod d i = designMods d `S.index` i
+
+moduleParam :: Module ann -> Int -> Param
+moduleParam m i = moduleParams m `S.index` i
 
 moduleInput :: Module ann -> Int -> Port
 moduleInput m i = moduleInputs m `S.index` i
@@ -183,11 +207,12 @@ instance Annotated Design where
     scatterAnn' (Design mods) = Design <$> mapM scatterAnn' mods
 
 instance Annotated Module where
-    gatherAnn (Module _ _ _ logics nets) =
+    gatherAnn (Module _ _ _ _ logics nets) =
         foldMap gatherAnn logics ++
         foldMap gatherAnn nets
-    scatterAnn' (Module name ins outs logics nets) = Module
+    scatterAnn' (Module name params ins outs logics nets) = Module
         <$> pure name
+        <*> pure params
         <*> pure ins
         <*> pure outs
         <*> mapM scatterAnn' logics
@@ -234,6 +259,7 @@ zipAnnWith f x y = scatterAnn (zipWith f (gatherAnn x) (gatherAnn y)) x
 
 makeLenses' ''Design
 makeLenses' ''Module
+makeLenses' ''Param
 makeLenses' ''Port
 makeLenses' ''Logic
 makeLenses' ''Net
@@ -244,6 +270,8 @@ makeLenses' ''Ty
 _designMod :: Int -> Lens' (Design ann) (Module ann)
 _designMod i = _designMods . singular (ix i)
 
+_moduleParam :: Int -> Lens' (Module ann) Param
+_moduleParam i = _moduleParams . singular (ix i)
 _moduleInput :: Int -> Lens' (Module ann) Port
 _moduleInput i = _moduleInputs . singular (ix i)
 _moduleOutput :: Int -> Lens' (Module ann) Port

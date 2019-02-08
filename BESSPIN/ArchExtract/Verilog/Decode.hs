@@ -315,7 +315,7 @@ clsNode cls = case T.unpack cls of
 
     "N7Verific23VeriModuleInstantiationE" -> do
         mod <- node
-        paramVals <- nodes
+        paramVals <- listOf optNode
         ids <- nodes
         return $ ModuleInstantiation mod paramVals ids
 
@@ -448,8 +448,8 @@ clsNode cls = case T.unpack cls of
         t <- text
         skip    -- Size
         skip    -- Sign
-        skip    -- Num
-        return $ IntVal t
+        i <- integer
+        return $ IntVal t i
 
     "N7Verific11VeriRealValE" -> do
         t <- text
@@ -495,6 +495,14 @@ clsNode cls = case T.unpack cls of
         repeat <- node
         exprs <- nodes
         return $ MultiAssignmentPattern repeat exprs
+
+    "N7Verific22VeriSystemFunctionCallE" -> do
+        name <- text
+        -- We ignore the FunctionType for now.  It holds an enum value, but not
+        -- one of the token enums we already support in `Tokens.hs`.
+        skip    -- FunctionType
+        args <- nodes
+        return $ SystemFunctionCall name args
 
     "N7Verific9VeriRangeE" -> do
         left <- node
@@ -560,6 +568,8 @@ optBaseType = integer >>= \x -> case x of
     VERI_STRINGTYPE -> return $ Just TString
     VERI_INT -> return $ Just TInt
     VERI_LOGIC -> return $ Just TLogic
+    VERI_REAL -> return $ Just TReal
+    VERI_TIME -> return $ Just TTime
     _ -> fail $ "unknown BaseType enum: " ++ show x
 
 signing :: DecodeM Bool
@@ -594,9 +604,12 @@ binOp = integer >>= \x -> case x of
     VERI_MUL -> return BMul
     VERI_DIV -> return BDiv
     VERI_MODULUS -> return BMod
+    VERI_POWER -> return BPow
     VERI_REDAND -> return BAnd
     VERI_REDOR -> return BOr
     VERI_REDXOR -> return BXor
+    VERI_CASEEQ -> return BCaseEq
+    VERI_CASENEQ -> return BCaseNe
     VERI_LOGEQ -> return BEq
     VERI_LOGNEQ -> return BNe
     VERI_LT -> return BLt

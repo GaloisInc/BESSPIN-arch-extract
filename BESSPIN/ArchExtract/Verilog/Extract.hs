@@ -19,6 +19,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UnionFind.ST as UF
 import Lens.Micro.Platform
+import Text.Read (readMaybe)
 
 import Debug.Trace
 import Data.List
@@ -44,6 +45,9 @@ data NetOrigin =
 data ExtractState = ExtractState
     { esModule :: A.Module ()
     , esDeclNets :: Map NetOrigin (NetId, A.Ty)
+    -- Maps the index of the `V.ParamDecl` in `V.moduleDecls` to the index of
+    -- the `A.Param` in `A.moduleParams`.
+    , esDeclParams :: Map Int Int 
     , esAllMods :: Seq V.Module
     }
     deriving (Show)
@@ -58,6 +62,7 @@ addThing x fld = do
     fld %= (|> x)
     return idx
 
+addParam x = addThing x $ _esModule . _moduleParams
 addInput x = addThing x $ _esModule . _moduleInputs
 addOutput x = addThing x $ _esModule . _moduleOutputs
 addLogic x = addThing x $ _esModule . _moduleLogics
@@ -75,9 +80,19 @@ freshNet' baseName ty = do
 
 freshNet ty = freshNet' "tmp" ty
 
+addDeclParam declId x = do
+    id <- addParam x
+    _esDeclParams %= M.insert declId id
+    return id
+
+setParamDefault :: Int -> ConstExpr -> ExtractM ()
+setParamDefault i e = do
+    _esModule . _moduleParams . ix i . _paramDefault .= Just e
+
 
 lookupNet :: NetOrigin -> ExtractM (Maybe (NetId, A.Ty))
 lookupNet no = use $ _esDeclNets . at no
+
 
 findNet :: NetOrigin -> ExtractM (NetId, A.Ty)
 --findNet no = use $ _esDeclNets . singular (ix no)
@@ -94,6 +109,9 @@ findNet' no = do
 
 findNetName :: NetOrigin -> ExtractM Text
 findNetName no = A.netName <$> findNet' no
+
+findParam :: Int -> ExtractM Int
+findParam declId = use $ _esDeclParams . singular (ix declId)
 
 findModule :: Int -> ExtractM V.Module
 findModule i = use $ _esAllMods . singular (ix i)
@@ -136,16 +154,18 @@ buildMod vMods vMod = esModule $ execState go initState
   where
     initMod = A.Module
         { A.moduleName = V.moduleName vMod 
+        , A.moduleParams = S.empty
         , A.moduleInputs = S.empty
         , A.moduleOutputs = S.empty
         , A.moduleLogics = S.empty
         , A.moduleNets = S.empty
         }
-    initState = ExtractState initMod M.empty vMods
+    initState = ExtractState initMod M.empty M.empty vMods
 
     go :: ExtractM ()
     go = do
         addDeclaredNets vMod
+        addDeclaredParams vMod
         convDecls vMod
         trace (T.unpack $ describeMod vMod) $ convItems vMod
 
@@ -202,7 +222,7 @@ addDeclaredNets vMod = do
 declNet :: Seq V.Module -> V.Module -> Int -> V.Decl -> [NetParts]
 declNet vMods vMod i (V.PortDecl name vTy _) =
     [NetParts name prioExtPort (NoDecl i) (convTy vMod vTy)]
-declNet vMods vMod i (V.ParamDecl name vTy) = []
+declNet vMods vMod i (V.ParamDecl name vTy _) = []
 declNet vMods vMod i (V.VarDecl name vTy) =
     [NetParts name prioWire (NoDecl i) (convTy vMod vTy)]
 declNet vMods vMod i (V.TypedefDecl _ _) = []
@@ -226,10 +246,33 @@ convTy _ (V.TTy base packed unpacked) =
         V.TInt -> sim
         V.TInteger -> sim
         V.TString -> sim
+        V.TReal -> sim
+        V.TTime -> sim
 convTy vMod (V.TEnum ty) = A.TEnum $ convTy vMod ty
 convTy vMod (V.TRef declId) =
     let V.TypedefDecl name ty = V.moduleDecls vMod `S.index` declId in
     A.TAlias name $ convTy vMod ty
+
+
+-- Add all declared parameters in `vMod`.
+addDeclaredParams :: V.Module -> ExtractM ()
+addDeclaredParams vMod = do
+    -- First, add declarations for all params, but leave the initializers
+    -- blank.
+    void $ flip S.traverseWithIndex (V.moduleDecls vMod) $ \idx decl ->
+        case decl of
+            ParamDecl name _ _ -> void $ addDeclParam idx $ A.Param name Nothing
+            _ -> return ()
+
+    -- Now we can translate the initializer expressions, including ones that
+    -- refer to othe parameters.
+    void $ flip S.traverseWithIndex (V.moduleDecls vMod) $ \idx decl ->
+        case decl of
+            ParamDecl _ _ (Just init) -> do
+                i <- findParam idx
+                e <- traceShow ("convert", idx, decl) $ convConstExpr init
+                setParamDefault i e
+            _ -> return ()
 
 
 -- Building `moduleInputs`, `moduleOutputs`, and `moduleInsts` from
@@ -246,7 +289,7 @@ convDecl idx (V.PortDecl name vTy dir) = do
         V.Input -> addInput port
         V.Output -> addOutput port
         V.InOut -> addInput port >> addOutput port
-convDecl _ (V.ParamDecl _ _) = return ()
+convDecl _ (V.ParamDecl _ _ _) = return ()
 convDecl _ (V.VarDecl _ _) = return ()
 convDecl _ (V.TypedefDecl _ _) = return ()
 convDecl idx (V.InstDecl name modId paramVals) = do
@@ -257,8 +300,9 @@ convDecl idx (V.InstDecl name modId paramVals) = do
     outs <- forM (dirPins [V.Output, V.InOut] vInstMod) $ \portIdx -> do
         (net, ty) <- findNet $ NoInstPort idx portIdx
         return $ Pin net ty
+    params <- S.fromList <$> mapM (mapM convConstExpr) paramVals
     void $ addLogic $
-        Logic (LkInst $ Inst modId name) (S.fromList ins) (S.fromList outs) ()
+        Logic (LkInst $ Inst modId name params) (S.fromList ins) (S.fromList outs) ()
 
 -- Get the port index (the index of the PortDecl in `V.moduleDecls`) of all
 -- ports of `vMod` whose direction is in `dirs`.
@@ -412,3 +456,25 @@ convStmt s =
     mapM_ (\(l,r,imp) ->
             mkLogic LkOther (exprVarDecls l) (exprVarDecls r ++ map NoDecl imp)
         ) (stmtAssigns s)
+
+
+convConstExpr :: V.Expr -> ExtractM A.ConstExpr
+convConstExpr e = go e
+  where
+    go (V.Param declId) = A.EParam <$> findParam declId
+    go (V.Const t) | Just i <- parseBitConst t = return $ A.EIntLit i
+    go (V.ConstInt _ i) = return $ A.EIntLit i
+    go (V.Binary V.BAdd l r) = A.EBinOp A.CbAdd <$> go l <*> go r
+    go (V.Binary V.BSub l r) = A.EBinOp A.CbSub <$> go l <*> go r
+    go (V.Binary V.BMul l r) = A.EBinOp A.CbMul <$> go l <*> go r
+    go (V.Builtin BkClog2 [e]) = A.ELog2 <$> go e
+    go e = error $ "unsupported constexpr: " ++ show e
+
+parseBitConst :: Text -> Maybe Int
+parseBitConst t =
+    case T.unpack $ T.take 2 rest of
+        "'b" -> Just $ T.foldl (\i c -> 2 * i + case c of '0' -> 0; '1' -> 1) 0 digits
+        _ -> Nothing
+  where
+    (width, rest) = T.breakOn "'" t
+    digits = T.drop 2 rest

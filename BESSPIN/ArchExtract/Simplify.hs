@@ -98,8 +98,9 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
     (mod', nets') = runState (goMod mod) nets
 
     goMod :: Monoid a => Module a -> NetM a (Module a)
-    goMod (Module name ins outs logics nets) =
-        Module <$> pure name <*> goPorts Source ins <*> goPorts Sink outs <*>
+    goMod (Module name params ins outs logics nets) =
+        Module <$> pure name <*> pure params <*>
+            goPorts Source ins <*> goPorts Sink outs <*>
             goLogics logics <*> pure nets
 
     goPorts side ports = S.traverseWithIndex (goPort side) ports

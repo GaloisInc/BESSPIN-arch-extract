@@ -56,7 +56,10 @@ data Node =
     } |
     ModuleInstantiation
     { moduleInstantiationModule :: NodeId
-    , moduleInstantiationParamVals :: [NodeId]
+    -- Indices in `moduleInstantiationParamVals` should line up with the
+    -- declarations in `moduleParams`.  Some params may be omitted, to use the
+    -- default instead.
+    , moduleInstantiationParamVals :: [Maybe NodeId]
     , moduleInstantiationIds :: [NodeId]
     } |
     InstId
@@ -143,6 +146,7 @@ data Node =
     } |
     IntVal
     { intValText :: Text
+    , intValNum :: Integer
     } |
     RealVal
     { realValText :: Text
@@ -176,6 +180,10 @@ data Node =
     { multiAssignmentPatternRepeat :: NodeId
     , multiAssignmentPatternExprs :: [NodeId]
     } |
+    SystemFunctionCall
+    { systemFunctionCallName :: Text
+    , systemFunctionCallArgs :: [NodeId]
+    } |
     Range
     { rangeLeft :: NodeId
     , rangeRight :: Maybe NodeId
@@ -201,7 +209,9 @@ data AlwaysKind = AkPlain | AkComb | AkLatch | AkFf
 data Edge = PosEdge | NegEdge
     deriving (Show, Eq, Data, Typeable)
 
-data BaseType = TLogic | TWire | TReg | TTri | TInt | TInteger | TString
+data BaseType =
+    TLogic | TWire | TReg | TTri |
+    TInt | TInteger | TString | TReal | TTime
     deriving (Show, Eq, Data, Typeable)
 
 data UnOp =
@@ -214,10 +224,11 @@ data UnOp =
     deriving (Show, Eq, Data, Typeable)
 
 data BinOp =
-    BAdd | BSub | BMul | BDiv | BMod |
+    BAdd | BSub | BMul | BDiv | BMod | BPow |
     BAnd | BOr | BXor |
     BLogAnd | BLogOr |
     BEq | BNe | BLt | BLe | BGt | BGe |
+    BCaseEq | BCaseNe |
     BShl | BShr |
     BOther
     deriving (Show, Eq, Data, Typeable)

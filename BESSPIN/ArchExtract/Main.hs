@@ -47,7 +47,7 @@ main = do
                 putStrLn ("error decoding verilog AST:\n" ++ errs)
                 error $ "decoding error"
             Right x -> return x
-    let v = fromRaw raw modIds
+    let v = fromRaw raw (Set.fromList ["io_fwd_shim", "testbench"]) modIds
     let a = extractArch v
 
     let mod = a `designMod` 3

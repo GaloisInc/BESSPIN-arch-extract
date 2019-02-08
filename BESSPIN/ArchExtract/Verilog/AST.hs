@@ -36,6 +36,8 @@ data Module = Module
     , moduleDecls :: Seq Decl
     -- Indices of `PortDecl`s in `moduleDecls`
     , modulePorts :: Seq Int
+    -- Indices of `ParamDecl`s in `moduleDecls`
+    , moduleParams :: Seq Int
     , moduleItems :: Seq Item
     }
     deriving (Show, Data, Typeable)
@@ -49,6 +51,7 @@ data Decl =
     ParamDecl
     { declName :: Text
     , paramDeclTy :: Ty
+    , paramDeclInit :: Maybe Expr
     } |
     VarDecl
     { declName :: Text
@@ -61,7 +64,7 @@ data Decl =
     InstDecl
     { declName :: Text
     , instanceModId :: Int
-    , instanceParamVals :: [Expr]
+    , instanceParamVals :: [Maybe Expr]
     }
     deriving (Show, Data, Typeable)
 
@@ -150,6 +153,10 @@ data Expr =
     Const
     { constText :: Text
     } |
+    ConstInt
+    { constText :: Text
+    , constIntVal :: Int
+    } |
     ConstBool
     { constText :: Text
     , constBoolVal :: Bool
@@ -183,6 +190,10 @@ data Expr =
     { assignPatRepeat :: Expr
     , assignPatExprs :: [Expr]
     } |
+    Builtin
+    { builtinKind :: BuiltinKind
+    , builtinArgs :: [Expr]
+    } |
     UnknownExpr
     {}
     deriving (Show, Eq, Data, Typeable)
@@ -197,4 +208,7 @@ data Range = Range Expr Expr
     deriving (Show, Eq, Data, Typeable)
 
 data Index = ISingle Expr | IRange Expr Expr
+    deriving (Show, Eq, Data, Typeable)
+
+data BuiltinKind = BkClog2
     deriving (Show, Eq, Data, Typeable)
