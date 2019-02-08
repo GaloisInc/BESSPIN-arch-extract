@@ -171,4 +171,5 @@ main = do
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
 -}
 
+    print $ countClafers $ genClafer a
     writeFile "out.cfr" $ render $ prt 0 $ genClafer a

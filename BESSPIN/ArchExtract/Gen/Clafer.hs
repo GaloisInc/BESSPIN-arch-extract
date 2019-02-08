@@ -1,8 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Gen.Clafer where
 
+import Control.Monad
 import Data.Foldable
+import Data.Generics
 import qualified Data.Map as M
+import Data.Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as S
 import Data.Text (Text)
@@ -87,6 +90,7 @@ cfrPortName Source idx = joinName ["port", "in", T.pack (show idx)]
 cfrPortName Sink idx = joinName ["port", "out", T.pack (show idx)]
 cfrLogicName idx = joinName ["logic", T.pack (show idx)]
 cfrNetName idx subIdx = joinName ["net", T.pack (show idx), T.pack (show subIdx)]
+cfrParamName idx param = joinName [paramName param, T.pack (show idx)]
 
 convModule :: Design a -> Module a -> [Element]
 convModule design mod = [ modCfr ]
@@ -108,7 +112,8 @@ convModule design mod = [ modCfr ]
         , impl
         , mkEqCon' ["refinement"] (mkPath [implName])
         ]
-        ++ S.foldMapWithIndex (convLogic design) (moduleLogics mod)
+        ++ toList (S.mapWithIndex convParam (moduleParams mod))
+        ++ S.foldMapWithIndex (convLogic design mod) (moduleLogics mod)
         ++ S.foldMapWithIndex convNet (moduleNets mod)
         ++ toList (S.mapWithIndex (convPort Source) (moduleInputs mod))
         ++ toList (S.mapWithIndex (convPort Sink) (moduleOutputs mod))
@@ -120,14 +125,33 @@ convModule design mod = [ modCfr ]
         ++ mkEqSetCon' ["unbound_out_ports"] outPorts
         )
 
-convLogic :: Design a -> Int -> Logic a -> [Element]
-convLogic design idx logic@(Logic { logicKind = LkInst inst }) =
-    let instMod = design `designMod` instModId inst in
-    let instModName = joinName ["module", moduleName instMod] in
-    [ mkClafer (cfrLogicName idx) concrete (Just [instModName])
+convParam :: Int -> Param -> Element
+convParam idx param =
+    mkRef (cfrParamName idx param) (mkPath ["integer"])
+
+convLogic :: Design a -> Module a -> Int -> Logic a -> [Element]
+convLogic design mod idx logic@(Logic { logicKind = LkInst inst }) =
+    [ mkClafer (cfrLogicName idx) concrete (Just [instModName]) (
         [ mkEqCon' ["name"] (mkStrLit $ instName inst)
-        ] ]
-convLogic _ idx logic =
+        ] ++ paramCons
+        )]
+  where
+    instMod = design `designMod` instModId inst
+    instModName = joinName ["module", moduleName instMod]
+
+    parentVar i = ["parent", cfrParamName i $ mod `moduleParam` i]
+    childVar i = [cfrParamName i $ instMod `moduleParam` i]
+
+    paramCons = S.foldMapWithIndex go (moduleParams instMod)
+    go idx decl = case join $ S.lookup idx (instParams inst) of
+        Just expr -> maybeToList $
+            mkEqCon' [cfrParamName idx decl] <$> convParamExpr parentVar expr
+        Nothing -> case paramDefault decl of
+            Just expr -> maybeToList $
+                mkEqCon' [cfrParamName idx decl] <$> convParamExpr childVar expr
+            Nothing ->
+                traceShow ("no default available for", decl) []
+convLogic _ _ idx logic =
     let displayName = case logicKind logic of
             LkRegister t -> Just t
             LkDFlipFlop t _ -> Just t
@@ -192,6 +216,27 @@ convPin side idx pin =
         -- TODO: type
         ]
 
+
+convParamExpr :: (Int -> [Text]) -> ConstExpr -> Maybe Exp
+convParamExpr paramPath e = go e
+  where
+    go (EIntLit i) = Just $ mkIntLit i
+    go (EParam idx) = Just $ mkPath $ paramPath idx
+    go (EBinOp CbAdd l r) = EAdd noSpan <$> go l <*> go r
+    go (EBinOp CbSub l r) = ESub noSpan <$> go l <*> go r
+    go (EBinOp CbMul l r) = EMul noSpan <$> go l <*> go r
+    go (ELog2 _) = Nothing
+
+
+countClafers :: C.Module -> (Int, Int)
+countClafers m =
+    ( everything (+) (0 `mkQ` \e -> case e of
+        Subclafer _ _ -> 1
+        _ -> 0) m
+    , everything (+) (0 `mkQ` \e -> case e of
+        Subconstraint _ _ -> 1
+        _ -> 0) m
+    ) 
 
 
 genClafer design = C.Module noSpan $ map (ElementDecl noSpan) elts
