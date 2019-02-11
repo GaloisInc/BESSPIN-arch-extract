@@ -259,14 +259,16 @@ addDeclaredParams :: V.Module -> ExtractM ()
 addDeclaredParams vMod = do
     -- First, add declarations for all params, but leave the initializers
     -- blank.
-    void $ flip S.traverseWithIndex (V.moduleDecls vMod) $ \idx decl ->
+    forM_ (V.moduleParams vMod) $ \idx ->
+        let decl = V.moduleDecls vMod `S.index` idx in
         case decl of
             ParamDecl name _ _ -> void $ addDeclParam idx $ A.Param name Nothing
             _ -> return ()
 
     -- Now we can translate the initializer expressions, including ones that
     -- refer to othe parameters.
-    void $ flip S.traverseWithIndex (V.moduleDecls vMod) $ \idx decl ->
+    forM_ (V.moduleParams vMod) $ \idx ->
+        let decl = V.moduleDecls vMod `S.index` idx in
         case decl of
             ParamDecl _ _ (Just init) -> do
                 i <- findParam idx

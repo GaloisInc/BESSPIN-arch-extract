@@ -1,6 +1,7 @@
 module BESSPIN.ArchExtract.Verilog.FromRaw where
 
 import Control.Monad.State
+import Data.Foldable
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Sequence (Seq, (<|), (|>))
@@ -104,20 +105,24 @@ mkModule i = do
     case n of
         R.Module name ports params items -> do
             blackbox <- gets $ Set.member name . blackboxModules
-            (items, decls) <- collectDecls $ do
-                mapM_ declRef ports
-                mapM_ declRef params
-                if not blackbox then 
-                    mconcat <$> mapM mkItems items
-                else
-                    return S.empty
-            let ports = S.foldMapWithIndex (\i d -> case d of
-                    PortDecl _ _ _ -> S.singleton i
-                    _ -> S.empty) decls
-            let params = S.foldMapWithIndex (\i d -> case d of
-                    ParamDecl _ _ _ -> S.singleton i
-                    _ -> S.empty) decls
-            return $ Module name decls ports params items
+            (partialMod, decls) <- collectDecls $ do
+                ports <- S.fromList <$> mapM declRef ports
+                params <- S.fromList <$> mapM declRef params
+                items <- if not blackbox then
+                        mconcat <$> mapM mkItems items
+                    else
+                        return S.empty
+                return $ Module name (error "decls not yet set") ports params items
+            let externalParamSet = Set.fromList $ toList $ moduleParams partialMod
+            let internalParams = flip S.foldMapWithIndex decls $ \idx decl ->
+                    case decl of
+                        ParamDecl {}
+                            | not $ Set.member idx externalParamSet -> S.singleton idx
+                        _ -> S.empty
+            return $ partialMod
+                { moduleDecls = decls
+                , moduleParams = moduleParams partialMod <> internalParams
+                }
         _ -> error $ "expected module at " ++ show i
 
 mkDecl :: NodeId -> FromRawM Decl
