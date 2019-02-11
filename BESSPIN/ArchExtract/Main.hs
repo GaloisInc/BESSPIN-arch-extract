@@ -18,6 +18,7 @@ import Data.GraphViz.Attributes.Colors.X11
 import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
+import BESSPIN.ArchExtract.Verilog.Print
 import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
@@ -48,6 +49,7 @@ main = do
                 error $ "decoding error"
             Right x -> return x
     let v = fromRaw raw (Set.fromList ["io_fwd_shim", "testbench"]) modIds
+    putStrLn $ T.unpack $ printVerilog $ v
     let a = extractArch v
 
     let mod = a `designMod` 3

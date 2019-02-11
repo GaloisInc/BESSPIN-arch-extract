@@ -27,6 +27,7 @@ let pkgs = import <nixpkgs> {};
       cborg
       graphviz
       syb union-find microlens-platform
+      prettyprinter
     ]);
 
     clafer_0_4_5 = haskellPackages.callPackage ./clafer-0.4.5.nix {};
