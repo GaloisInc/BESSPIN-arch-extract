@@ -272,10 +272,10 @@ logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
-logicNode :: Design a -> Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
-logicNode design cfg idx logic
+logicNode :: Design a -> Cfg -> Module b -> Int -> Logic Ann -> Maybe (DotNode Text)
+logicNode design cfg mod idx logic
     | logicShowsPorts logic = Just $
-        logicTableNode cfg design idx logic
+        logicTableNode cfg design mod idx logic
     | otherwise = logicBasicNode cfg idx logic
 
 logicBasicNode :: Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
@@ -315,11 +315,39 @@ logicName d l@(Logic { logicKind = LkDFlipFlop name _ }) =
     [H.Str $ TL.fromStrict $ "(dff " <> name <> ")"]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
-logicTable :: Cfg -> Design a -> Int -> Logic Ann -> H.Label
-logicTable cfg d idx l = H.Table $
-    H.HTable Nothing [] $ nameRow : concat [[H.HorizontalRule, r] | r <- portRows]
+printConstExpr :: (Int -> Text) -> ConstExpr -> Text
+printConstExpr printVar e = go e
+  where
+    go (EIntLit i) = T.pack $ show i
+    go (EParam i) = printVar i
+    go (EBinOp op l r) =
+        "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
+    go (ELog2 e) = "(log2 " <> go e <> ")"
+
+logicParamLines :: Design a -> Module b -> Logic c -> [H.Text]
+logicParamLines d m l@(Logic { logicKind = LkInst inst }) =
+    toList $ S.mapWithIndex go $ instParams inst
+  where
+    instMod = d `designMod` instModId inst
+    parentParamName i = paramName $ m `moduleParam` i
+    instParamName i = "$" <> (paramName $ instMod `moduleParam` i)
+
+    go idx optExpr = [H.Str $ TL.fromStrict $
+        instParamName idx <> " = " <> exprText idx optExpr]
+
+    exprText idx (Just e) = printConstExpr parentParamName e
+    exprText idx Nothing = case paramDefault $ instMod `moduleParam` idx of
+        Just e -> printConstExpr instParamName e
+        Nothing -> "(unset??)"
+logicParamLines d _ _ = []
+
+logicTable :: Cfg -> Design a -> Module b -> Int -> Logic Ann -> H.Label
+logicTable cfg d m idx l = H.Table $
+    H.HTable Nothing [] $ nameRow : paramCells ++ concat [[H.HorizontalRule, r] | r <- portRows]
   where
     nameRow = H.Cells [H.LabelCell [H.ColSpan 2] $ H.Text $ logicName d l]
+    params = logicParamLines d m l
+    paramCells = map (\t -> H.Cells [H.LabelCell [H.ColSpan 2] $ H.Text t]) params
     (ins, outs) = logicPortNames d l
     maxPort = max (S.length ins - 1) (S.length outs - 1)
     portCell side names portIdx = case S.lookup portIdx names of
@@ -331,10 +359,10 @@ logicTable cfg d idx l = H.Table $
     portRow i = H.Cells [portCell Sink ins i, H.VerticalRule, portCell Source outs i]
     portRows = map portRow [0 .. maxPort]
 
-logicTableNode :: Cfg -> Design a -> Int -> Logic Ann -> DotNode Text
-logicTableNode cfg d idx l =
+logicTableNode :: Cfg -> Design a -> Module b -> Int -> Logic Ann -> DotNode Text
+logicTableNode cfg d m idx l =
     DotNode (logicKey cfg idx)
-        ([Label $ HtmlLabel $ logicTable cfg d idx l, Shape PlainText] ++
+        ([Label $ HtmlLabel $ logicTable cfg d m idx l, Shape PlainText] ++
             convColor (annColor $ logicAnn l))
 
 
@@ -481,7 +509,7 @@ modulePortNodes cfg mod =
 
 moduleLogicNodes :: Design a -> Cfg -> Module Ann -> [(NodeId, DotNode Text)]
 moduleLogicNodes design cfg mod =
-    S.foldMapWithIndex (\idx logic -> case logicNode design cfg idx logic of
+    S.foldMapWithIndex (\idx logic -> case logicNode design cfg mod idx logic of
             Nothing -> []
             Just n -> [(NLogic idx, n)])
         (moduleLogics mod)
