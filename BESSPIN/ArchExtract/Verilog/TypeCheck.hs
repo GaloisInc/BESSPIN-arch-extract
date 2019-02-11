@@ -49,6 +49,7 @@ exprType varType e = go e
     -- This is just a bad guess at a possible type.  TODO: actually track types
     -- for constants.
     go (Const _) = TWire 1 0
+    go (ConstInt _ _) = TWire 1 0
     go (ConstBool _ _) = TWire 0 0
     go (Concat es) = TWire 1 0
     go (MultiConcat rep es) = TWire 1 0

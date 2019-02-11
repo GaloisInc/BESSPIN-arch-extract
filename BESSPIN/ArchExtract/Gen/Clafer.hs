@@ -186,7 +186,7 @@ convNet idx net =
         , mkEqCon' ["first_port"] (mkPath $ connComponent conn1 ++ connPort Source conn1)
         , mkEqCon' ["second"] (mkPath $ connComponent conn2)
         , mkEqCon' ["second_port"] (mkPath $ connComponent conn2 ++ connPort Sink conn2)
-        -- TODO: type
+        , mkEqCon' ["type"] (mkPath [typeName $ netTy net])
         ]
     | (j, (conn1, conn2)) <- zip [0..] pairs ]
   where
@@ -199,13 +199,18 @@ convNet idx net =
     connPort side (LogicPort _ j) = [cfrPortName (flipSide side) j]
 
 
+typeName (TWire 0 0) = "ty_wire"
+typeName (TWire _ 0) = "ty_bus"
+typeName (TWire _ _) = "ty_memory"
+typeName _ = "ty_unknown"
+
 convPort :: Side -> Int -> Port -> Element
 convPort side idx port =
     mkClafer (cfrPortName side idx) concrete (Just ["port"])
         [ mkEqCon' ["name"] (mkStrLit $ portName port)
+        , mkEqCon' ["type"] (mkPath [typeName $ portTy port])
         , mkClafer (if side == Source then "input" else "output") concrete Nothing []
         , mkClafer "unbound" concrete Nothing []
-        -- TODO: type
         ]
 
 convPin :: Side -> Int -> Pin -> Element
@@ -213,7 +218,7 @@ convPin side idx pin =
     mkClafer (cfrPortName side idx) concrete (Just ["port"])
         [ mkClafer (if side == Source then "input" else "output") concrete Nothing []
         , mkClafer "unbound" concrete Nothing []
-        -- TODO: type
+        , mkEqCon' ["type"] (mkPath [typeName $ pinTy pin])
         ]
 
 
