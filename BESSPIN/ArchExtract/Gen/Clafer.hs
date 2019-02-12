@@ -21,6 +21,7 @@ import Language.Clafer.Front.PrintClafer
 import qualified Language.Clafer.ClaferArgs as Args
 
 import BESSPIN.ArchExtract.Architecture
+import qualified BESSPIN.ArchExtract.Config as Config
 
 joinName parts = T.intercalate "_" parts
 
@@ -92,8 +93,8 @@ cfrLogicName idx = joinName ["logic", T.pack (show idx)]
 cfrNetName idx subIdx = joinName ["net", T.pack (show idx), T.pack (show subIdx)]
 cfrParamName idx param = joinName [paramName param, T.pack (show idx)]
 
-convModule :: Design a -> Module a -> [Element]
-convModule design mod = [ modCfr ]
+convModule :: Config.Clafer -> Design a -> Module a -> [Element]
+convModule cfg design mod = [ modCfr ]
   where
     name = moduleName mod
     implName = joinName ["origin"]
@@ -107,33 +108,56 @@ convModule design mod = [ modCfr ]
     inPorts = [mkPath [cfrPortName Source i] | i <- [0 .. S.length (moduleInputs mod) - 1]]
     outPorts = [mkPath [cfrPortName Sink i] | i <- [0 .. S.length (moduleOutputs mod) - 1]]
 
-    modCfr = mkClafer modName Abstract (Just ["component"]) (
+    baseParts =
         [ mkEqCon' ["name"] (mkStrLit name)
         , impl
         , mkEqCon' ["refinement"] (mkPath [implName])
         ]
-        ++ toList (S.mapWithIndex convParam (moduleParams mod))
-        ++ S.foldMapWithIndex (convLogic design mod) (moduleLogics mod)
-        ++ S.foldMapWithIndex convNet (moduleNets mod)
-        ++ toList (S.mapWithIndex (convPort Source) (moduleInputs mod))
-        ++ toList (S.mapWithIndex (convPort Sink) (moduleOutputs mod))
-        ++ mkEqSetCon' ["parts"] [mkPath [cfrLogicName i] |
-            i <- [0 .. S.length (moduleLogics mod) - 1]]
-        ++ mkEqSetCon' ["in_ports"] inPorts
-        ++ mkEqSetCon' ["unbound_in_ports"] inPorts
-        ++ mkEqSetCon' ["out_ports"] outPorts
-        ++ mkEqSetCon' ["unbound_out_ports"] outPorts
+
+    paramParts = toList (S.mapWithIndex convParam (moduleParams mod))
+
+    netParts = S.foldMapWithIndex convNet (moduleNets mod)
+
+    portParts = concat
+        [ toList (S.mapWithIndex (convPort Source) (moduleInputs mod))
+        , toList (S.mapWithIndex (convPort Sink) (moduleOutputs mod))
+        , mkEqSetCon' ["in_ports"] inPorts
+        , mkEqSetCon' ["unbound_in_ports"] inPorts
+        , mkEqSetCon' ["out_ports"] outPorts
+        , mkEqSetCon' ["unbound_out_ports"] outPorts
+        ]
+
+    -- List of the indexes of all logics we should emit.
+    emitLogicIdxs = S.foldMapWithIndex (\idx l -> case logicKind l of
+        LkInst _ | Config.claferEmitInsts cfg -> [idx]
+        _ | Config.claferEmitLogics cfg -> [idx]
+        _ -> []) (moduleLogics mod)
+    logicParts =
+        foldMap (\idx ->
+            let l = mod `moduleLogic` idx in
+            convLogic cfg design mod idx l) emitLogicIdxs
+        ++ mkEqSetCon' ["parts"] [mkPath [cfrLogicName i] | i <- emitLogicIdxs]
+
+    modCfr = mkClafer modName Abstract (Just ["component"]) (
+        baseParts
+        ++ (if Config.claferEmitParams cfg then paramParts else [])
+        ++ (if Config.claferEmitNets cfg then netParts else [])
+        ++ (if Config.claferEmitPorts cfg then portParts else [])
+        -- Logic-related config settings are handled during construction of
+        -- logicParts.
+        ++ logicParts
         )
 
 convParam :: Int -> Param -> Element
 convParam idx param =
     mkRef (cfrParamName idx param) (mkPath ["integer"])
 
-convLogic :: Design a -> Module a -> Int -> Logic a -> [Element]
-convLogic design mod idx logic@(Logic { logicKind = LkInst inst }) =
+convLogic :: Config.Clafer -> Design a -> Module a -> Int -> Logic a -> [Element]
+convLogic cfg design mod idx logic@(Logic { logicKind = LkInst inst }) =
     [ mkClafer (cfrLogicName idx) concrete (Just [instModName]) (
         [ mkEqCon' ["name"] (mkStrLit $ instName inst)
-        ] ++ paramCons
+        ]
+        ++ (if Config.claferEmitParams cfg then paramCons else [])
         )]
   where
     instMod = design `designMod` instModId inst
@@ -151,7 +175,7 @@ convLogic design mod idx logic@(Logic { logicKind = LkInst inst }) =
                 mkEqCon' [cfrParamName idx decl] <$> convParamExpr childVar expr
             Nothing ->
                 traceShow ("no default available for", decl) []
-convLogic _ _ idx logic =
+convLogic _ _ _ idx logic =
     let displayName = case logicKind logic of
             LkRegister t -> Just t
             LkDFlipFlop t _ -> Just t
@@ -222,6 +246,27 @@ convPin side idx pin =
         ]
 
 
+convRoot :: Config.Clafer -> Design a -> Int -> Element
+convRoot cfg design modId =
+    mkClafer (joinName ["root", moduleName instMod]) concrete (Just [instModName]) (
+        [ mkEqCon' ["name"] (mkStrLit $ "root " <> moduleName instMod)
+        ]
+        ++ (if Config.claferEmitParams cfg then paramCons else [])
+        )
+  where
+    instMod = design `designMod` modId
+    instModName = joinName ["module", moduleName instMod]
+
+    childVar i = [cfrParamName i $ instMod `moduleParam` i]
+
+    paramCons = S.foldMapWithIndex go (moduleParams instMod)
+    go idx decl = case paramDefault decl of
+        Just expr -> maybeToList $
+            mkEqCon' [cfrParamName idx decl] <$> convParamExpr childVar expr
+        Nothing ->
+            traceShow ("no default available for", decl) []
+
+
 convParamExpr :: (Int -> [Text]) -> ConstExpr -> Maybe Exp
 convParamExpr paramPath e = go e
   where
@@ -244,9 +289,11 @@ countClafers m =
     ) 
 
 
-genClafer design = C.Module noSpan $ map (ElementDecl noSpan) elts
+genClafer cfg design rootIds = C.Module noSpan $ map (ElementDecl noSpan) elts
   where
-    elts = concatMap (convModule design) (toList $ designMods design)
+    elts =
+        concatMap (convModule cfg design) (toList $ designMods design)
+        ++ map (convRoot cfg design) rootIds
 
 putAst a = do
     env <- getEnv

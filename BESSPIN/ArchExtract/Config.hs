@@ -76,12 +76,24 @@ data Clafer = Clafer
     -- output will contain (almost) no concrete clafers.
     { claferRootModules :: [Text]
     , claferOutFile :: Text
+    -- Whether to emit non-`LkInst` logic nodes.
+    , claferEmitLogics :: Bool
+    -- Whether to emit `LkInst` logic nodes.
+    , claferEmitInsts :: Bool
+    , claferEmitNets :: Bool
+    , claferEmitPorts :: Bool
+    , claferEmitParams :: Bool
     }
     deriving (Show)
 
 defaultClafer = Clafer
     { claferRootModules = []
     , claferOutFile = "out.cfr"
+    , claferEmitLogics = True
+    , claferEmitInsts = True
+    , claferEmitNets = True
+    , claferEmitPorts = True
+    , claferEmitParams = True
     }
 
 
@@ -149,6 +161,11 @@ clafer :: TOML.Value -> Clafer
 clafer x = tableFold defaultClafer x
     [ ("root-modules", \c x -> c { claferRootModules = listOf str x })
     , ("out-file", \c x -> c { claferOutFile = str x })
+    , ("emit-logics", \c x -> c { claferEmitLogics = bool x })
+    , ("emit-insts", \c x -> c { claferEmitInsts = bool x })
+    , ("emit-nets", \c x -> c { claferEmitNets = bool x })
+    , ("emit-ports", \c x -> c { claferEmitPorts = bool x })
+    , ("emit-params", \c x -> c { claferEmitParams = bool x })
     ]
 
 

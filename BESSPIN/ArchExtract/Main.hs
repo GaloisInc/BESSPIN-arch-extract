@@ -104,8 +104,7 @@ main = do
             let rootIds = map (\n -> case M.lookup n modIdsByName of
                     Nothing -> error $ "no such module " ++ show n
                     Just i -> i) roots
-            -- TODO: use rootIds
-            let cfr = genClafer a
+            let cfr = genClafer c a rootIds
             print ("clafer + ref counts", countClafers cfr)
             let path = T.unpack $ Config.claferOutFile c
             writeFile path $ render $ prt 0 $ cfr
