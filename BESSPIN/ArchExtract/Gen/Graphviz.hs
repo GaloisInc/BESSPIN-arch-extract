@@ -25,6 +25,7 @@ import Data.GraphViz.Types
 import Data.GraphViz.Types.Generalised
 
 import BESSPIN.ArchExtract.Architecture
+import qualified BESSPIN.ArchExtract.Config as Config
 
 
 tSource = T.pack "source"
@@ -168,6 +169,18 @@ defaultCfg = Cfg
     , cfgDedupEdges = False
     , cfgShortenNetNames = True
     , cfgPipelineStages = 0
+    }
+
+fromConfig :: Config.Graphviz -> Cfg
+fromConfig g = Cfg
+    { cfgPrefix = T.empty
+    , cfgDrawNets = Config.graphvizDrawNets g
+    , cfgDrawOnesidedNets = Config.graphvizDrawOnesidedNets g
+    , cfgDrawLogics = Config.graphvizDrawLogics g
+    , cfgHideNamedNets = Set.empty
+    , cfgDedupEdges = Config.graphvizDedupEdges g
+    , cfgShortenNetNames = Config.graphvizShortenNetNames g
+    , cfgPipelineStages = Config.graphvizNumPipelineStages g
     }
 
 drawNetNode cfg net =
@@ -679,8 +692,9 @@ attrPos attrs = getFirst $ foldMap (\attr -> case attr of
     _ -> First $ Nothing) attrs
 
 
-graphModule :: Design a -> Cfg -> Module Ann -> IO (DotGraph Text)
-graphModule design cfg mod = do
+graphModule :: Design a -> Config.Graphviz -> Module Ann -> IO (DotGraph Text)
+graphModule design cfg' mod = do
+    let cfg = fromConfig cfg'
     mod' <- layoutModule design cfg mod
     return $ moduleGraph design cfg mod'
 

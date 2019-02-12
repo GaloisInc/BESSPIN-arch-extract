@@ -16,6 +16,7 @@ let pkgs = import <nixpkgs> {};
             json-builder = self.callPackage ./hackage/json-builder-0.3-for-ghc84.nix {};
             HaXml = self.callPackage ./hackage/HaXml-1.25.5.nix {};
             polyparse = self.callPackage ./hackage/polyparse-1.12.1.nix {};
+            toml-parser = self.callPackage ./hackage/toml-parser-0.1.0.0.nix {};
         };
     };
 
@@ -28,6 +29,7 @@ let pkgs = import <nixpkgs> {};
       graphviz
       syb union-find microlens-platform
       prettyprinter
+      toml-parser
     ]);
 
     clafer_0_4_5 = haskellPackages.callPackage ./clafer-0.4.5.nix {};

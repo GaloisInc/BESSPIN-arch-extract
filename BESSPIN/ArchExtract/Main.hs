@@ -3,18 +3,23 @@ module BESSPIN.ArchExtract.Main where
 
 import Control.Monad
 import qualified Data.ByteString.Lazy as BS
+import Data.Foldable
 import qualified Data.Map as M
 import qualified Data.Sequence as S
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Word
+import System.Directory
+import System.Environment
 
 import Language.Clafer
 import Language.Clafer.Front.PrintClafer
 import Data.GraphViz.Attributes.Colors
 import Data.GraphViz.Attributes.Colors.X11
 
+import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
@@ -42,16 +47,71 @@ netsNamed ns mod = S.foldMapWithIndex go (moduleNets mod)
         then Set.singleton $ NetId i else Set.empty
 
 main = do
-    bs <- BS.readFile "out.cbor"
-    (raw, modIds) <- case D.deserialize bs of
-            Left errs -> do
-                putStrLn ("error decoding verilog AST:\n" ++ errs)
-                error $ "decoding error"
-            Right x -> return x
-    let v = fromRaw raw (Set.fromList ["io_fwd_shim", "testbench"]) modIds
-    putStrLn $ T.unpack $ printVerilog $ v
-    let a = extractArch v
+    args <- getArgs
+    config <- case args of
+        [] -> do
+            exists <- doesFileExist "arch-extract.toml"
+            if exists then
+                Config.parse <$> T.readFile "arch-extract.toml"
+            else
+                return Config.defaultConfigWithClafer
+        [path] -> Config.parse <$> T.readFile path
+        _ -> error "too many arguments - expected only a config file path"
 
+    a <- case Config.configInput config of
+        Config.VerilogInput v -> do
+            bs <- BS.readFile $ T.unpack $ Config.verilogSourceFile v
+
+            (raw, modIds) <- case D.deserialize bs of
+                    Left errs -> do
+                        putStrLn ("error decoding verilog AST:\n" ++ errs)
+                        error $ "decoding error"
+                    Right x -> return x
+
+            let blackboxNames = Set.fromList $ Config.verilogBlackboxModules v
+
+            let v = fromRaw raw blackboxNames modIds
+            putStrLn $ T.unpack $ printVerilog $ v
+            return $ extractArch v
+
+    case Config.configGraphvizOutput config of
+        Nothing -> return ()
+        Just g -> do
+            let a' = Design $ fmap (mapAnn (\_ -> defaultAnn)) $ designMods a
+            let a = a'
+            let modsByName = M.fromList $ map (\m -> (moduleName m, m)) $
+                    toList $ designMods a
+            let mods = case Config.graphvizRenderModules g of
+                    Nothing -> designMods a
+                    Just ns -> S.fromList $ map (\n -> case M.lookup n modsByName of
+                        Nothing -> error $ "no such module " ++ show n
+                        Just x -> x) ns
+            let dir = T.unpack $ Config.graphvizOutDir g
+            forM_ mods $ \mod -> do
+                putStrLn " ----------------------"
+                putStrLn $ T.unpack $ moduleName mod
+                putStrLn " ----------------------"
+                g <- graphModule a g mod
+                writeFile (dir ++ "/" ++ T.unpack (moduleName mod) ++ ".dot") $
+                    printGraphviz g
+
+    case Config.configClaferOutput config of
+        Nothing -> return ()
+        Just c -> do
+            let modIdsByName = M.fromList $ map (\(m,i) -> (moduleName m, i)) $
+                    zip (toList $ designMods a) [0..]
+            let roots = Config.claferRootModules c
+            let rootIds = map (\n -> case M.lookup n modIdsByName of
+                    Nothing -> error $ "no such module " ++ show n
+                    Just i -> i) roots
+            -- TODO: use rootIds
+            let cfr = genClafer a
+            print ("clafer + ref counts", countClafers cfr)
+            let path = T.unpack $ Config.claferOutFile c
+            writeFile path $ render $ prt 0 $ cfr
+
+
+{-
     let mod = a `designMod` 3
 
     let nets1 = flip netsNamed mod $
@@ -74,13 +134,14 @@ main = do
 
     let exc = flip netsNamed mod $
             []
+-}
 
 {-
     let a' = aggregateModule 3 nets1 exc1 a
     let a = aggregateModule 3 nets exc a'
 -}
 
-    let mod = designMods a `S.index` 3
+    --let mod = designMods a `S.index` 3
 
 {-
     let mod' = labelPipelineStages
@@ -148,8 +209,6 @@ main = do
                 , (("W" `T.isSuffixOf`), Just 5)
                 ]) $ designMods a
     -}
-    let a' = Design $ fmap (mapAnn (\stage -> defaultAnn)) $ designMods a
-    let a = a'
 
 
 {-
@@ -172,6 +231,3 @@ main = do
                 mod
         writeFile ("out/" ++ T.unpack (moduleName mod) ++ ".dot") $ printGraphviz g
 -}
-
-    print $ countClafers $ genClafer a
-    writeFile "out.cfr" $ render $ prt 0 $ genClafer a
