@@ -10,6 +10,7 @@ import qualified TOML
 data Config = Config
     { configInput :: Input
     , configGraphvizOutput :: Maybe Graphviz
+    , configModuleTreeOutput :: Maybe ModuleTree
     , configClaferOutput :: Maybe Clafer
     }
     deriving (Show)
@@ -17,6 +18,7 @@ data Config = Config
 defaultConfig = Config
     { configInput = defaultInput
     , configGraphvizOutput = Nothing
+    , configModuleTreeOutput = Nothing
     , configClaferOutput = Nothing
     }
 
@@ -69,6 +71,17 @@ defaultGraphviz = Graphviz
     , graphvizNumPipelineStages = 0
     , graphvizRenderModules = Nothing
     , graphvizOutDir = "out"
+    }
+
+data ModuleTree = ModuleTree
+    { moduleTreeOutFile :: Text
+    , moduleTreeRootModule :: Text
+    }
+    deriving (Show)
+
+defaultModuleTree = ModuleTree
+    { moduleTreeOutFile = "module-tree.dot"
+    , moduleTreeRootModule = "top"
     }
 
 data Clafer = Clafer
@@ -134,6 +147,7 @@ config x =
         tableFold defaultConfig x
             [ ("verilog", \c x -> c { configInput = VerilogInput $ verilog x })
             , ("graphviz", \c x -> c { configGraphvizOutput = Just $ graphviz x })
+            , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
             ]
   where
@@ -155,6 +169,12 @@ graphviz x = tableFold defaultGraphviz x
     , ("num-pipeline-stages", \c x -> c { graphvizNumPipelineStages = int x })
     , ("render-modules", \c x -> c { graphvizRenderModules = Just $ listOf str x })
     , ("out-dir", \c x -> c { graphvizOutDir = str x })
+    ]
+
+moduleTree :: TOML.Value -> ModuleTree
+moduleTree x = tableFold defaultModuleTree x
+    [ ("out-file", \c x -> c { moduleTreeOutFile = str x })
+    , ("root-module", \c x -> c { moduleTreeRootModule = str x })
     ]
 
 clafer :: TOML.Value -> Clafer

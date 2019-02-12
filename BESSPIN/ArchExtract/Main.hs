@@ -27,6 +27,7 @@ import BESSPIN.ArchExtract.Verilog.Print
 import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
+import BESSPIN.ArchExtract.Gen.ModuleTree
 
 import BESSPIN.ArchExtract.Aggregate
 import BESSPIN.ArchExtract.GraphOps
@@ -94,6 +95,13 @@ main = do
                 g <- graphModule a g mod
                 writeFile (dir ++ "/" ++ T.unpack (moduleName mod) ++ ".dot") $
                     printGraphviz g
+
+    case Config.configModuleTreeOutput config of
+        Nothing -> return ()
+        Just mt -> do
+            let g = graphModuleTree mt a
+            let path = T.unpack $ Config.moduleTreeOutFile mt
+            writeFile path $ printGraphviz g
 
     case Config.configClaferOutput config of
         Nothing -> return ()
