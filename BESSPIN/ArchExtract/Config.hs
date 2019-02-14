@@ -12,6 +12,7 @@ data Config = Config
     , configGraphvizOutput :: Maybe Graphviz
     , configModuleTreeOutput :: Maybe ModuleTree
     , configClaferOutput :: Maybe Clafer
+    , configSMTOutput :: Maybe SMT
     }
     deriving (Show)
 
@@ -20,6 +21,7 @@ defaultConfig = Config
     , configGraphvizOutput = Nothing
     , configModuleTreeOutput = Nothing
     , configClaferOutput = Nothing
+    , configSMTOutput = Nothing
     }
 
 defaultConfigWithClafer = defaultConfig { configClaferOutput = Just $ defaultClafer }
@@ -109,6 +111,19 @@ defaultClafer = Clafer
     , claferEmitParams = True
     }
 
+data SMT = SMT
+    -- Names of modules to instantiate at top level.  If this is empty, the
+    -- output will contain (almost) no concrete clafers.
+    { smtRootModule :: Text
+    , smtOutFile :: Text
+    }
+    deriving (Show)
+
+defaultSMT = SMT
+    { smtRootModule = "top"
+    , smtOutFile = "out.smtlib2"
+    }
+
 
 listOf f (TOML.List xs) = map f xs
 listOf _ x = error $ "expected list, but got " ++ show x
@@ -149,6 +164,7 @@ config x =
             , ("graphviz", \c x -> c { configGraphvizOutput = Just $ graphviz x })
             , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
+            , ("smt", \c x -> c { configSMTOutput = Just $ smt x })
             ]
   where
     inputKeys = filter (\k -> k == "verilog") $ tableKeys x
@@ -186,6 +202,12 @@ clafer x = tableFold defaultClafer x
     , ("emit-nets", \c x -> c { claferEmitNets = bool x })
     , ("emit-ports", \c x -> c { claferEmitPorts = bool x })
     , ("emit-params", \c x -> c { claferEmitParams = bool x })
+    ]
+
+smt :: TOML.Value -> SMT
+smt x = tableFold defaultSMT x
+    [ ("root-module", \c x -> c { smtRootModule = str x })
+    , ("out-file", \c x -> c { smtOutFile = str x })
     ]
 
 

@@ -28,6 +28,7 @@ import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 import BESSPIN.ArchExtract.Gen.ModuleTree
+import BESSPIN.ArchExtract.Gen.ParamSMT
 
 import BESSPIN.ArchExtract.Aggregate
 import BESSPIN.ArchExtract.GraphOps
@@ -116,6 +117,12 @@ main = do
             print ("clafer + ref counts", countClafers cfr)
             let path = T.unpack $ Config.claferOutFile c
             writeFile path $ render $ prt 0 $ cfr
+
+    case Config.configSMTOutput config of
+        Nothing -> return ()
+        Just s -> do
+            let path = T.unpack $ Config.smtOutFile s
+            T.writeFile path $ genSmt' s a
 
 
 {-

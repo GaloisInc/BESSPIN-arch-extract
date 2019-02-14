@@ -60,6 +60,7 @@ in pkgs.mkShell {
         inherit (pkgs) cabal2nix nix-prefetch-git;
         inherit (pkgs) graphviz;
         inherit (pkgs) alloy;
+        inherit (pkgs) z3;
 
         #inherit (pkgs.openjdk8) jre;
         inherit (pkgs) openjdk8 maven;
