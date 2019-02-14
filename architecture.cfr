@@ -1,0 +1,311 @@
+// A metamodel for architecture specifications in the BESSPIN project.
+// Joe Kiniry, Galois
+// @depends nothing
+
+// Some basic mathematical constructs useful to this specification.
+// A pair of strings
+abstract string_pair
+  left -> string
+  right -> string
+
+abstract implementation_component_pair : string_pair
+
+// A naming map, typically used to map abstracted model names to
+// concrete implementation names.
+abstract naming_map
+  map -> implementation_component_pair *
+
+// A type abstraction used to encode what kinds of information can be
+// sent between components over connectors.  For a given architecture,
+// many types will be extracted for such information flows.
+abstract type
+  // The *width* of a type is the maximum number of bits it takes to represent 
+  // an instance of type.
+  width -> integer
+  [ 0 < width ]
+
+// Messages travel between components through ports.  Each message has
+// a type.
+abstract message
+ message_type -> type
+
+// Signals asynchronously notify components of important external
+// events. They are typically used to model things like interrupts or
+// UNIX signals.  Signals come in two flavors: commands and requests.
+abstract xor signal
+  sig_command
+  sig_request
+
+// Ports are the abstraction representing an I/O interface to a
+// component.  Ports are either bound to a *connector* or are unbound
+// (and thus termed "free").  Ports only permit a specific *message
+// type* to flow into (*input* holds) or out of (*output* holds) it, thus port and
+// channels are typed, and consequently components (via their ports)
+// are typed.
+abstract port
+ name -> string ?
+ unbound ?
+ input ?
+ output ?
+ [ input xor output ]
+ message_type -> type
+
+// An implementation model describes the name and location (e.g., in a
+// filesystem) of an implementation artifact that may be referenced by
+// an architecture description.  Mapping model level constructs like
+// ports, connectors, and components to their (possibly multiple)
+// implementations facilitates traceability between model and code.
+abstract implementation
+  // The canonical, fully-resolved implementation-level name given
+  // to an artifact, usually determined by the naming convention of
+  // the author's company, team, product, and constraints of the
+  // implementation language.
+  name -> string ?
+  // The fully-resolved path to the file containing this implementation.
+  file -> string ?
+  // The implementation language contained in this artifact.
+  language -> string
+
+// Implementations come in three flavors in SSITH: software, firmware,
+// and hardware.  We encode in each the languages that the tool suite
+// supports.
+abstract software_implementation : implementation
+  [ language = "C"
+ || language = "LLVM"
+ || language = "RISC-V binary" ]
+abstract firmware_implementation : implementation
+  [ language = "C"
+ || language = "LLVM"
+ || language = "RISC-V binary" ]
+abstract hardware_implementation : implementation
+  [ language = "Verilog"
+ || language = "SystemVerilog"
+ || language = "Bluespec SystemVerilog"
+ || language = "Chisel"
+ || language = "SystemC" ]
+
+// A *component* is the core abstraction of an architecture
+// specification.  It represents a (possibly) composable or composed
+// unit of composition.  The interface to a component is a set of
+// typed *ports*, and components are composed by virtue of binding
+// ports to connectors and components.  Components are made up of
+// parts, which are components themselves.
+abstract component
+  // A component *is (a) composition* if it is composed of two
+  // or more parts.
+  is_composition ?
+  [ is_composition => 2 <= # parts ]
+  // A component *is compositional* if one or more of its ports are
+  // *unbound*.
+  is_compositional ?
+  [ is_compositional => (1 <= # in_ports.unbound || 1 <= # out_ports.unbound) ]
+  // The *parts* are those top-level components that are composed to
+  // define the this component.  This is not transitive---components
+  // in one's parts at a higher *nesting level* are not in *parts*.
+  // Note that having zero parts (thus '*') is permitted, as such
+  // identifies fundamental/unit components.
+  parts -> component *
+  // The *in ports* and *out ports* of a component are those ports
+  // defined as part of the component's interface that permit
+  // receives/reads and sends/writes, respectively.  Note that having
+  // zero in or out ports is permitted (thus '*').
+  in_ports -> port *
+  out_ports -> port *
+  // Unbound port sets constitute the subset of ports that are not (yet)
+  // bound in the component.  This is a specification convenience only.
+  [ all ip : unbound_in_ports | ip.unbound
+    all op : unbound_out_ports | op.unbound ]
+  unbound_in_ports -> port *
+  unbound_out_ports -> port *
+  // Unbound (in/out) port sets are a subset of all (in/out) ports.
+  [ unbound_in_ports in in_ports
+    unbound_out_ports in out_ports ]
+  // The *refinement* of a component points to its implementation, be
+  // it in software, firmware, or hardware.  Some component meta-models
+  // facilitate multiple levels of refinements, but for the purposes of
+  // the BESSPIN tool suite, we are sticking with only a single
+  // refinement from model to code.  Note that every component has at
+  // least one ('+') implementation.
+  refinement -> implementation +
+  // The *nesting level* of an instance of a component is the number
+  // of nesting compositions necessary in order to define the instance.
+  // System top-level components are at level 0.
+  nesting_level -> integer
+  [ 0 <= nesting_level ]
+  // A component is visible or not in an architecture *view* based upon
+  // either (a) that *view*'s *current level* or (b) a manual action on the
+  // part of the user to indicate that a given component can be elided
+  // from the current view, either via UI action or a Lando constraint.
+  visible ?
+  // The human-readable name given to the component.
+  name -> string ?
+
+// Components, like implementations, come in several flavors.
+abstract software_component : component
+  refinement -> software_implementation
+abstract firmware_component : component
+  refinement -> firmware_implementation
+abstract hardware_component : component
+  refinement -> hardware_implementation
+
+// *Connectors* connect components to each other to facilitate
+// information flow through a system.  Connectors come in many
+// *flavors* in the software and hardware world.  We enumerate
+// a few different flavors here.
+abstract xor connector_flavor
+   procedure_call
+   shared_memory
+   message_passing
+   streaming
+   distribution
+   wrapper
+   adaptor
+
+// *Connectors* connect components to each other via a *port*.
+abstract connector
+  name -> string
+  // For a given connector, we track both both its components and their
+  // ports, the former only if the connection is bound to a component.
+  first -> component
+  second -> component
+  first_port -> port
+  second_port -> port
+  flavor -> connector_flavor ?
+  // This contraint forbidding loopback connectors is to be debated with
+  // the hardware design team.
+  [ first.ref != second.ref ]
+  // The type of messages that can flow over a connector is specified
+  // independently of the ports to which it is connected.  Doing so
+  // facilitates type-checking of an architecture.
+  message_type -> type
+  [ first_port.message_type = message_type
+    second_port.message_type = message_type ]
+  // Connectors are visible or not as well.  If any component or port
+  // related to a connector is not visible, then the connector is not
+  // visible too.
+  visible ?
+  [ !first.visible && !first.visible => !visible ]
+
+// Wires are a common connector in low-level hardware designs.
+abstract wire : connector
+  length : integer
+  [ 0 < length ]
+
+// A bus is a common connector in high-level hardware designs.
+abstract bus
+  name -> string
+  bus_components -> connector 2..*
+
+// A uniform bus bundles a set of connectors of the same type.
+abstract uniform_bus : bus
+  [ all c : bus_components |
+    all d : bus_components | c.message_type = d.message_type ]
+
+// A *view* of an architecture is a specific perspective on rendering
+// (what may amount to a very complex) systems architecture model.
+abstract view
+  // The *level* of a view of the system indicates which
+  // components are visible. E.g., if the current *level* of a view
+  // is k, then all components with a *nesting level* of k+1 or more
+  // are not *visible*.
+  level -> integer
+  [ 0 <= level ]
+  // A view can focus on a specific component or connector.
+  component_focus -> component
+  connector_focus -> connector
+
+// Mathematical relations in an architecture view describe the various
+// ways that and architecture's constituants (components and
+// connectors) can relate to each other.  We enumerate the fundamental
+// kinds of relations here.
+abstract xor relation_kind
+  dependency // also known as a 'client' relation
+  communication
+  inheritance // also known as a 'subtyping' relation
+  equivalence
+
+// Relations exist between components.
+abstract component_relation
+  kind -> relation_kind
+  left -> component
+  right -> component
+
+// An architecture is a set of components, their connectors, and
+// component relations.
+abstract architecture
+  components -> components +
+  connectors -> connectors *
+  relations -> component_relation *
+
+// What follows are placeholder domain concepts straight from the
+// systems architecture community.  We will refine them when they are
+// useful to the SSITH project and usable in the BESSPIN Tool Suite.
+
+abstract design
+abstract style
+
+abstract degredation
+abstract drift : degredation
+abstract erosion : degredation
+
+abstract recovery
+abstract pattern
+
+abstract decision
+abstract design_decision : decision
+
+abstract structure
+abstract behavior
+abstract interaction
+
+abstract non_functional_property
+
+abstract is_principal
+abstract rationale
+
+abstract elements
+abstract form
+
+abstract compose_
+
+abstract MMIO_component : component
+
+abstract configuration
+
+abstract perry_wolf_architecture
+  maximum_nesting_level -> integer
+  [ 0 <= maximum_nesting_level ]
+  pwa_elements ->> elements
+  pwa_form -> form
+  pwa_rationale -> rationale
+
+abstract model
+abstract visualization
+
+
+// Definitions used for architecture extraction
+
+abstract verilog_implementation : hardware_implementation
+  [ language = "Verilog" ]
+
+abstract system_verilog_implementation : hardware_implementation
+  [ language = "SystemVerilog" ]
+
+abstract logic : component
+  [ # parts = 0 ]
+
+
+ty_wire : type
+  [ width = 1 ]
+
+ty_bus : type
+  [ width >= 1 ]
+
+ty_memory : type
+  [ width >= 1 ]
+  depth -> integer
+  [ depth >= 1 ]
+
+ty_unknown : type
+
+dummy_connector_flavor : connector_flavor
