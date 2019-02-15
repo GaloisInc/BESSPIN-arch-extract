@@ -32,6 +32,7 @@ let pkgs = import <nixpkgs> {};
       toml-parser
     ]);
 
+    clafer_0_4_4 = haskellPackages.callPackage ./clafer-0.4.4.nix {};
     clafer_0_4_5 = haskellPackages.callPackage ./clafer-0.4.5.nix {};
     claferIG-haskell = haskellPackages.callPackage ./claferig-haskell.nix {
       clafer = clafer_0_4_5;
@@ -41,7 +42,14 @@ let pkgs = import <nixpkgs> {};
       inherit claferIG-haskell claferIG-java;
     };
 
-    claferToolPath = pkgs.callPackage ./clafer-tool-path.nix {};
+    choco-solver = pkgs.callPackage ./choco-solver.nix {};
+    clafer-chocosolver = pkgs.callPackage ./clafer-chocosolver.nix {
+      branch = "master";
+    };
+
+    claferToolPath = pkgs.callPackage ./clafer-tool-path.nix {
+      inherit clafer-chocosolver;
+    };
 
 
 in pkgs.mkShell {
@@ -54,16 +62,18 @@ in pkgs.mkShell {
         inherit (pkgs) alloy;
 
         #inherit (pkgs.openjdk8) jre;
-        inherit (pkgs) openjdk8;
+        inherit (pkgs) openjdk8 maven;
 
         # Essential development tools, for working inside `nix-shell --pure`
-        inherit (pkgs) git vim less hostname valgrind gdb pandoc;
+        inherit (pkgs) git vim less hostname valgrind gdb pandoc unzip;
 
         inherit ghc;
         #inherit (haskellPackages) cabal-install;
 
         inherit claferToolPath claferIG;
+        inherit clafer-chocosolver;
     };
 
     inherit claferToolPath;
+    oldClafer = clafer_0_4_4;
 }
