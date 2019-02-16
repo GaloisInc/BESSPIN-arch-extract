@@ -78,10 +78,11 @@ convConstExpr convVar e = go e
   where
     go (EIntLit i) = Atom $ T.pack $ show i
     go (EParam idx) = convVar idx
-    go (EBinOp CbAdd l r) = call "+" [go l, go r]
-    go (EBinOp CbSub l r) = call "-" [go l, go r]
-    go (EBinOp CbMul l r) = call "*" [go l, go r]
-    go (ELog2 e) = call "clog2" [go e]
+    go (EUnArith UClog2 e) = call "clog2" [go e]
+    go (EBinArith BAdd l r) = call "+" [go l, go r]
+    go (EBinArith BSub l r) = call "-" [go l, go r]
+    go (EBinArith BMul l r) = call "*" [go l, go r]
+    -- FIXME
 
 
 

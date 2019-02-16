@@ -466,10 +466,16 @@ convConstExpr e = go e
     go (V.Param declId) = A.EParam <$> findParam declId
     go (V.Const t) | Just i <- parseBitConst t = return $ A.EIntLit i
     go (V.ConstInt _ i) = return $ A.EIntLit i
-    go (V.Binary V.BAdd l r) = A.EBinOp A.CbAdd <$> go l <*> go r
-    go (V.Binary V.BSub l r) = A.EBinOp A.CbSub <$> go l <*> go r
-    go (V.Binary V.BMul l r) = A.EBinOp A.CbMul <$> go l <*> go r
-    go (V.Builtin BkClog2 [e]) = A.ELog2 <$> go e
+    go (V.Binary V.BAdd l r) = A.EBinArith A.BAdd <$> go l <*> go r
+    go (V.Binary V.BSub l r) = A.EBinArith A.BSub <$> go l <*> go r
+    go (V.Binary V.BMul l r) = A.EBinArith A.BMul <$> go l <*> go r
+    go (V.Binary V.BEq l r) = A.EBinCmp A.BEq <$> go l <*> go r
+    go (V.Binary V.BNe l r) = A.EBinCmp A.BNe <$> go l <*> go r
+    go (V.Binary V.BLt l r) = A.EBinCmp A.BLt <$> go l <*> go r
+    go (V.Binary V.BLe l r) = A.EBinCmp A.BLe <$> go l <*> go r
+    go (V.Binary V.BGt l r) = A.EBinCmp A.BGt <$> go l <*> go r
+    go (V.Binary V.BGe l r) = A.EBinCmp A.BGe <$> go l <*> go r
+    go (V.Builtin BkClog2 [e]) = A.EUnArith A.UClog2 <$> go e
     go e = error $ "unsupported constexpr: " ++ show e
 
 parseBitConst :: Text -> Maybe Int

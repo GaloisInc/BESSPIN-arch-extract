@@ -270,12 +270,22 @@ convRoot cfg design modId =
 convParamExpr :: (Int -> [Text]) -> ConstExpr -> Maybe Exp
 convParamExpr paramPath e = go e
   where
+    -- TODO: warn when dropping a constraint due to unsupported expressions
     go (EIntLit i) = Just $ mkIntLit i
     go (EParam idx) = Just $ mkPath $ paramPath idx
-    go (EBinOp CbAdd l r) = EAdd noSpan <$> go l <*> go r
-    go (EBinOp CbSub l r) = ESub noSpan <$> go l <*> go r
-    go (EBinOp CbMul l r) = EMul noSpan <$> go l <*> go r
-    go (ELog2 _) = Nothing
+    go (EInstParam [] idx) = Just $ mkPath $ paramPath idx
+    go (EInstParam _ _) = Nothing
+    go (EUnArith UClog2 _) = Nothing
+    go (EBinArith BAdd l r) = EAdd noSpan <$> go l <*> go r
+    go (EBinArith BSub l r) = ESub noSpan <$> go l <*> go r
+    go (EBinArith BMul l r) = EMul noSpan <$> go l <*> go r
+    go (EBinCmp BEq l r) = EEq noSpan <$> go l <*> go r
+    go (EBinCmp BNe l r) = ENeq noSpan <$> go l <*> go r
+    go (EBinCmp BLt l r) = ELt noSpan <$> go l <*> go r
+    go (EBinCmp BLe l r) = ELte noSpan <$> go l <*> go r
+    go (EBinCmp BGt l r) = EGt noSpan <$> go l <*> go r
+    go (EBinCmp BGe l r) = EGte noSpan <$> go l <*> go r
+    go (ERangeSize _ _) = Nothing
 
 
 countClafers :: C.Module -> (Int, Int)

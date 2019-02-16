@@ -333,9 +333,18 @@ printConstExpr printVar e = go e
   where
     go (EIntLit i) = T.pack $ show i
     go (EParam i) = printVar i
-    go (EBinOp op l r) =
+    go (EInstParam [] i) = printVar i
+    go (EInstParam insts i) =
+        traceShow ("graphviz: can't handle EInstParam") $
+            "(" <> T.unwords ["instParam", T.pack (show insts), T.pack (show i)] <> ")"
+    go (EUnArith op e) =
+        "(" <> T.unwords [T.pack (show op), go e] <> ")"
+    go (EBinArith op l r) =
         "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
-    go (ELog2 e) = "(log2 " <> go e <> ")"
+    go (EBinCmp op l r) =
+        "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
+    go (ERangeSize l r) =
+        "(" <> T.unwords ["rangeSize", go l, go r] <> ")"
 
 logicParamLines :: Design a -> Module b -> Logic c -> [H.Text]
 logicParamLines d m l@(Logic { logicKind = LkInst inst }) =

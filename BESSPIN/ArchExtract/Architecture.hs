@@ -128,13 +128,29 @@ data Ty =
 
 data ConstExpr =
       EIntLit Int
+    -- A parameter of the enclosing module
     | EParam Int
-    | EBinOp ConstBinOp ConstExpr ConstExpr
-    | ELog2 ConstExpr
+    -- A parameter of a (nested) module instantiation.  `EInstParam [i, j] k`
+    -- corresponds to `inst_i.inst_j.param_k`, relative to the enclosing
+    -- module.
+    | EInstParam [Int] Int
+    -- `a -> a`
+    | EUnArith UnArithOp ConstExpr
+    -- `a -> a -> a`
+    | EBinArith BinArithOp ConstExpr ConstExpr
+    -- `a -> a -> Bool`
+    | EBinCmp BinCmpOp ConstExpr ConstExpr
+    -- Size of the range `e1:e2`.  Equal to `abs(e1 - e2) + 1`.
+    | ERangeSize ConstExpr ConstExpr
     deriving (Show, Eq, Typeable, Data)
 
-data ConstBinOp =
-    CbAdd | CbSub | CbMul
+data UnArithOp = UClog2
+    deriving (Show, Eq, Typeable, Data)
+
+data BinArithOp = BAdd | BSub | BMul
+    deriving (Show, Eq, Typeable, Data)
+
+data BinCmpOp = BEq | BNe | BLt | BLe | BGt | BGe
     deriving (Show, Eq, Typeable, Data)
 
 
