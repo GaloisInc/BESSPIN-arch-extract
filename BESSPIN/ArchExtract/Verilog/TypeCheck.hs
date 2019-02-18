@@ -81,6 +81,7 @@ exprType varType e = go e
         BShl -> go l
         BShr -> go l
         BOther -> TUnknown
+    go (Builtin BkClog2 _) = TWire 1 0
     go (Field _ _) = TUnknown
     go (AssignPat _ _) = TUnknown
     go UnknownExpr = TUnknown

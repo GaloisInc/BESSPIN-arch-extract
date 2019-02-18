@@ -139,7 +139,8 @@ mkDecl i = do
             n' <- getNode parent
             case n' of
                 R.ModuleInstantiation mod params _ ->
-                    InstDecl <$> pure name <*> moduleRef mod <*> mapM (mapM mkExpr) params
+                    InstDecl <$> pure name <*> moduleRef mod <*>
+                        (S.fromList <$> mapM (mapM mkExpr) params)
                 _ -> error $ "expected module instantiation at " ++ show i
         R.TypeId name ty ->
             TypedefDecl <$> pure name <*> mkTy Nothing (Just ty)
@@ -192,7 +193,8 @@ mkDeclItems i = do
         R.ParamId _ _ _ _ -> return S.empty
         R.TypeId _ _ -> declRef i >> return S.empty
         R.InstId _ _ portConns ->
-            liftM S.singleton $ InitInst <$> declRef i <*> mapM mkExpr portConns
+            liftM S.singleton $ InitInst <$> declRef i <*>
+                (S.fromList <$> mapM mkExpr portConns)
         _ -> error $ "expected item-like decl at " ++ show i
 
 mkStmts :: NodeId -> FromRawM [Stmt]

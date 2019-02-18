@@ -64,7 +64,7 @@ data Decl =
     InstDecl
     { declName :: Text
     , instanceModId :: Int
-    , instanceParamVals :: [Maybe Expr]
+    , instanceParamVals :: Seq (Maybe Expr)
     }
     deriving (Show, Data, Typeable)
 
@@ -90,7 +90,7 @@ data Item =
     } |
     InitInst
     { initInstDeclId :: Int
-    , initInstPortConns :: [Expr]
+    , initInstPortConns :: Seq Expr
     } |
     ContAssign
     { contAssignLval :: Expr
