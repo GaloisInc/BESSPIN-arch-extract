@@ -265,6 +265,7 @@ mkExpr i = do
             AssignPat <$> mkExpr rep <*> mapM mkExpr es
         R.SystemFunctionCall name es -> case T.unpack name of
             "clog2" -> Builtin BkClog2 <$> mapM mkExpr es
+            "size" -> Builtin BkSize <$> mapM mkExpr es
             _ -> trace ("unknown system function call at " ++ show i) $
                 return UnknownExpr
         _ -> trace ("unknown expression at " ++ show i) $ return UnknownExpr

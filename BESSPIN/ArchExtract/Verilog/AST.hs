@@ -210,5 +210,5 @@ data Range = Range Expr Expr
 data Index = ISingle Expr | IRange Expr Expr
     deriving (Show, Eq, Data, Typeable)
 
-data BuiltinKind = BkClog2
+data BuiltinKind = BkClog2 | BkSize
     deriving (Show, Eq, Data, Typeable)

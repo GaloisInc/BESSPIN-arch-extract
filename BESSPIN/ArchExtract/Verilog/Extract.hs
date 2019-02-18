@@ -448,9 +448,11 @@ prioDcNet = -1
 -- Type conversion
 
 convTy :: V.Module -> V.Ty -> ExtractM A.Ty
-convTy _ (V.TTy base packed unpacked) =
-    let wire = A.TWire (length packed) (length unpacked) in
-    let sim = A.TSimVal in
+convTy _ (V.TTy base vPacked vUnpacked) = do
+    packed <- mapM convConstRangeSize vPacked
+    unpacked <- mapM convConstRangeSize vUnpacked
+    let wire = A.TWire packed unpacked
+    let sim = A.TSimVal
     return $ case base of
         V.TLogic -> wire
         V.TReg -> wire
@@ -470,13 +472,13 @@ convTy vMod (V.TRef declId) =
 -- Expression conversion
 
 typeofExpr :: V.Expr -> ExtractM A.Ty
-typeofExpr e = do
-    declNets <- gets esDeclNets
-    return $ exprType (declVarTy declNets) e
-  where
-    declVarTy declNets idx = case M.lookup (NoDecl idx) declNets of
-        Nothing -> TUnknown
-        Just (_, ty) -> ty
+typeofExpr e = exprType declVarTy convConstExpr e
+
+declVarTy :: Int -> ExtractM A.Ty
+-- TODO: look up `idx` as a param
+declVarTy idx = gets (M.lookup (NoDecl idx) . esDeclNets) >>= \x -> case x of
+    Nothing -> return A.TUnknown
+    Just (_, ty) -> return ty
 
 convConstExpr :: V.Expr -> ExtractM A.ConstExpr
 convConstExpr e = go e
@@ -494,7 +496,15 @@ convConstExpr e = go e
     go (V.Binary V.BGt l r) = A.EBinCmp A.BGt <$> go l <*> go r
     go (V.Binary V.BGe l r) = A.EBinCmp A.BGe <$> go l <*> go r
     go (V.Builtin BkClog2 [e]) = A.EUnArith A.UClog2 <$> go e
+    go (V.Builtin BkSize [e]) = typeofExpr e >>= \ty -> case ty of
+        A.TWire [] [] -> return $ A.EIntLit 1
+        A.TWire ws [] -> return $ foldl1 (A.EBinArith A.BMul) ws
+        t -> error $ "took $size of unsupported type " ++ show t
     go e = error $ "unsupported constexpr: " ++ show e
+
+convConstRangeSize :: V.Range -> ExtractM A.ConstExpr
+convConstRangeSize (V.Range l r) =
+    A.ERangeSize <$> convConstExpr l <*> convConstExpr r
 
 parseBitConst :: Text -> Maybe Int
 parseBitConst t =

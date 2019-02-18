@@ -273,9 +273,12 @@ netNode cfg idx net =
     let shortName = head (T.lines name) <> suffix in
     let displayName = if cfgShortenNetNames cfg then shortName else name in
     let color = convColor $ annColor $ netAnn net in
+    let printVar i = "x" <> T.pack (show i) in
+    let tyStr = printTy printVar $ netTy net in
 
     Just $
-        DotNode (netKey cfg idx) ([mkLabel displayName, mkTooltip name] ++ color)
+        DotNode (netKey cfg idx) ([mkLabel $ T.unlines [displayName, tyStr],
+            mkTooltip name] ++ color)
 
 
 logicLabel LkOther = T.pack "(logic)"
@@ -346,6 +349,18 @@ printConstExpr printVar e = go e
     go (ERangeSize l r) =
         "(" <> T.unwords ["rangeSize", go l, go r] <> ")"
 
+printTy :: (Int -> Text) -> Ty -> Text
+printTy printVar t = go t
+  where
+    go (TWire ws ds) = mconcat $
+        ["wire"] ++ map (\e -> "[" <> goExpr e <> "]") (ws ++ ds)
+    go (TEnum base) = "enum " <> go base
+    go (TAlias name base) = "typedef(" <> name <> ") " <> go base
+    go TSimVal = "sim"
+    go TUnknown = "unknown"
+
+    goExpr e = printConstExpr printVar e
+
 logicParamLines :: Design a -> Module b -> Logic c -> [H.Text]
 logicParamLines d m l@(Logic { logicKind = LkInst inst }) =
     toList $ S.mapWithIndex go $ instParams inst
@@ -414,16 +429,17 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
 
     goTy labelAttr ty = case ty of
         Nothing -> []
-        Just (TWire 0 0) -> []
+        Just (TWire [] []) -> []
         Just (TWire w d) -> [labelAttr $ StrLabel $ TL.fromStrict $ busLabel w d, bold]
         Just (TEnum ty) -> goTy labelAttr (Just ty)
         Just (TAlias _ ty) -> goTy labelAttr (Just ty)
         Just TSimVal -> [gray]
         Just TUnknown -> []
       where
-        busLabel 0 0 = ""
-        busLabel _ 0 = "*"
-        busLabel 0 _ = "1x*"
+        -- TODO: show dimension expressions
+        busLabel [] [] = ""
+        busLabel _ [] = "*"
+        busLabel [] _ = "1x*"
         busLabel _ _ = "*x*"
         bold = Style [SItem Bold []]
         gray = Color $ toColorList [RGB 150 150 150]

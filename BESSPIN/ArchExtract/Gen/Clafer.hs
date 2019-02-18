@@ -223,8 +223,9 @@ convNet idx net =
     connPort side (LogicPort _ j) = [cfrPortName (flipSide side) j]
 
 
-typeName (TWire 0 0) = "ty_wire"
-typeName (TWire _ 0) = "ty_bus"
+-- TODO: handle dimension expressions
+typeName (TWire [] []) = "ty_wire"
+typeName (TWire _ []) = "ty_bus"
 typeName (TWire _ _) = "ty_memory"
 typeName _ = "ty_unknown"
 
