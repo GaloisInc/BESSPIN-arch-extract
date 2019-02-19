@@ -66,7 +66,7 @@ mkStrLit :: Text -> Exp
 mkStrLit s = EStr noSpan $ PosString ((0, 0), show $ T.unpack s)
 
 mkEqCon :: Exp -> Exp -> Element
-mkEqCon a b = Subconstraint noSpan $ Constraint noSpan [EEq noSpan a b]
+mkEqCon a b = Subconstraint noSpan $ C.Constraint noSpan [EEq noSpan a b]
 
 mkEqCon' :: [Text] -> Exp -> Element
 mkEqCon' ts b = mkEqCon (mkPath ts) b
@@ -198,9 +198,6 @@ convLogic _ _ _ idx logic =
         ++ mkEqSetCon' ["out_ports"] outPortExps
         ++ mkEqSetCon' ["unbound_out_ports"] outPortExps
         ) ]
-
-flipSide Source = Sink
-flipSide Sink = Source
 
 convNet :: Int -> Net a -> [Element]
 convNet idx net =

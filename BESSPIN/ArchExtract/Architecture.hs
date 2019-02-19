@@ -35,7 +35,7 @@ data Module ann = Module
     , moduleOutputs :: Seq Port
     , moduleLogics :: Seq (Logic ann)
     , moduleNets :: Seq (Net ann)
-    , moduleConstraints :: Seq ConstExpr
+    , moduleConstraints :: Seq Constraint
     }
     deriving (Show, Typeable, Data)
 
@@ -109,6 +109,25 @@ data Conn = ExtPort Int | LogicPort Int Int
     deriving (Show, Eq, Ord, Typeable, Data)
 
 
+data Constraint = Constraint
+    { constraintExpr :: ConstExpr
+    , constraintOrigin :: ConstraintOrigin
+    }
+    deriving (Show, Typeable, Data)
+
+data ConstraintOrigin =
+    -- From the initializer expression for parameter `j` on LkInst logic `i`.
+    CoInstParam Int Int |
+    -- From the default initializer for parameter `i` of this module.
+    CoParamDefault Int |
+    -- From connection `side, j` of net `i`.
+    CoNetConn NetId Side Int |
+    -- From the port connection for port `side, j` of LkInst logic `i`.
+    CoPortConn Int Side Int |
+    CoText Text
+    deriving (Show, Eq, Typeable, Data)
+
+
 data Ty =
     TWire
     { tWireWidths :: [ConstExpr]
@@ -160,6 +179,9 @@ data BinCmpOp = BEq | BNe | BLt | BLe | BGt | BGe
 -- `Input`/`Output` have opposite meanings on external ports vs. logic.
 data Side = Source | Sink
     deriving (Show, Eq, Ord, Typeable, Data)
+
+flipSide Source = Sink
+flipSide Sink = Source
 
 
 -- Item-lookup functions.  For each `fooBars :: Foo -> Seq Bar` field above,

@@ -8,20 +8,13 @@ import Data.Generics
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
-import Data.Sequence (Seq)
+import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Lens.Micro
 
 import Debug.Trace
-
-import Language.Clafer hiding (Module)
-import Language.Clafer.Common
-import Language.Clafer.Front.AbsClafer hiding (Module)
-import qualified Language.Clafer.Front.AbsClafer as C
-import Language.Clafer.Front.PrintClafer
-import qualified Language.Clafer.ClaferArgs as Args
 
 import BESSPIN.ArchExtract.Architecture
 import qualified BESSPIN.ArchExtract.Config as Config
@@ -41,6 +34,7 @@ shiftTy idx t = everywhere (mkT go) t
     go t = t
 
 
+instParamConstraints :: Design a -> Module b -> Seq Constraint
 instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
     case logicKind logic of
         LkInst inst -> go idx inst
@@ -53,7 +47,9 @@ instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic
             let formalExpr = paramDefault formal in
             case paramVal idx actualExpr formalExpr of
                 Nothing -> S.empty
-                Just c -> S.singleton $ EBinCmp BEq (EInstParam [idx] paramIdx) c
+                Just c -> S.singleton $
+                    Constraint (EBinCmp BEq (EInstParam [idx] paramIdx) c)
+                        (CoInstParam idx paramIdx)
 
     paramVal instIdx (Just e) _ = Just e
     paramVal instIdx Nothing (Just e) = Just $ shiftExpr instIdx e
@@ -62,9 +58,11 @@ instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic
 addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d m) m
 
 
+defaultConstraints :: Module a -> Seq Constraint
 defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
     case paramDefault param of
-        Just e -> S.singleton $ EBinCmp BEq (EParam idx) e
+        Just e -> S.singleton $
+            Constraint (EBinCmp BEq (EParam idx) e) (CoParamDefault idx)
         Nothing -> S.empty
 
 addRootDefaultConstraints d idx =
@@ -88,27 +86,37 @@ tyEqConstraints warn t1 t2 = go t1 t2
     go t1 t2 = traceShow (warn t1 t2) []
 
 
-netTypeConstraints m = flip foldMap (moduleNets m) $ \net ->
-    let connTys = fmap (connTy m Source) (netSources net) <>
-            fmap (connTy m Sink) (netSinks net) in
+netTypeConstraints :: Module a -> Seq Constraint
+netTypeConstraints m = flip S.foldMapWithIndex (moduleNets m) $ \netIdx net ->
+    let connTys side conns =
+            S.mapWithIndex (\connIdx conn ->
+                    (connTy m side conn, CoNetConn (NetId netIdx) side connIdx)) conns in
     let name = moduleName m <> "." <> netName net in
     let warn = \t1 t2 -> ("warning: net", name, "connects incompatible types", t1, t2) in
-    foldMap (\t -> S.fromList $ tyEqConstraints warn (netTy net) t) connTys
+    foldMap (\(t,o) ->
+            S.fromList $ map (\e -> Constraint e o) $
+                tyEqConstraints warn (netTy net) t)
+        (connTys Source (netSources net) <> connTys Sink (netSinks net))
 
 addNetTypeConstraints m = over _moduleConstraints (<> netTypeConstraints m) m
 
 
+portTypeConstraints :: Design a -> Module b -> Seq Constraint
 portTypeConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
     case logicKind logic of
         LkInst inst ->
             let instMod = d `designMod` instModId inst in
-            let warn f t1 t2 = ("warning: instance", moduleName m <> "." <> instName inst,
-                    "port", portName f, "connects incompatible types", t1, t2) in
-            let go f a = S.fromList $
-                    tyEqConstraints (warn f) (shiftTy idx $ portTy f) (pinTy a) in
+            let warn p t1 t2 = ("warning: instance", moduleName m <> "." <> instName inst,
+                    "port", portName p, "connects incompatible types", t1, t2) in
+            let go side portIdx port =
+                    let formal = shiftTy idx $ portTy port in
+                    let actual = pinTy $ logicSidePin logic side portIdx in
+                    let origin = CoPortConn idx side portIdx in
+                    S.fromList $ map (\e -> Constraint e origin) $
+                        tyEqConstraints (warn port) formal actual in
             join $
-                S.zipWith go (moduleInputs instMod) (logicInputs logic) <>
-                S.zipWith go (moduleOutputs instMod) (logicOutputs logic)
+                S.mapWithIndex (go Sink) (moduleInputs instMod) <>
+                S.mapWithIndex (go Source) (moduleOutputs instMod)
         _ -> S.empty
 
 addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m) m
@@ -121,7 +129,7 @@ type VarPath = ([Int], Int)
 
 -- Flatten a design down to a list of variables and a list of constraints.  In
 -- the output `ConstExpr`s, `Param i` refers to the `i`th variable in the list.
-flattenConstraints :: Design a -> Int -> (Seq Text, Seq ConstExpr)
+flattenConstraints :: Design a -> Int -> (Seq Text, Seq Constraint)
 flattenConstraints d rootId = (varNames, cons)
   where
     varNames :: Seq Text
@@ -146,6 +154,7 @@ flattenConstraints d rootId = (varNames, cons)
         Just i -> i
         Nothing -> error $ "no var has path " ++ show p
 
+    convExpr :: [Int] -> ConstExpr -> ConstExpr
     convExpr instPath e = everywhere (mkT go) e
       where
         go (EParam p) = EParam $ findVar (instPath, p)
@@ -156,7 +165,39 @@ flattenConstraints d rootId = (varNames, cons)
 
     mkCons instPath modId =
         let m = d `designMod` modId in
-        fmap (convExpr instPath) (moduleConstraints m) <>
+        let conv (Constraint e o) =
+                Constraint (convExpr instPath e) (CoText $ showOrigin d m o) in
+        fmap conv (moduleConstraints m) <>
         S.foldMapWithIndex (\idx logic -> case logicKind logic of
             LkInst inst -> mkCons (idx : instPath) (instModId inst)
             _ -> S.empty) (moduleLogics m)
+
+showConn d m side c = case c of
+    ExtPort i -> "port-" <> portName (moduleSidePort m side i)
+    LogicPort i j ->
+        let l = m `moduleLogic` i in
+        case logicKind l of
+            LkInst inst ->
+                let instMod = d `designMod` instModId inst in
+                "inst-pin-" <> instName inst <> "$" <>
+                    portName (moduleSidePort instMod (flipSide side) j)
+            _ -> "logic-pin-" <> T.pack (show i) <> "$" <> T.pack (show side) <> T.pack (show j)
+
+showOrigin d m o = case o of
+    CoInstParam i j ->
+        let LkInst inst = logicKind $ m `moduleLogic` i in
+        let instMod = d `designMod` instModId inst in
+        "param-" <> moduleName m <> "$" <> instName inst <> "$" <>
+            paramName (instMod `moduleParam` j)
+    CoParamDefault i ->
+        "param-default-" <> moduleName m <> "$" <> paramName (m `moduleParam` i)
+    CoNetConn i side j ->
+        let n = m `moduleNet` i in
+        "net-conn-" <> moduleName m <> "$" <> head (T.lines $ netName n) <>
+            "-to-" <> showConn d m side (netSideConn n side j)
+    CoPortConn i side j ->
+        let LkInst inst = logicKind $ m `moduleLogic` i in
+        let instMod = d `designMod` instModId inst in
+        "port-conn-" <> moduleName m <> "$" <> instName inst <> "$" <>
+            portName (moduleSidePort instMod (flipSide side) j)
+    CoText t -> t

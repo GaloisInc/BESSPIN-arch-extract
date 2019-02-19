@@ -17,13 +17,6 @@ import Debug.Trace
 
 import qualified SimpleSMT as SMT
 
-import Language.Clafer hiding (Module)
-import Language.Clafer.Common
-import Language.Clafer.Front.AbsClafer hiding (Module)
-import qualified Language.Clafer.Front.AbsClafer as C
-import Language.Clafer.Front.PrintClafer
-import qualified Language.Clafer.ClaferArgs as Args
-
 import BESSPIN.ArchExtract.Architecture
 import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Constraints
@@ -61,8 +54,13 @@ convConstExpr varNames e = go e
     go (EBinCmp BGe l r) = call ">=" [go l, go r]
     go (ERangeSize l r) = call "range-size" [go l, go r]
 
-convConstraint :: Seq Text -> ConstExpr -> SExpr
-convConstraint varNames e = call "assert" [convConstExpr varNames e]
+convConstraint :: Bool -> Seq Text -> Int -> Constraint -> SExpr
+convConstraint False varNames _ (Constraint e _) =
+    call "assert" [convConstExpr varNames e]
+convConstraint True varNames i (Constraint e o) =
+    let CoText name = o in
+    call "assert" [call "!" [convConstExpr varNames e, Atom ":named",
+        Atom $ name <> "-" <> T.pack (show i)]]
 
 
 
@@ -88,12 +86,8 @@ defineRangeSize = defineFun "range-size" [("l", tInt), ("r", tInt)] tInt $
     call "+" [Atom "1", call "abs" [call "-" [Atom "l", Atom "r"]]]
 
 
-nameAssertion i (App [Atom "assert", e]) =
-    call "assert" [call "!" [e, Atom ":named", Atom $ "a" <> T.pack (show i)]]
-nameAssertion _ e = e
-
-genSmt :: Config.SMT -> Seq Text -> Seq ConstExpr -> [SExpr]
-genSmt cfg varNames cons = prefix ++ varDecls ++ conExprs' ++ suffix
+genSmt :: Config.SMT -> Seq Text -> Seq Constraint -> [SExpr]
+genSmt cfg varNames cons = prefix ++ varDecls ++ conExprs ++ suffix
   where
     unsatCore = Config.smtGenUnsatCore cfg
 
@@ -105,8 +99,7 @@ genSmt cfg varNames cons = prefix ++ varDecls ++ conExprs' ++ suffix
         , defineRangeSize
         ]
     varDecls = map (\v -> call "declare-const" [Atom v, tInt]) $ toList varNames
-    conExprs = map (convConstraint varNames) $ toList cons
-    conExprs' = if unsatCore then zipWith nameAssertion [0..] conExprs else conExprs
+    conExprs = zipWith (convConstraint unsatCore varNames) [0..] $ toList cons
     suffix =
         [ call "check-sat" []
         ] ++
@@ -167,4 +160,4 @@ findUnconstrainedParameters cfg d = do
         defineClog2 <|
         defineRangeSize <|
         fmap (\v -> call "declare-const" [Atom v, tInt]) varNames <>
-        fmap (convConstraint varNames) cons
+        fmap (convConstraint False varNames 0) cons
