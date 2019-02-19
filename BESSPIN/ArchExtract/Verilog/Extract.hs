@@ -32,7 +32,7 @@ import BESSPIN.ArchExtract.Verilog.Match
 import BESSPIN.ArchExtract.Verilog.TypeCheck
 import BESSPIN.ArchExtract.Simplify hiding (mkNet)
 import BESSPIN.ArchExtract.Lens
-import BESSPIN.ArchExtract.Constraints (shiftExpr)
+import BESSPIN.ArchExtract.Constraints (shiftExpr, shiftTy)
 
 
 -- Extraction state definition
@@ -509,9 +509,3 @@ parseBitConst t =
   where
     (width, rest) = T.breakOn "'" t
     digits = T.drop 2 rest
-
-
-shiftTy idx t = everywhere (mkT go) t
-  where
-    go (A.TWire ws ds) = A.TWire (map (shiftExpr idx) ws) (map (shiftExpr idx) ds)
-    go t = t

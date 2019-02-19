@@ -76,7 +76,7 @@ convConstExpr convVar e = go e
     go (EBinCmp BLe l r) = call "<=" [go l, go r]
     go (EBinCmp BGt l r) = call ">" [go l, go r]
     go (EBinCmp BGe l r) = call ">=" [go l, go r]
-    go (ERangeSize l r) = call "+" [Atom "1", call "abs" [call "-" [go l, go r]]]
+    go (ERangeSize l r) = call "range-size" [go l, go r]
 
 convConstraint :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
 convConstraint convVar e = call "assert" [convConstExpr convVar e]
@@ -87,14 +87,22 @@ mkCase :: [(SExpr, SExpr)] -> SExpr -> SExpr
 mkCase [] dfl = dfl
 mkCase ((cond, val) : rest) dfl = call "if" [cond, val, mkCase rest dfl]
 
-defineClog2 = call "define-fun" [Atom "clog2", argTys, retTy, body]
+defineFun name args retTy body = call "define-fun"
+    [ Atom name
+    , App [App [Atom name, ty] | (name, ty) <- args]
+    , retTy
+    , body]
+funArg name ty = App [Atom name, ty]
+tInt = Atom "Int"
+
+defineClog2 = defineFun "clog2" [("x", tInt)] tInt body
   where
-    argTys = App [App [Atom "x", Atom "Int"]]
-    retTy = Atom "Int"
     body = mkCase cases (intLit maxBits)
     maxBits = 64
     cases = [(call "<=" [Atom "x", intLit (2 ^ i)], intLit i) | i <- [0 .. maxBits - 1]]
 
+defineRangeSize = defineFun "range-size" [("l", tInt), ("r", tInt)] tInt $
+    call "+" [Atom "1", call "abs" [call "-" [Atom "l", Atom "r"]]]
 
 
 nameAssertion i (App [Atom "assert", e]) =
@@ -111,6 +119,7 @@ genSmt cfg d = prefix ++ base' ++ suffix
             [call "set-option" [Atom ":produce-unsat-cores", Atom "true"]]
         else []) ++
         [ defineClog2
+        , defineRangeSize
         ]
     base =
         convModule d rootId "root" <>

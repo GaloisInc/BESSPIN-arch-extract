@@ -33,6 +33,11 @@ shiftExpr idx e = everywhere (mkT go) e
     go (EInstParam is p) = EInstParam (idx : is) p
     go e = e
 
+shiftTy idx t = everywhere (mkT go) t
+  where
+    go (TWire ws ds) = TWire (map (shiftExpr idx) ws) (map (shiftExpr idx) ds)
+    go t = t
+
 
 instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
     case logicKind logic of
@@ -63,8 +68,8 @@ addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d
 connTy m side (ExtPort i) = portTy $ moduleSidePort m side i
 connTy m side (LogicPort i j) =  pinTy $ logicSidePin (m `moduleLogic` i) side j
 
-tyEqConstraints :: Text -> Ty -> Ty -> [ConstExpr]
-tyEqConstraints name t1 t2 = go t1 t2
+tyEqConstraints :: Show a => (Ty -> Ty -> a) -> Ty -> Ty -> [ConstExpr]
+tyEqConstraints warn t1 t2 = go t1 t2
   where
     go (TWire ws1 ds1) (TWire ws2 ds2)
       | length ws1 == length ws2 && length ds1 == length ds2 =
@@ -73,14 +78,33 @@ tyEqConstraints name t1 t2 = go t1 t2
     go (TAlias _ t1) t2 = go t1 t2
     go t1 (TEnum t2) = go t1 t2
     go t1 (TAlias _ t2) = go t1 t2
-    go t1 t2 = traceShow ("warning: net", name, "connects incompatible types", t1, t2) []
+    go t1 t2 = traceShow (warn t1 t2) []
 
-typeConstraints m = flip foldMap (moduleNets m) $ \net ->
+
+netTypeConstraints m = flip foldMap (moduleNets m) $ \net ->
     let connTys = fmap (connTy m Source) (netSources net) <>
             fmap (connTy m Sink) (netSinks net) in
     let name = moduleName m <> "." <> netName net in
-    foldMap (\t -> S.fromList $ tyEqConstraints name (netTy net) t) connTys 
+    let warn = \t1 t2 -> ("warning: net", name, "connects incompatible types", t1, t2) in
+    foldMap (\t -> S.fromList $ tyEqConstraints warn (netTy net) t) connTys
 
-addTypeConstraints m = over _moduleConstraints (<> typeConstraints m) m
+addNetTypeConstraints m = over _moduleConstraints (<> netTypeConstraints m) m
 
 
+portTypeConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
+    case logicKind logic of
+        LkInst inst ->
+            let instMod = d `designMod` instModId inst in
+            let warn f t1 t2 = ("warning: instance", moduleName m <> "." <> instName inst,
+                    "port", portName f, "connects incompatible types", t1, t2) in
+            let go f a = S.fromList $
+                    tyEqConstraints (warn f) (shiftTy idx $ portTy f) (pinTy a) in
+            join $
+                S.zipWith go (moduleInputs instMod) (logicInputs logic) <>
+                S.zipWith go (moduleOutputs instMod) (logicOutputs logic)
+        _ -> S.empty
+
+addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m) m
+
+
+addTypeConstraints d m = addPortTypeConstraints d $ addNetTypeConstraints m

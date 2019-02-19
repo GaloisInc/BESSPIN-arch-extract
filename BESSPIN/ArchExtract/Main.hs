@@ -77,7 +77,7 @@ main = do
             putStrLn $ T.unpack $ printVerilog $ v
             return $ extractArch v
 
-    let a' = Design $ fmap (addInstParamConstraints a . addTypeConstraints) $ designMods a
+    let a' = Design $ fmap (addInstParamConstraints a . addTypeConstraints a) $ designMods a
     let a = a'
 
     case Config.configGraphvizOutput config of
