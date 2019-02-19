@@ -35,6 +35,7 @@ data Module ann = Module
     , moduleOutputs :: Seq Port
     , moduleLogics :: Seq (Logic ann)
     , moduleNets :: Seq (Net ann)
+    , moduleConstraints :: Seq ConstExpr
     }
     deriving (Show, Typeable, Data)
 
@@ -223,16 +224,17 @@ instance Annotated Design where
     scatterAnn' (Design mods) = Design <$> mapM scatterAnn' mods
 
 instance Annotated Module where
-    gatherAnn (Module _ _ _ _ logics nets) =
+    gatherAnn (Module _ _ _ _ logics nets _) =
         foldMap gatherAnn logics ++
         foldMap gatherAnn nets
-    scatterAnn' (Module name params ins outs logics nets) = Module
+    scatterAnn' (Module name params ins outs logics nets cons) = Module
         <$> pure name
         <*> pure params
         <*> pure ins
         <*> pure outs
         <*> mapM scatterAnn' logics
         <*> mapM scatterAnn' nets
+        <*> pure cons
 
 instance Annotated Logic where
     gatherAnn (Logic _ _ _ ann) = [ann]

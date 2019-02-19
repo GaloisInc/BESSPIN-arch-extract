@@ -25,6 +25,7 @@ import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
 import BESSPIN.ArchExtract.Verilog.Print
 import BESSPIN.ArchExtract.Architecture
+import BESSPIN.ArchExtract.Constraints
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 import BESSPIN.ArchExtract.Gen.ModuleTree
@@ -75,6 +76,9 @@ main = do
             let v = fromRaw raw blackboxNames modIds
             putStrLn $ T.unpack $ printVerilog $ v
             return $ extractArch v
+
+    let a' = Design $ fmap (addInstParamConstraints a) $ designMods a
+    let a = a'
 
     case Config.configGraphvizOutput config of
         Nothing -> return ()

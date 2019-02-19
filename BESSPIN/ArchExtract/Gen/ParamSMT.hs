@@ -22,6 +22,7 @@ import qualified Language.Clafer.ClaferArgs as Args
 
 import BESSPIN.ArchExtract.Architecture
 import qualified BESSPIN.ArchExtract.Config as Config
+import BESSPIN.ArchExtract.Constraints
 
 
 data SExpr = Atom Text | App [SExpr]
@@ -41,48 +42,44 @@ intLit i = Atom $ T.pack $ show i
 convModule :: Design a -> Int -> Text -> [SExpr]
 convModule d modId name =
     map goParam (toList $ moduleParams mod) <>
-    foldMap goLogic (moduleLogics mod)
+    foldMap goLogic (moduleLogics mod) <>
+    map (convConstraint convVar) (toList $ moduleConstraints mod)
   where
     mod = d `designMod` modId
 
     goParam p = App [Atom "declare-const", Atom $ name <> "$" <> paramName p, Atom "Int"]
 
-    goLogic (Logic { logicKind = LkInst inst }) = convInst d name modId inst
+    goLogic (Logic { logicKind = LkInst inst }) =
+        convModule d (instModId inst) (name <> "$" <> instName inst)
     goLogic _ = []
 
-convInst :: Design a -> Text -> Int -> Inst -> [SExpr]
-convInst d parentName parentModId inst = paramDecls <> constraints
-  where
-    paramDecls = convModule d (instModId inst) instFullName
-    instFullName = parentName <> "$" <> instName inst
-    instMod = d `designMod` instModId inst
-    parentMod = d `designMod` parentModId
+    convVar is p = Atom $ name <> "$" <> varName d mod is p
 
-    parentVar idx = Atom $
-        parentName <> "$" <> paramName (moduleParams parentMod `S.index` idx)
-    childVar idx = Atom $
-        instFullName <> "$" <> paramName (moduleParams instMod `S.index` idx)
+varName d m [] p = paramName (m `moduleParam` p)
+varName d m (i:is) p =
+    let LkInst inst = logicKind $ m `moduleLogic` i in
+    instName inst <> "$" <> varName d (d `designMod` instModId inst) is p
 
-    paramConstraint idx = case join $ S.lookup idx (instParams inst) of
-        Just expr -> assertEq (childVar idx) (convConstExpr parentVar expr)
-        Nothing -> case paramDefault $ instMod `moduleParam` idx of
-            Just expr -> assertEq (childVar idx) (convConstExpr childVar expr)
-            Nothing -> traceShow ("no default available for", instFullName, idx) $
-                assertEq (childVar idx) (childVar idx)
-
-    constraints = map paramConstraint [0 .. S.length (moduleParams instMod) - 1]
-
-
-convConstExpr :: (Int -> SExpr) -> ConstExpr -> SExpr
+convConstExpr :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
 convConstExpr convVar e = go e
   where
     go (EIntLit i) = Atom $ T.pack $ show i
-    go (EParam idx) = convVar idx
+    go (EParam idx) = convVar [] idx
+    go (EInstParam insts idx) = convVar insts idx
     go (EUnArith UClog2 e) = call "clog2" [go e]
     go (EBinArith BAdd l r) = call "+" [go l, go r]
     go (EBinArith BSub l r) = call "-" [go l, go r]
     go (EBinArith BMul l r) = call "*" [go l, go r]
-    -- FIXME
+    go (EBinCmp BEq l r) = call "=" [go l, go r]
+    go (EBinCmp BNe l r) = call "not" [call "=" [go l, go r]]
+    go (EBinCmp BLt l r) = call "<" [go l, go r]
+    go (EBinCmp BLe l r) = call "<=" [go l, go r]
+    go (EBinCmp BGt l r) = call ">" [go l, go r]
+    go (EBinCmp BGe l r) = call ">=" [go l, go r]
+    go (ERangeSize l r) = call "abs" [call "-" [go l, go r]]
+
+convConstraint :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
+convConstraint convVar e = call "assert" [convConstExpr convVar e]
 
 
 
@@ -106,12 +103,17 @@ genSmt cfg d = prefix ++ base ++ suffix
     prefix =
         [ defineClog2
         ]
-    base = convInst d "" (error $ "top module has params with no defaults")
-        (Inst rootId "root" S.empty)
+    base =
+        convModule d rootId "root" <>
+        map (convConstraint convVar) (toList topCons)
     suffix =
         [ call "check-sat" []
         , call "get-model" []
         ]
+
+    convVar is p = Atom $ "root$" <> varName d (d `designMod` rootId) is p
+
+    topCons = defaultConstraints $ d `designMod` rootId
 
     rootName = Config.smtRootModule cfg
     optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)

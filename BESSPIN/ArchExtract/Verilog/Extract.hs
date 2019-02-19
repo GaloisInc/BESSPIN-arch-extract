@@ -32,6 +32,7 @@ import BESSPIN.ArchExtract.Verilog.Match
 import BESSPIN.ArchExtract.Verilog.TypeCheck
 import BESSPIN.ArchExtract.Simplify hiding (mkNet)
 import BESSPIN.ArchExtract.Lens
+import BESSPIN.ArchExtract.Constraints (shiftExpr)
 
 
 -- Extraction state definition
@@ -189,6 +190,7 @@ initMod name = A.Module
     , A.moduleOutputs = S.empty
     , A.moduleLogics = S.empty
     , A.moduleNets = S.empty
+    , A.moduleConstraints = S.empty
     }
 
 buildModSig :: V.Module -> ExtractState
@@ -291,14 +293,6 @@ convDecls vMod =
                 mapM convConstExpr $ join $ paramVals S.!? vIdx
             void $ addLogic $
                 Logic (LkInst $ Inst modId instName params) inPins outPins ()
-
-isInput Input = True
-isInput InOut = True
-isInput Output = False
-
-isOutput Output = True
-isOutput InOut = True
-isOutput Input = False
 
 convItems :: V.Module -> ExtractM ()
 convItems vMod =
@@ -516,14 +510,6 @@ parseBitConst t =
     (width, rest) = T.breakOn "'" t
     digits = T.drop 2 rest
 
-
--- Shift all `EParam` and `EInstParam` by prepending `idx`.  This converts
--- `x.y` into `i.x.y`, where `i` is the instance at index `idx`.
-shiftExpr idx e = everywhere (mkT go) e
-  where
-    go (EParam p) = EInstParam [idx] p
-    go (EInstParam is p) = EInstParam (idx : is) p
-    go e = e
 
 shiftTy idx t = everywhere (mkT go) t
   where
