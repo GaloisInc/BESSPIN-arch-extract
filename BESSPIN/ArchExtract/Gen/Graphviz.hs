@@ -261,9 +261,9 @@ portNode cfg side idx (Port name _ _) =
     DotNode key [mkLabel label]
 
 
-netNode :: Cfg -> Int -> Net Ann -> Maybe (DotNode Text)
-netNode cfg idx net | not $ drawNetNode cfg net = Nothing
-netNode cfg idx net =
+netNode :: Cfg -> Design a -> Module b -> Int -> Net Ann -> Maybe (DotNode Text)
+netNode cfg d m idx net | not $ drawNetNode cfg net = Nothing
+netNode cfg d m idx net =
     let name = netName net in
     let names = T.lines name in
     let suffix =
@@ -273,8 +273,7 @@ netNode cfg idx net =
     let shortName = head (T.lines name) <> suffix in
     let displayName = if cfgShortenNetNames cfg then shortName else name in
     let color = convColor $ annColor $ netAnn net in
-    let printVar i = "x" <> T.pack (show i) in
-    let tyStr = printTy printVar $ netTy net in
+    let tyStr = printTy (printVar d m) $ netTy net in
 
     Just $
         DotNode (netKey cfg idx) ([mkLabel $ T.unlines [displayName, tyStr],
@@ -331,15 +330,24 @@ logicName d l@(Logic { logicKind = LkDFlipFlop name _ }) =
     [H.Str $ TL.fromStrict $ "(dff " <> name <> ")"]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
-printConstExpr :: (Int -> Text) -> ConstExpr -> Text
+printVar :: Design a -> Module b -> [Int] -> Int -> Text
+printVar d m insts param | traceShow ("printvar", fmap logicKind $ moduleLogics m, moduleParams m, insts, param) False = undefined
+printVar d m [] param = paramName $ m `moduleParam` param
+printVar d m (instIdx : insts) param =
+    --let LkInst inst = logicKind $ m `moduleLogic` instIdx in
+    let inst = case logicKind $ m `moduleLogic` instIdx of
+            LkInst inst -> inst
+            lk -> error $ "bad logic kind " ++ show lk ++ " at " ++ show (instIdx, insts, param)
+    in
+    let instMod = d `designMod` instModId inst in
+    instName inst <> "$" <> printVar d instMod insts param
+
+printConstExpr :: ([Int] -> Int -> Text) -> ConstExpr -> Text
 printConstExpr printVar e = go e
   where
     go (EIntLit i) = T.pack $ show i
-    go (EParam i) = printVar i
-    go (EInstParam [] i) = printVar i
-    go (EInstParam insts i) =
-        traceShow ("graphviz: can't handle EInstParam") $
-            "(" <> T.unwords ["instParam", T.pack (show insts), T.pack (show i)] <> ")"
+    go (EParam i) = printVar [] i
+    go (EInstParam insts i) = printVar insts i
     go (EUnArith op e) =
         "(" <> T.unwords [T.pack (show op), go e] <> ")"
     go (EBinArith op l r) =
@@ -349,7 +357,7 @@ printConstExpr printVar e = go e
     go (ERangeSize l r) =
         "(" <> T.unwords ["rangeSize", go l, go r] <> ")"
 
-printTy :: (Int -> Text) -> Ty -> Text
+printTy :: ([Int] -> Int -> Text) -> Ty -> Text
 printTy printVar t = go t
   where
     go (TWire ws ds) = mconcat $
@@ -366,15 +374,15 @@ logicParamLines d m l@(Logic { logicKind = LkInst inst }) =
     toList $ S.mapWithIndex go $ instParams inst
   where
     instMod = d `designMod` instModId inst
-    parentParamName i = paramName $ m `moduleParam` i
-    instParamName i = "$" <> (paramName $ instMod `moduleParam` i)
+    parentParamName i = printVar d m [] i
+    instParamName i = "self$" <> printVar d instMod [] i
 
     go idx optExpr = [H.Str $ TL.fromStrict $
         instParamName idx <> " = " <> exprText idx optExpr]
 
-    exprText idx (Just e) = printConstExpr parentParamName e
+    exprText idx (Just e) = printConstExpr (printVar d m) e
     exprText idx Nothing = case paramDefault $ instMod `moduleParam` idx of
-        Just e -> printConstExpr instParamName e
+        Just e -> printConstExpr (printVar d instMod) e
         Nothing -> "(unset??)"
 logicParamLines d _ _ = []
 
@@ -552,9 +560,9 @@ moduleLogicNodes design cfg mod =
             Just n -> [(NLogic idx, n)])
         (moduleLogics mod)
 
-moduleNetNodes :: Cfg -> Module Ann -> [(NodeId, DotNode Text)]
-moduleNetNodes cfg mod =
-    S.foldMapWithIndex (\idx net -> case netNode cfg idx net of
+moduleNetNodes :: Cfg -> Design a -> Module Ann -> [(NodeId, DotNode Text)]
+moduleNetNodes cfg d mod =
+    S.foldMapWithIndex (\idx net -> case netNode cfg d mod idx net of
             Nothing -> []
             Just n -> [(NNet $ NetId idx, n)])
         (moduleNets mod)
@@ -631,7 +639,7 @@ moduleGraph' design cfg mod =
     modNodes =
         modulePortNodes cfg mod ++
         moduleLogicNodes design cfg mod ++
-        moduleNetNodes cfg mod
+        moduleNetNodes cfg design mod
     stageLens = countStageLens mod (map fst modNodes)
     allNodes = modNodes ++ stageChainNodes cfg stageLens
 

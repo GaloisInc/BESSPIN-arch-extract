@@ -118,6 +118,8 @@ setParamDefault :: Int -> ConstExpr -> ExtractM ()
 setParamDefault i e = do
     _esModule . _moduleParams . ix i . _paramDefault .= Just e
 
+nextLogicIdx :: ExtractM Int
+nextLogicIdx = S.length <$> use (_esModule . _moduleLogics)
 
 mkNet :: Text -> Int -> A.Ty -> A.Net ()
 mkNet name prio ty = Net name prio S.empty S.empty ty ()
@@ -231,7 +233,7 @@ convParams vMod = do
         case decl of
             ParamDecl _ _ (Just init) -> do
                 i <- findParam idx
-                e <- traceShow ("convert", idx, decl) $ convConstExpr init
+                e <- convConstExpr init
                 setParamDefault i e
             _ -> return ()
 
@@ -272,18 +274,17 @@ convDecls vMod =
         V.TypedefDecl {} -> return ()
         V.InstDecl instName modId paramVals -> do
             instSig <- findModSig modId
+            aLogicIdx <- nextLogicIdx
             let zippedInputs = S.zip (msInputs instSig) (msInputOrigin instSig)
             inPins <- forM zippedInputs $ \(port, vIdx) -> do
                 let name = instName <> "." <> A.portName port
-                let ty = A.portTy port
-                -- TODO: subst or shift param refs in ty
+                let ty = shiftTy aLogicIdx $ A.portTy port
                 netId <- addDeclNet (NoInstPort idx vIdx) (mkNet name prioInstPort ty)
                 return $ Pin netId ty
             let zippedOutputs = S.zip (msOutputs instSig) (msOutputOrigin instSig)
             outPins <- forM zippedOutputs $ \(port, vIdx) -> do
                 let name = instName <> "." <> A.portName port
-                let ty = A.portTy port
-                -- TODO: subst or shift param refs in ty
+                let ty = shiftTy aLogicIdx $ A.portTy port
                 netId <- addDeclNet (NoInstPort idx vIdx) (mkNet name prioInstPort ty)
                 return $ Pin netId ty
             params <- forM (msParamOrigin instSig) $ \vIdx ->
@@ -514,3 +515,17 @@ parseBitConst t =
   where
     (width, rest) = T.breakOn "'" t
     digits = T.drop 2 rest
+
+
+-- Shift all `EParam` and `EInstParam` by prepending `idx`.  This converts
+-- `x.y` into `i.x.y`, where `i` is the instance at index `idx`.
+shiftExpr idx e = everywhere (mkT go) e
+  where
+    go (EParam p) = EInstParam [idx] p
+    go (EInstParam is p) = EInstParam (idx : is) p
+    go e = e
+
+shiftTy idx t = everywhere (mkT go) t
+  where
+    go (A.TWire ws ds) = A.TWire (map (shiftExpr idx) ws) (map (shiftExpr idx) ds)
+    go t = t
