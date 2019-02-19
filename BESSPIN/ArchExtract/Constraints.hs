@@ -77,13 +77,18 @@ tyEqConstraints :: Show a => (Ty -> Ty -> a) -> Ty -> Ty -> [ConstExpr]
 tyEqConstraints warn t1 t2 = go t1 t2
   where
     go (TWire ws1 ds1) (TWire ws2 ds2)
-      | length ws1 == length ws2 && length ds1 == length ds2 =
-        zipWith (EBinCmp BEq) ws1 ws2 <> zipWith (EBinCmp BEq) ds1 ds2
+      | length ds1 == length ds2 =
+        EBinCmp BEq (prod ws1) (prod ws2) : zipWith (EBinCmp BEq) ds1 ds2
+    go (TWire _ []) TUnsizedInt = []
+    go TUnsizedInt (TWire _ []) = []
     go (TEnum t1) t2 = go t1 t2
     go (TAlias _ t1) t2 = go t1 t2
     go t1 (TEnum t2) = go t1 t2
     go t1 (TAlias _ t2) = go t1 t2
     go t1 t2 = traceShow (warn t1 t2) []
+
+    prod [] = EIntLit 1
+    prod xs = foldl1 (EBinArith BMul) xs
 
 
 netTypeConstraints :: Module a -> Seq Constraint

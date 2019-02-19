@@ -28,6 +28,7 @@ resolve :: Ty -> Ty
 resolve (TWire ws ds) = TWire ws ds
 resolve (TEnum base) = resolve base
 resolve (TAlias _ t) = resolve t
+resolve TUnsizedInt = TUnsizedInt
 resolve TSimVal = TSimVal
 resolve TUnknown = TUnknown
 
@@ -37,7 +38,7 @@ exprType varType convExpr e = go e
     -- TODO: check orders of nested dimensions / indices in Index and MemIndex
     -- cases.  It's likely backwards in at least a few places.
     -- go :: Expr -> m Ty
-    go (Var i) = varType i
+    go (Var i) = resolve <$> varType i
     go (Param i) = return $ TWire [EIntLit 32] []    -- TODO
     go (Index vec (ISingle _)) = (resolve <$> go vec) >>= \ty -> case ty of
         TWire (w : ws) [] -> return $ TWire ws []
@@ -56,8 +57,8 @@ exprType varType convExpr e = go e
     go (Const _) = return TUnknown
     -- This is just a bad guess at a possible type.  TODO: actually track types
     -- for constants.
-    go (ConstInt _ _) = return $ TWire [EIntLit 32] []
-    go (ConstBool _ _) = return $ TWire [EIntLit 1] []
+    go (ConstInt _ _) = return $ TUnsizedInt
+    go (ConstBool _ _) = return $ TWire [] []
     go (Concat es) = sumWidths es >>= \w -> case w of
         Nothing -> return TUnknown
         Just w -> return $ TWire [w] []
@@ -101,6 +102,8 @@ exprType varType convExpr e = go e
     go (AssignPat _ _) = return $ TUnknown
     go UnknownExpr = return $ TUnknown
 
+    commonTy _ t1@(TWire _ []) TUnsizedInt = t1
+    commonTy _ TUnsizedInt t2@(TWire _ []) = t2
     commonTy msg t1 t2 = if t1 /= t2 then warn msg (t1, t2) else t1
 
     tyWidth :: Ty -> Maybe ConstExpr

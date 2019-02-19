@@ -140,6 +140,8 @@ data Ty =
     { tAliasName :: Text
     , tAliasResolved :: Ty
     } |
+    -- Integer value with no specific bit width.
+    TUnsizedInt |
     -- Type for values used only in simulation (int, string, etc).
     TSimVal |
     TUnknown
