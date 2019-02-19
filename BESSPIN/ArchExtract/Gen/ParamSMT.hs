@@ -39,33 +39,12 @@ intLit :: (Show a, Integral a) => a -> SExpr
 intLit i = Atom $ T.pack $ show i
 
 
-convModule :: Design a -> Int -> Text -> [SExpr]
-convModule d modId name =
-    map goParam (toList $ moduleParams mod) <>
-    foldMap goLogic (moduleLogics mod) <>
-    map (convConstraint convVar) (toList $ moduleConstraints mod)
+convConstExpr :: Seq Text -> ConstExpr -> SExpr
+convConstExpr varNames e = go e
   where
-    mod = d `designMod` modId
-
-    goParam p = App [Atom "declare-const", Atom $ name <> "$" <> paramName p, Atom "Int"]
-
-    goLogic (Logic { logicKind = LkInst inst }) =
-        convModule d (instModId inst) (name <> "$" <> instName inst)
-    goLogic _ = []
-
-    convVar is p = Atom $ name <> "$" <> varName d mod is p
-
-varName d m [] p = paramName (m `moduleParam` p)
-varName d m (i:is) p =
-    let LkInst inst = logicKind $ m `moduleLogic` i in
-    instName inst <> "$" <> varName d (d `designMod` instModId inst) is p
-
-convConstExpr :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
-convConstExpr convVar e = go e
-  where
-    go (EIntLit i) = Atom $ T.pack $ show i
-    go (EParam idx) = convVar [] idx
-    go (EInstParam insts idx) = convVar insts idx
+    go (EIntLit i) = intLit i
+    go (EParam idx) = Atom $ varNames `S.index` idx
+    go (EInstParam insts idx) = error $ "unexpected EInstParam in flattened constraint"
     go (EUnArith UClog2 e) = call "clog2" [go e]
     go (EBinArith BAdd l r) = call "+" [go l, go r]
     go (EBinArith BSub l r) = call "-" [go l, go r]
@@ -78,8 +57,8 @@ convConstExpr convVar e = go e
     go (EBinCmp BGe l r) = call ">=" [go l, go r]
     go (ERangeSize l r) = call "range-size" [go l, go r]
 
-convConstraint :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
-convConstraint convVar e = call "assert" [convConstExpr convVar e]
+convConstraint :: Seq Text -> ConstExpr -> SExpr
+convConstraint varNames e = call "assert" [convConstExpr varNames e]
 
 
 
@@ -109,8 +88,8 @@ nameAssertion i (App [Atom "assert", e]) =
     call "assert" [call "!" [e, Atom ":named", Atom $ "a" <> T.pack (show i)]]
 nameAssertion _ e = e
 
-genSmt :: Config.SMT -> Design a -> [SExpr]
-genSmt cfg d = prefix ++ base' ++ suffix
+genSmt :: Config.SMT -> Seq Text -> Seq ConstExpr -> [SExpr]
+genSmt cfg varNames cons = prefix ++ varDecls ++ conExprs' ++ suffix
   where
     unsatCore = Config.smtGenUnsatCore cfg
 
@@ -121,22 +100,21 @@ genSmt cfg d = prefix ++ base' ++ suffix
         [ defineClog2
         , defineRangeSize
         ]
-    base =
-        convModule d rootId "root" <>
-        map (convConstraint convVar) (toList topCons)
-    base' = if unsatCore then zipWith nameAssertion [0..] base else base
+    varDecls = map (\v -> call "declare-const" [Atom v, tInt]) $ toList varNames
+    conExprs = map (convConstraint varNames) $ toList cons
+    conExprs' = if unsatCore then zipWith nameAssertion [0..] conExprs else conExprs
     suffix =
         [ call "check-sat" []
         ] ++
         (if unsatCore then [call "get-unsat-core" []] else [call "get-model" []])
 
-    convVar is p = Atom $ "root$" <> varName d (d `designMod` rootId) is p
-
-    topCons = defaultConstraints $ d `designMod` rootId
-
+genSmt' :: Config.SMT -> Design a -> Text
+genSmt' cfg d = T.unlines $ map printSExpr $ genSmt cfg varNames cons
+  where
     rootName = Config.smtRootModule cfg
     optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)
     rootId = fromMaybe (error $ "root module not found: " ++ show rootName) optRootId
 
-genSmt' :: Config.SMT -> Design a -> Text
-genSmt' cfg d = T.unlines $ map printSExpr $ genSmt cfg d
+    d' = addRootDefaultConstraints d rootId
+    (varNames, cons) = flattenConstraints d' rootId
+    

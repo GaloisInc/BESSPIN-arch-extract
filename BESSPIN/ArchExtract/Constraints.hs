@@ -2,8 +2,10 @@
 module BESSPIN.ArchExtract.Constraints where
 
 import Control.Monad
+import Control.Monad.State
 import Data.Foldable
 import Data.Generics
+import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Sequence (Seq)
@@ -57,12 +59,17 @@ instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic
     paramVal instIdx Nothing (Just e) = Just $ shiftExpr instIdx e
     paramVal instIdx Nothing Nothing = Nothing
 
+addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d m) m
+
+
 defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
     case paramDefault param of
         Just e -> S.singleton $ EBinCmp BEq (EParam idx) e
         Nothing -> S.empty
 
-addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d m) m
+addRootDefaultConstraints d idx =
+    over (_designMod idx . _moduleConstraints)
+        (<> defaultConstraints (d `designMod` idx)) d
 
 
 connTy m side (ExtPort i) = portTy $ moduleSidePort m side i
@@ -108,3 +115,48 @@ addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m
 
 
 addTypeConstraints d m = addPortTypeConstraints d $ addNetTypeConstraints m
+
+
+type VarPath = ([Int], Int)
+
+-- Flatten a design down to a list of variables and a list of constraints.  In
+-- the output `ConstExpr`s, `Param i` refers to the `i`th variable in the list.
+flattenConstraints :: Design a -> Int -> (Seq Text, Seq ConstExpr)
+flattenConstraints d rootId = (varNames, cons)
+  where
+    varNames :: Seq Text
+    -- Key is a path to a parameter in the design.  The list of inst indexes is
+    -- stored in reverse, so `([a, b], c) = inst_b.inst_a.param_c`.
+    pathMap :: Map ([Int], Int) Int
+    (varNames, pathMap) = mkVars "$" [] rootId S.empty M.empty
+
+    mkVars namePrefix instPath modId accNames accMap =
+        let m = d `designMod` modId in
+        let accNames' = accNames <> fmap (\p -> namePrefix <> paramName p) (moduleParams m) in
+        let accMap' = accMap <> M.fromList [((instPath, i), S.length accNames + i) |
+                i <- [0 .. S.length (moduleParams m) - 1]] in
+        S.foldlWithIndex (\(accNames, accMap) idx logic -> case logicKind logic of
+            LkInst inst ->
+                mkVars (namePrefix <> instName inst <> "$") (idx : instPath)
+                    (instModId inst) accNames accMap
+            _ -> (accNames, accMap)) (accNames', accMap') (moduleLogics m)
+
+    findVar :: ([Int], Int) -> Int
+    findVar p = case M.lookup p pathMap of
+        Just i -> i
+        Nothing -> error $ "no var has path " ++ show p
+
+    convExpr instPath e = everywhere (mkT go) e
+      where
+        go (EParam p) = EParam $ findVar (instPath, p)
+        go (EInstParam is p) = EParam $ findVar (reverse is ++ instPath, p)
+        go e = e
+
+    cons = mkCons [] rootId
+
+    mkCons instPath modId =
+        let m = d `designMod` modId in
+        fmap (convExpr instPath) (moduleConstraints m) <>
+        S.foldMapWithIndex (\idx logic -> case logicKind logic of
+            LkInst inst -> mkCons (idx : instPath) (instModId inst)
+            _ -> S.empty) (moduleLogics m)
