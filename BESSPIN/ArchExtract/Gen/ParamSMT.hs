@@ -76,7 +76,7 @@ convConstExpr convVar e = go e
     go (EBinCmp BLe l r) = call "<=" [go l, go r]
     go (EBinCmp BGt l r) = call ">" [go l, go r]
     go (EBinCmp BGe l r) = call ">=" [go l, go r]
-    go (ERangeSize l r) = call "abs" [call "-" [go l, go r]]
+    go (ERangeSize l r) = call "+" [Atom "1", call "abs" [call "-" [go l, go r]]]
 
 convConstraint :: ([Int] -> Int -> SExpr) -> ConstExpr -> SExpr
 convConstraint convVar e = call "assert" [convConstExpr convVar e]
@@ -97,19 +97,29 @@ defineClog2 = call "define-fun" [Atom "clog2", argTys, retTy, body]
 
 
 
+nameAssertion i (App [Atom "assert", e]) =
+    call "assert" [call "!" [e, Atom ":named", Atom $ "a" <> T.pack (show i)]]
+nameAssertion _ e = e
+
 genSmt :: Config.SMT -> Design a -> [SExpr]
-genSmt cfg d = prefix ++ base ++ suffix
+genSmt cfg d = prefix ++ base' ++ suffix
   where
+    unsatCore = Config.smtGenUnsatCore cfg
+
     prefix =
+        (if unsatCore then
+            [call "set-option" [Atom ":produce-unsat-cores", Atom "true"]]
+        else []) ++
         [ defineClog2
         ]
     base =
         convModule d rootId "root" <>
         map (convConstraint convVar) (toList topCons)
+    base' = if unsatCore then zipWith nameAssertion [0..] base else base
     suffix =
         [ call "check-sat" []
-        , call "get-model" []
-        ]
+        ] ++
+        (if unsatCore then [call "get-unsat-core" []] else [call "get-model" []])
 
     convVar is p = Atom $ "root$" <> varName d (d `designMod` rootId) is p
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Constraints where
 
 import Control.Monad
@@ -57,3 +58,29 @@ defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
         Nothing -> S.empty
 
 addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d m) m
+
+
+connTy m side (ExtPort i) = portTy $ moduleSidePort m side i
+connTy m side (LogicPort i j) =  pinTy $ logicSidePin (m `moduleLogic` i) side j
+
+tyEqConstraints :: Text -> Ty -> Ty -> [ConstExpr]
+tyEqConstraints name t1 t2 = go t1 t2
+  where
+    go (TWire ws1 ds1) (TWire ws2 ds2)
+      | length ws1 == length ws2 && length ds1 == length ds2 =
+        zipWith (EBinCmp BEq) ws1 ws2 <> zipWith (EBinCmp BEq) ds1 ds2
+    go (TEnum t1) t2 = go t1 t2
+    go (TAlias _ t1) t2 = go t1 t2
+    go t1 (TEnum t2) = go t1 t2
+    go t1 (TAlias _ t2) = go t1 t2
+    go t1 t2 = traceShow ("warning: net", name, "connects incompatible types", t1, t2) []
+
+typeConstraints m = flip foldMap (moduleNets m) $ \net ->
+    let connTys = fmap (connTy m Source) (netSources net) <>
+            fmap (connTy m Sink) (netSinks net) in
+    let name = moduleName m <> "." <> netName net in
+    foldMap (\t -> S.fromList $ tyEqConstraints name (netTy net) t) connTys 
+
+addTypeConstraints m = over _moduleConstraints (<> typeConstraints m) m
+
+

@@ -116,12 +116,14 @@ data SMT = SMT
     -- output will contain (almost) no concrete clafers.
     { smtRootModule :: Text
     , smtOutFile :: Text
+    , smtGenUnsatCore :: Bool
     }
     deriving (Show)
 
 defaultSMT = SMT
     { smtRootModule = "top"
     , smtOutFile = "out.smtlib2"
+    , smtGenUnsatCore = False
     }
 
 
@@ -208,6 +210,7 @@ smt :: TOML.Value -> SMT
 smt x = tableFold defaultSMT x
     [ ("root-module", \c x -> c { smtRootModule = str x })
     , ("out-file", \c x -> c { smtOutFile = str x })
+    , ("gen-unsat-core", \c x -> c { smtGenUnsatCore = bool x })
     ]
 
 
