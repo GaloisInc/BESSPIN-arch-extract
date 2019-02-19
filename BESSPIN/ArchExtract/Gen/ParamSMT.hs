@@ -6,12 +6,16 @@ import Data.Foldable
 import Data.Generics
 import qualified Data.Map as M
 import Data.Maybe
-import Data.Sequence (Seq)
+import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
 import Debug.Trace
+
+import qualified SimpleSMT as SMT
 
 import Language.Clafer hiding (Module)
 import Language.Clafer.Common
@@ -115,6 +119,52 @@ genSmt' cfg d = T.unlines $ map printSExpr $ genSmt cfg varNames cons
     optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)
     rootId = fromMaybe (error $ "root module not found: " ++ show rootName) optRootId
 
-    d' = addRootDefaultConstraints d rootId
+    d' = d --addRootDefaultConstraints d rootId
     (varNames, cons) = flattenConstraints d' rootId
     
+
+convExpr :: SExpr -> SMT.SExpr
+convExpr (Atom t) = SMT.Atom $ T.unpack t
+convExpr (App es) = SMT.List $ map convExpr es
+
+findUnconstrainedParameters :: Config.SMT -> Design a -> IO ()
+findUnconstrainedParameters cfg d = do
+    logger <- SMT.newLogger 0
+    solver <- SMT.newSolver "z3" ["-smt2", "-in"] (Just logger)
+
+    forM_ exprs $ \expr -> SMT.ackCommand solver $ convExpr expr
+    SMT.command solver $ convExpr $ call "check-sat" []
+
+    initVals <- SMT.getExprs solver (map (SMT.Atom . T.unpack) $ toList varNames)
+
+    unconParams <- liftM mconcat $ forM initVals $ \(name, val) -> do
+        SMT.push solver
+        SMT.assert solver $ SMT.not $ name `SMT.eq` SMT.value val
+        r <- SMT.check solver
+        SMT.pop solver
+        return $ case r of
+            SMT.Sat -> [name]
+            _ -> []
+
+    putStrLn "--- unconstrained parameters: ---"
+    mapM_ print unconParams
+
+    putStrLn "--- constrained parameters: ---"
+    mapM_ print $ filter (\(n,v) -> not $ Set.member n $ Set.fromList unconParams) initVals
+
+
+    print (length unconParams, "unconstrained", S.length varNames, "total")
+
+  where
+    rootName = Config.smtRootModule cfg
+    optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)
+    rootId = fromMaybe (error $ "root module not found: " ++ show rootName) optRootId
+
+    d' = d --addRootDefaultConstraints d rootId
+    (varNames, cons) = flattenConstraints d' rootId
+
+    exprs =
+        defineClog2 <|
+        defineRangeSize <|
+        fmap (\v -> call "declare-const" [Atom v, tInt]) varNames <>
+        fmap (convConstraint varNames) cons

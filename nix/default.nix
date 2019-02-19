@@ -30,6 +30,7 @@ let pkgs = import <nixpkgs> {};
       syb union-find microlens-platform
       prettyprinter
       toml-parser
+      simple-smt
     ]);
 
     clafer_0_4_4 = haskellPackages.callPackage ./clafer-0.4.4.nix {};

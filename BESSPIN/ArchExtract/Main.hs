@@ -77,7 +77,7 @@ main = do
             putStrLn $ T.unpack $ printVerilog $ v
             return $ extractArch v
 
-    let a' = Design $ fmap (addInstParamConstraints a . addTypeConstraints a) $ designMods a
+    let a' = Design $ fmap ({-addInstParamConstraints a .-} addTypeConstraints a) $ designMods a
     let a = a'
 
     case Config.configGraphvizOutput config of
@@ -127,6 +127,8 @@ main = do
         Just s -> do
             let path = T.unpack $ Config.smtOutFile s
             T.writeFile path $ genSmt' s a
+
+            findUnconstrainedParameters s a
 
 
 {-
