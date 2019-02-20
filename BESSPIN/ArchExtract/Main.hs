@@ -128,7 +128,8 @@ main = do
             let path = T.unpack $ Config.smtOutFile s
             T.writeFile path $ genSmt' s a
 
-            findUnconstrainedParameters s a
+            --findUnconstrainedParameters s a
+            groupParameters s a
 
 
 {-
