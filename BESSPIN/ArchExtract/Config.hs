@@ -9,6 +9,7 @@ import qualified TOML
 
 data Config = Config
     { configInput :: Input
+    , configConstraints :: Constraints
     , configGraphvizOutput :: Maybe Graphviz
     , configModuleTreeOutput :: Maybe ModuleTree
     , configClaferOutput :: Maybe Clafer
@@ -18,6 +19,7 @@ data Config = Config
 
 defaultConfig = Config
     { configInput = defaultInput
+    , configConstraints = defaultConstraints
     , configGraphvizOutput = Nothing
     , configModuleTreeOutput = Nothing
     , configClaferOutput = Nothing
@@ -45,6 +47,49 @@ data Verilog = Verilog
 defaultVerilog = Verilog
     { verilogBlackboxModules = []
     , verilogSourceFile = "out.cbor"
+    }
+
+data Constraints = Constraints
+    -- Derive constraints from parameters of module instantiations.
+    { constraintsUseInstParams :: Bool
+    -- Derive constraints from default expressions for uninitialized parameters
+    -- in module instantiations.  Takes effect only if `use-inst-params` is
+    -- also enabled.
+    , constraintsUseInstParamDefaults :: Bool
+    -- Derive constraints from the fact that the types of all ports connected
+    -- to a net must match the type of the net.  For example, if a single net
+    -- is connected to a port of type `logic[a:0]` and another port of type
+    -- `logic[b:0]`, then add the constraint `a = b`.
+    , constraintsUseNetTypes :: Bool
+    -- Derive constraints from the fact that the internal and external types of
+    -- a module instantiation's port must match.  For example, if the `pinTy`
+    -- on the instantiation is `logic[a:0]` and the `portTy` on the module
+    -- definition is `logic[b:0]`, then `a = b`.
+    , constraintsUsePortTypes :: Bool
+    -- For each module in this list, force its parameters (in every
+    -- instantiation) to take on their default values.  Mainly useful for
+    -- setting the parameters of the top-level module to their defaults.
+    , constraintsForceModuleDefaults :: [Text]
+    -- When set, all vectors are assumed to be big-endian (`[hi:lo]`).  This
+    -- produces stricter constraints that rule out some undesirable solutions,
+    -- such as setting `WIDTH` parameter to `-6` (so that `[WIDTH-1:0]` becomes
+    -- `[-7:0]`) instead of `8` (`[7:0]`).
+    , constraintsRequireBigEndianVectors :: Bool
+    -- When set, all parameter values are required to be strictly positive.
+    -- This is an alternative to `require-big-endian-vectors` for ruling out
+    -- undesirable solutions.
+    , constraintsRequirePositiveParams :: Bool
+    }
+    deriving (Show)
+
+defaultConstraints = Constraints
+    { constraintsUseInstParams = True
+    , constraintsUseInstParamDefaults = True
+    , constraintsUseNetTypes = True
+    , constraintsUsePortTypes = True
+    , constraintsForceModuleDefaults = []
+    , constraintsRequireBigEndianVectors = False
+    , constraintsRequirePositiveParams = False
     }
 
 data Graphviz = Graphviz
@@ -163,6 +208,7 @@ config x =
     else
         tableFold defaultConfig x
             [ ("verilog", \c x -> c { configInput = VerilogInput $ verilog x })
+            , ("constraints", \c x -> c { configConstraints = constraints x })
             , ("graphviz", \c x -> c { configGraphvizOutput = Just $ graphviz x })
             , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
@@ -175,6 +221,17 @@ verilog :: TOML.Value -> Verilog
 verilog x = tableFold defaultVerilog x
     [ ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
     , ("source-file", \c x -> c { verilogSourceFile = str x })
+    ]
+
+constraints :: TOML.Value -> Constraints
+constraints x = tableFold defaultConstraints x
+    [ ("use-inst-params", \c x -> c { constraintsUseInstParams = bool x })
+    , ("use-inst-param-defaults", \c x -> c { constraintsUseInstParamDefaults = bool x })
+    , ("use-net-types", \c x -> c { constraintsUseNetTypes = bool x })
+    , ("use-port-types", \c x -> c { constraintsUsePortTypes = bool x })
+    , ("force-module-defaults", \c x -> c { constraintsForceModuleDefaults = listOf str x })
+    , ("require-big-endian-vectors", \c x -> c { constraintsRequireBigEndianVectors = bool x })
+    , ("require-positive-params", \c x -> c { constraintsRequirePositiveParams = bool x })
     ]
 
 graphviz :: TOML.Value -> Graphviz

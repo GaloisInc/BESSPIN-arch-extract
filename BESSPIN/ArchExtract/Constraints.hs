@@ -8,11 +8,14 @@ import Data.Generics
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Lens.Micro
+import Lens.Micro.Platform
 
 import Debug.Trace
 
@@ -34,28 +37,35 @@ shiftTy idx t = everywhere (mkT go) t
     go t = t
 
 
-instParamConstraints :: Design a -> Module b -> Seq Constraint
-instParamConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
-    case logicKind logic of
-        LkInst inst -> go idx inst
-        _ -> S.empty
+data ParamExpr = PeExplicit ConstExpr | PeDefault ConstExpr | PeUnset
+  deriving (Show)
+
+instParamConstraints :: Bool -> Design a -> Module b -> Seq Constraint
+instParamConstraints useDefaults d m =
+    flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
+        case logicKind logic of
+            LkInst inst -> go idx inst
+            _ -> S.empty
   where
     go idx inst =
         let formals = (moduleParams $ d `designMod` instModId inst) in
         flip S.foldMapWithIndex formals $ \paramIdx formal ->
             let actualExpr = join $ instParams inst S.!? paramIdx in
             let formalExpr = paramDefault formal in
+            let mkEq c = EBinCmp BEq (EInstParam [idx] paramIdx) c in
             case paramVal idx actualExpr formalExpr of
-                Nothing -> S.empty
-                Just c -> S.singleton $
-                    Constraint (EBinCmp BEq (EInstParam [idx] paramIdx) c)
-                        (CoInstParam idx paramIdx)
+                PeExplicit c -> S.singleton $
+                    Constraint (mkEq c) (CoInstParam idx paramIdx)
+                PeDefault c | useDefaults -> S.singleton $
+                    Constraint (mkEq c) (CoInstParamDefault idx paramIdx)
+                _ -> S.empty
 
-    paramVal instIdx (Just e) _ = Just e
-    paramVal instIdx Nothing (Just e) = Just $ shiftExpr instIdx e
-    paramVal instIdx Nothing Nothing = Nothing
+    paramVal instIdx (Just e) _ = PeExplicit e
+    paramVal instIdx Nothing (Just e) = PeDefault $ shiftExpr instIdx e
+    paramVal instIdx Nothing Nothing = PeUnset
 
-addInstParamConstraints d m = over _moduleConstraints (<> instParamConstraints d m) m
+addInstParamConstraints useDefaults d m =
+    over _moduleConstraints (<> instParamConstraints useDefaults d m) m
 
 
 defaultConstraints :: Module a -> Seq Constraint
@@ -64,6 +74,8 @@ defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
         Just e -> S.singleton $
             Constraint (EBinCmp BEq (EParam idx) e) (CoParamDefault idx)
         Nothing -> S.empty
+
+addDefaultConstraints m = over _moduleConstraints (<> defaultConstraints m) m
 
 addRootDefaultConstraints d idx =
     over (_designMod idx . _moduleConstraints)
@@ -130,6 +142,26 @@ addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m
 addTypeConstraints d m = addPortTypeConstraints d $ addNetTypeConstraints m
 
 
+addConstraintsForConfig cfg d = over _designMods go d
+  where
+    go ms = flip S.mapWithIndex ms $ \idx m ->
+        (if Config.constraintsUseInstParams cfg then
+            addInstParamConstraints (Config.constraintsUseInstParamDefaults cfg) d
+        else id) $
+        (if Config.constraintsUseNetTypes cfg then addNetTypeConstraints else id) $
+        (if Config.constraintsUsePortTypes cfg then addPortTypeConstraints d else id) $
+        (if Set.member idx forceDefaultIds then addDefaultConstraints else id) $
+        m
+
+    modIdMap :: Map Text Int
+    modIdMap = M.fromList $ toList $
+        S.mapWithIndex (\idx m -> (moduleName m, idx)) $ designMods d
+
+    forceDefaultIds :: Set Int
+    forceDefaultIds = Set.fromList $
+        map (modIdMap M.!) $ Config.constraintsForceModuleDefaults cfg
+
+
 type VarPath = ([Int], Int)
 
 -- Flatten a design down to a list of variables and a list of constraints.  In
@@ -184,15 +216,29 @@ showConn d m side c = case c of
         case logicKind l of
             LkInst inst ->
                 let instMod = d `designMod` instModId inst in
-                "inst-pin-" <> instName inst <> "$" <>
+                "logic-inst-" <> instName inst <> "$" <>
                     portName (moduleSidePort instMod (flipSide side) j)
-            _ -> "logic-pin-" <> T.pack (show i) <> "$" <> T.pack (show side) <> T.pack (show j)
+            LkRegister name ->
+                "logic-reg-" <> name <> "$" <> T.pack (show side) <> T.pack (show j)
+            LkDFlipFlop name resets ->
+                let prefix = "logic-dff-" <> name <> "$" in
+                case (side, j) of
+                    (Source, 0) -> prefix <> "q"
+                    (Sink, 0) -> prefix <> "d"
+                    (Sink, 1) -> prefix <> "clk"
+                    (Sink, n) -> prefix <> "res" <> T.pack (show $ n - 2)
+            _ -> "logic-" <> T.pack (show i) <> "$" <> T.pack (show side) <> T.pack (show j)
 
 showOrigin d m o = case o of
     CoInstParam i j ->
         let LkInst inst = logicKind $ m `moduleLogic` i in
         let instMod = d `designMod` instModId inst in
         "param-" <> moduleName m <> "$" <> instName inst <> "$" <>
+            paramName (instMod `moduleParam` j)
+    CoInstParamDefault i j ->
+        let LkInst inst = logicKind $ m `moduleLogic` i in
+        let instMod = d `designMod` instModId inst in
+        "param-default-" <> moduleName m <> "$" <> instName inst <> "$" <>
             paramName (instMod `moduleParam` j)
     CoParamDefault i ->
         "param-default-" <> moduleName m <> "$" <> paramName (m `moduleParam` i)

@@ -7,6 +7,7 @@ import Data.Ix
 import Data.Sequence (Seq)
 import qualified Data.Sequence as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Typeable
 import Lens.Micro.Platform
 
@@ -116,9 +117,11 @@ data Constraint = Constraint
     deriving (Show, Typeable, Data)
 
 data ConstraintOrigin =
-    -- From the initializer expression for parameter `j` on LkInst logic `i`.
+    -- From the provided expression for parameter `j` on LkInst logic `i`.
     CoInstParam Int Int |
-    -- From the default initializer for parameter `i` of this module.
+    -- From the default expression for parameter `j` of instance `i`.
+    CoInstParamDefault Int Int |
+    -- From the default expression for parameter `i` of the enclosing module.
     CoParamDefault Int |
     -- From connection `side, j` of net `i`.
     CoNetConn NetId Side Int |
@@ -190,43 +193,65 @@ flipSide Sink = Source
 -- we define a singular `fooBar :: Foo -> Int -> Bar` that combines the field
 -- access and sequence indexing.
 
+designLookup what i mx = case mx of
+    Nothing -> error $ "design has no " ++ what ++ " with index " ++ show i
+    Just x -> x
+
 designMod :: Design ann -> ModId -> Module ann
-designMod d i = designMods d `S.index` i
+designMod d i = designLookup "mod" i $ designMods d S.!? i
+
+moduleLookup m what i mx = case mx of
+    Nothing -> error $ "module " ++ show (moduleName m) ++
+        " has no " ++ what ++ " with index " ++ show i
+    Just x -> x
 
 moduleParam :: Module ann -> Int -> Param
-moduleParam m i = moduleParams m `S.index` i
+moduleParam m i = moduleLookup m "param" i $ moduleParams m S.!? i
 
 moduleInput :: Module ann -> Int -> Port
-moduleInput m i = moduleInputs m `S.index` i
+moduleInput m i = moduleLookup m "input" i $ moduleInputs m S.!? i
 
 moduleOutput :: Module ann -> Int -> Port
-moduleOutput m i = moduleOutputs m `S.index` i
+moduleOutput m i = moduleLookup m "output" i $ moduleOutputs m S.!? i
 
 moduleSidePort :: Module ann -> Side -> Int -> Port
 moduleSidePort m Source i = moduleInput m i
 moduleSidePort m Sink i = moduleOutput m i
 
 moduleLogic :: Module ann -> Int -> Logic ann
-moduleLogic m i = moduleLogics m `S.index` i
+moduleLogic m i = moduleLookup m "logic" i $ moduleLogics m S.!? i
 
 moduleNet :: Module ann -> NetId -> Net ann
-moduleNet m (NetId i) = moduleNets m `S.index` i
+moduleNet m (NetId i) = moduleLookup m "net" i $ moduleNets m S.!? i
+
+logicLookup l what i mx = case mx of
+    Nothing ->
+        let name = case logicKind l of
+                LkInst inst -> "logic " ++ show (instName inst)
+                _ -> "logic"
+        in error $ name ++ " has no " ++ what ++ " with index " ++ show i
+    Just x -> x
 
 logicInput :: Logic ann -> Int -> Pin
-logicInput l i = logicInputs l `S.index` i
+logicInput l i = logicLookup l "input" i $ logicInputs l S.!? i
 
 logicOutput :: Logic ann -> Int -> Pin
-logicOutput l i = logicOutputs l `S.index` i
+logicOutput l i = logicLookup l "output" i $ logicOutputs l S.!? i
 
 logicSidePin :: Logic ann -> Side -> Int -> Pin
 logicSidePin l Source i = logicOutput l i
 logicSidePin l Sink i = logicInput l i
 
+netLookup m what i mx = case mx of
+    Nothing -> error $ "net " ++ show (head $ T.lines $ netName m) ++
+        " has no " ++ what ++ " with index " ++ show i
+    Just x -> x
+
 netSource :: Net ann -> Int -> Conn
-netSource n i = netSources n `S.index` i
+netSource n i = netLookup n "source" i $ netSources n S.!? i
 
 netSink :: Net ann -> Int -> Conn
-netSink n i = netSinks n `S.index` i
+netSink n i = netLookup n "sink" i $ netSinks n S.!? i
 
 netSideConn :: Net ann -> Side -> Int -> Conn
 netSideConn n Source i = netSource n i

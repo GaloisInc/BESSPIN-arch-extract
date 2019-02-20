@@ -80,7 +80,7 @@ main = do
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a
 
-    let a' = Design $ fmap ({-addInstParamConstraints a .-} addTypeConstraints a) $ designMods a
+    let a' = addConstraintsForConfig (Config.configConstraints config) a
     let a = a'
 
     case Config.configGraphvizOutput config of
@@ -132,7 +132,7 @@ main = do
             T.writeFile path $ genSmt' s a
 
             --findUnconstrainedParameters s a
-            groupParameters s a
+            --groupParameters s a
 
 
 {-

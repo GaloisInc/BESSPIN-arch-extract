@@ -97,8 +97,7 @@ flattenConstraintsForDesign cfg d = (varNames, cons)
     optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)
     rootId = fromMaybe (error $ "root module not found: " ++ show rootName) optRootId
 
-    d' = addRootDefaultConstraints d rootId
-    (varNames, cons) = flattenConstraints d' rootId
+    (varNames, cons) = flattenConstraints d rootId
 
 
 genSmt :: Config.SMT -> Seq Text -> Seq Constraint -> [SExpr]
