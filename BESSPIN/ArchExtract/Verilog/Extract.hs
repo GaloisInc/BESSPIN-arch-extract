@@ -64,7 +64,7 @@ data ExtractState = ExtractState
     , esDeclNets :: Map NetOrigin (NetId, A.Ty)
     -- Maps the index of the `V.ParamDecl` in `V.moduleDecls` to the index of
     -- the `A.Param` in `A.moduleParams`.
-    , esDeclParams :: Map Int Int 
+    , esDeclParams :: Map Int Int
     , esParamOrigin :: Seq Int
     , esInputOrigin :: Seq Int
     , esOutputOrigin :: Seq Int
@@ -327,8 +327,10 @@ convItems vMod =
             let assigns = foldMap stmtAssigns body
             let regMap = M.unionsWith (<>) $
                     concatMap (\(l,r,imp) ->
-                        map (\lv -> M.singleton lv (Set.fromList $ exprVars r <> imp))
-                            (exprVars l)
+                        let (llVars, lrVars) = lvalVars l in
+                        let rVars = exprVars r in
+                        map (\lv -> M.singleton lv (Set.fromList $ lrVars <> rVars <> imp))
+                            llVars
                     ) assigns
             mapM_ (\(lv, rvs) -> do
                     name <- findNetName $ NoDecl lv
@@ -375,12 +377,36 @@ lvalPin e = do
     addLogic $ Logic LkOther (S.singleton $ Pin inNet ty) outPins ()
     return $ Pin inNet ty
 
--- Get the origin info for every net used in `e`.
+-- Get the declId of every variable used in `e`.
 exprVars :: Expr -> [Int]
 exprVars e = everything (<>) ([] `mkQ` go) e
   where
     go (Var declId) = [declId]
     go _ = []
+
+gExprVars :: Data a => a -> [Int]
+gExprVars x = everything (<>) ([] `mkQ` exprVars) x
+
+-- Like `exprVars`, but separates variables that would be modified if `e` were
+-- used as an lvalue from variables that would only be read (for example,
+-- memory addresses).
+lvalVars :: Expr -> ([Int], [Int])
+lvalVars e = go e
+  where
+    go (V.Var declId) = ([declId], [])
+    go (V.Param _) = ([], [])
+    go (V.Index base idx) = go base <> ([], gExprVars idx)
+    go (V.MemIndex base idxs) = go base <> ([], gExprVars idxs)
+    go (V.Const _) = ([], [])
+    go (V.ConstInt _ _) = ([], [])
+    go (V.ConstBool _ _) = ([], [])
+    go (V.Concat es) = mconcat $ map go es
+    go (V.MultiConcat _ es) = mconcat $ map go es
+    go (V.Field base _) = go base
+    go (V.AssignPat _ es) = mconcat $ map go es
+    go V.UnknownExpr = ([], [])
+    go e = error $ "unexpected " ++ show e ++ " in lvalue"
+
 
 exprVarDecls e = map NoDecl $ exprVars e
 
