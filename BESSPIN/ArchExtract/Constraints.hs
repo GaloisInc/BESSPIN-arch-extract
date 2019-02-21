@@ -27,8 +27,8 @@ import qualified BESSPIN.ArchExtract.Config as Config
 -- `x.y` into `i.x.y`, where `i` is the instance at index `idx`.
 shiftExpr idx e = everywhere (mkT go) e
   where
-    go (EParam p) = EInstParam [idx] p
-    go (EInstParam is p) = EInstParam (idx : is) p
+    go (EParam sp p) = EInstParam sp [idx] p
+    go (EInstParam sp is p) = EInstParam sp (idx : is) p
     go e = e
 
 shiftTy idx t = everywhere (mkT go) t
@@ -52,7 +52,7 @@ instParamConstraints useDefaults d m =
         flip S.foldMapWithIndex formals $ \paramIdx formal ->
             let actualExpr = join $ instParams inst S.!? paramIdx in
             let formalExpr = paramDefault formal in
-            let mkEq c = EBinCmp BEq (EInstParam [idx] paramIdx) c in
+            let mkEq c = EBinCmp dummySpan BEq (EInstParam dummySpan [idx] paramIdx) c in
             case paramVal idx actualExpr formalExpr of
                 PeExplicit c -> S.singleton $
                     Constraint (mkEq c) (CoInstParam idx paramIdx)
@@ -72,7 +72,8 @@ defaultConstraints :: Module a -> Seq Constraint
 defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
     case paramDefault param of
         Just e -> S.singleton $
-            Constraint (EBinCmp BEq (EParam idx) e) (CoParamDefault idx)
+            Constraint (EBinCmp dummySpan BEq (EParam dummySpan idx) e)
+                (CoParamDefault idx)
         Nothing -> S.empty
 
 addDefaultConstraints m = over _moduleConstraints (<> defaultConstraints m) m
@@ -90,7 +91,8 @@ tyEqConstraints warn t1 t2 = go t1 t2
   where
     go (TWire ws1 ds1) (TWire ws2 ds2)
       | length ds1 == length ds2 =
-        EBinCmp BEq (prod ws1) (prod ws2) : zipWith (EBinCmp BEq) ds1 ds2
+        EBinCmp dummySpan BEq (prod ws1) (prod ws2) :
+        zipWith (EBinCmp dummySpan BEq) ds1 ds2
     go (TWire _ []) TUnsizedInt = []
     go TUnsizedInt (TWire _ []) = []
     go (TEnum t1) t2 = go t1 t2
@@ -99,8 +101,8 @@ tyEqConstraints warn t1 t2 = go t1 t2
     go t1 (TAlias _ t2) = go t1 t2
     go t1 t2 = traceShow (warn t1 t2) []
 
-    prod [] = EIntLit 1
-    prod xs = foldl1 (EBinArith BMul) xs
+    prod [] = EIntLit dummySpan 1
+    prod xs = foldl1 (EBinArith dummySpan BMul) xs
 
 
 netTypeConstraints :: Module a -> Seq Constraint
@@ -194,8 +196,8 @@ flattenConstraints d rootId = (varNames, cons)
     convExpr :: [Int] -> ConstExpr -> ConstExpr
     convExpr instPath e = everywhere (mkT go) e
       where
-        go (EParam p) = EParam $ findVar (instPath, p)
-        go (EInstParam is p) = EParam $ findVar (reverse is ++ instPath, p)
+        go (EParam sp p) = EParam sp $ findVar (instPath, p)
+        go (EInstParam sp is p) = EParam sp $ findVar (reverse is ++ instPath, p)
         go e = e
 
     cons = mkCons [] rootId

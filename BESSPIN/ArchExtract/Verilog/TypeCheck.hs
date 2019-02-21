@@ -39,7 +39,7 @@ exprType varType convExpr e = go e
     -- cases.  It's likely backwards in at least a few places.
     -- go :: Expr -> m Ty
     go (Var i) = resolve <$> varType i
-    go (Param i) = return $ TWire [EIntLit 32] []    -- TODO
+    go (Param i) = return $ TWire [EIntLit dummySpan 32] []    -- TODO
     go (Index vec (ISingle _)) = (resolve <$> go vec) >>= \ty -> case ty of
         TWire (w : ws) [] -> return $ TWire ws []
         t -> return $ warn "index (single)" t
@@ -47,13 +47,13 @@ exprType varType convExpr e = go e
         TWire (w : ws) [] -> do
             l <- convExpr l
             r <- convExpr r
-            return $ TWire [ERangeSize l r] []
+            return $ TWire [ERangeSize dummySpan l r] []
         t -> return $ warn "index (range)" t
     -- `MemIndex` indexes should always be `ISingle`.
     go (MemIndex mem []) = (resolve <$> go mem) >>= \ty -> case ty of
         TWire ws (d : ds) -> return $ TWire ws ds
         t -> return $ warn "memindex (single)" t
-    go (Const t) | Just width <- bitConstSize t = return $ TWire [EIntLit width] []
+    go (Const t) | Just width <- bitConstSize t = return $ TWire [EIntLit dummySpan width] []
     go (Const _) = return TUnknown
     -- This is just a bad guess at a possible type.  TODO: actually track types
     -- for constants.
@@ -66,7 +66,7 @@ exprType varType convExpr e = go e
         Nothing -> return TUnknown
         Just w -> do
             r <- convExpr rep
-            return $ TWire [EBinArith A.BMul r w] []
+            return $ TWire [EBinArith dummySpan A.BMul r w] []
     go (IfExpr _ t e) = commonTy "ifexpr branch mismatch" <$> go t <*> go e
     go (Unary op e) = case op of
         UNeg -> go e
@@ -107,14 +107,14 @@ exprType varType convExpr e = go e
     commonTy msg t1 t2 = if t1 /= t2 then warn msg (t1, t2) else t1
 
     tyWidth :: Ty -> Maybe ConstExpr
-    tyWidth (TWire [] []) = Just $ EIntLit 1
-    tyWidth (TWire ws []) = Just $ foldl1 (EBinArith A.BMul) ws
+    tyWidth (TWire [] []) = Just $ EIntLit dummySpan 1
+    tyWidth (TWire ws []) = Just $ foldl1 (EBinArith dummySpan A.BMul) ws
     tyWidth _ = Nothing
 
     -- sumWidths :: [Expr] -> m (Maybe ConstExpr)
     sumWidths es = do
         tys <- mapM go es
-        return $ foldl1 (EBinArith A.BAdd) <$> mapM (tyWidth . resolve) tys
+        return $ foldl1 (EBinArith dummySpan A.BAdd) <$> mapM (tyWidth . resolve) tys
 
     warn msg t = trace ("type error: " ++ msg ++ " on type " ++ show t) TUnknown
 

@@ -86,7 +86,8 @@ data Ty =
     } |
     TEnum'
     { tEnumTy :: Ty
-    -- TODO: variants (as paramdecl refs)
+    -- Indexes of variants' `ParamDecl`s in `moduleDecls`.
+    , tEnumVariants :: [Int]
     , tySpan :: Span
     } |
     TRef'
@@ -254,7 +255,7 @@ pattern TypedefDecl a b <- TypedefDecl' a b _
 pattern InstDecl a b c <- InstDecl' a b c _
 
 pattern TTy a b c <- TTy' a b c _
-pattern TEnum a <- TEnum' a _
+pattern TEnum a b <- TEnum' a b _
 pattern TRef a <- TRef' a _
 
 pattern InitVar a b <- InitVar' a b _
@@ -317,8 +318,6 @@ instance HasSpan Event where
     spanOf = eventSpan
 
 
-
-
 data Range = Range Expr Expr
     deriving (Show, Eq, Data, Typeable)
 
@@ -328,4 +327,3 @@ data Index = ISingle Expr | IRange Expr Expr
 
 data BuiltinKind = BkClog2 | BkSize
     deriving (Show, Eq, Data, Typeable)
-

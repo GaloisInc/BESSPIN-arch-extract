@@ -41,20 +41,20 @@ intLit i = Atom $ T.pack $ show i
 convConstExpr :: Seq Text -> ConstExpr -> SExpr
 convConstExpr varNames e = go e
   where
-    go (EIntLit i) = intLit i
-    go (EParam idx) = Atom $ varNames `S.index` idx
-    go (EInstParam insts idx) = error $ "unexpected EInstParam in flattened constraint"
-    go (EUnArith UClog2 e) = call "clog2" [go e]
-    go (EBinArith BAdd l r) = call "+" [go l, go r]
-    go (EBinArith BSub l r) = call "-" [go l, go r]
-    go (EBinArith BMul l r) = call "*" [go l, go r]
-    go (EBinCmp BEq l r) = call "=" [go l, go r]
-    go (EBinCmp BNe l r) = call "not" [call "=" [go l, go r]]
-    go (EBinCmp BLt l r) = call "<" [go l, go r]
-    go (EBinCmp BLe l r) = call "<=" [go l, go r]
-    go (EBinCmp BGt l r) = call ">" [go l, go r]
-    go (EBinCmp BGe l r) = call ">=" [go l, go r]
-    go (ERangeSize l r) = call "range-size" [go l, go r]
+    go (EIntLit _ i) = intLit i
+    go (EParam _ idx) = Atom $ varNames `S.index` idx
+    go (EInstParam _ insts idx) = error $ "unexpected EInstParam in flattened constraint"
+    go (EUnArith _ UClog2 e) = call "clog2" [go e]
+    go (EBinArith _ BAdd l r) = call "+" [go l, go r]
+    go (EBinArith _ BSub l r) = call "-" [go l, go r]
+    go (EBinArith _ BMul l r) = call "*" [go l, go r]
+    go (EBinCmp _ BEq l r) = call "=" [go l, go r]
+    go (EBinCmp _ BNe l r) = call "not" [call "=" [go l, go r]]
+    go (EBinCmp _ BLt l r) = call "<" [go l, go r]
+    go (EBinCmp _ BLe l r) = call "<=" [go l, go r]
+    go (EBinCmp _ BGt l r) = call ">" [go l, go r]
+    go (EBinCmp _ BGe l r) = call ">=" [go l, go r]
+    go (ERangeSize _ l r) = call "range-size" [go l, go r]
 
 convConstraint :: Bool -> Seq Text -> Int -> Constraint -> SExpr
 convConstraint False varNames _ (Constraint e _) =
@@ -188,7 +188,7 @@ relatedVarTests cons = Set.unions $ map relSetPairs $ toList relSets
     relSetPairs rs = Set.filter (\(a, b) -> a < b) $ Set.cartesianProduct rs rs
 
     varSet c = everything (<>) (Set.empty `mkQ` grabVar) (constraintExpr c)
-    grabVar (EParam i) = Set.singleton i
+    grabVar (EParam _ i) = Set.singleton i
     grabVar _ = Set.empty
 
 -- Check if two variables are related.  `a` and `b` are related if changing `a`

@@ -345,16 +345,16 @@ printVar d m (instIdx : insts) param =
 printConstExpr :: ([Int] -> Int -> Text) -> ConstExpr -> Text
 printConstExpr printVar e = go e
   where
-    go (EIntLit i) = T.pack $ show i
-    go (EParam i) = printVar [] i
-    go (EInstParam insts i) = printVar insts i
-    go (EUnArith op e) =
+    go (EIntLit _ i) = T.pack $ show i
+    go (EParam _ i) = printVar [] i
+    go (EInstParam _ insts i) = printVar insts i
+    go (EUnArith _ op e) =
         "(" <> T.unwords [T.pack (show op), go e] <> ")"
-    go (EBinArith op l r) =
+    go (EBinArith _ op l r) =
         "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
-    go (EBinCmp op l r) =
+    go (EBinCmp _ op l r) =
         "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
-    go (ERangeSize l r) =
+    go (ERangeSize _ l r) =
         "(" <> T.unwords ["rangeSize", go l, go r] <> ")"
 
 printTy :: ([Int] -> Int -> Text) -> Ty -> Text

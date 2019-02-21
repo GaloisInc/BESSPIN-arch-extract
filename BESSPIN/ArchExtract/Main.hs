@@ -75,7 +75,7 @@ main = do
             let blackboxNames = Set.fromList $ Config.verilogBlackboxModules v
 
             let v = fromRaw raw blackboxNames modIds
-            putStrLn $ T.unpack $ printVerilog $ v
+            writeFile "verilog.txt" $ T.unpack $ printVerilog v
             return $ extractArch v
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a

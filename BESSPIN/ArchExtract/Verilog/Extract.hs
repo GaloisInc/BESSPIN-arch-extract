@@ -226,7 +226,7 @@ convParams vMod = do
     -- blank.
     void $ flip S.traverseWithIndex (V.moduleParams vMod) $ \idx declId ->
         let ParamDecl name _ _ = V.moduleDecls vMod `S.index` declId in
-        void $ addDeclParam declId idx $ A.Param name Nothing
+        void $ addDeclParam declId idx $ A.Param name Nothing (getKind declId)
 
     -- Now we can translate the initializer expressions, including ones that
     -- refer to othe parameters.
@@ -238,6 +238,29 @@ convParams vMod = do
                 e <- convConstExpr init
                 setParamDefault i e
             _ -> return ()
+        -- Note we don't look for `InitVar`s of parameters - those init
+        -- expressions already get included in the ParamDecl.
+
+  where
+    -- declIds of params that are enum variants
+    enumParams = everything (<>) (Set.empty `mkQ` \ty -> case ty of
+        V.TEnum _ variants -> Set.fromList variants
+        _ -> Set.empty) vMod
+
+    -- declIds of params that are defined using `parameter foo = ...`
+    -- statements, instead of in the module header's `#(...)` parameter list.
+    --
+    -- This actually includes every variable with an `initVar` (so it picks up
+    -- nets as well), but the important part is it doesn't include `#(...)`
+    -- parameters.
+    localParams = everything (<>) (Set.empty `mkQ` \item -> case item of
+        V.InitVar' declId _ _ -> Set.singleton declId
+        _ -> Set.empty) vMod
+
+    getKind declId
+        | Set.member declId enumParams = PkEnum
+        | Set.member declId localParams = PkLocal
+        | otherwise = PkNormal
 
 -- Convert all ports, returning a sequence of (inIdx, outIdx) pairs, giving the
 -- indices of the converted ports in `moduleInputs` and `moduleOutputs`.
@@ -484,7 +507,7 @@ convTy _ (V.TTy base vPacked vUnpacked) = do
         V.TString -> sim
         V.TReal -> sim
         V.TTime -> sim
-convTy vMod (V.TEnum ty) = A.TEnum <$> convTy vMod ty
+convTy vMod (V.TEnum ty _) = A.TEnum <$> convTy vMod ty
 convTy vMod (V.TRef declId) =
     let V.TypedefDecl name ty = V.moduleDecls vMod `S.index` declId in
     A.TAlias name <$> convTy vMod ty
@@ -504,28 +527,28 @@ declVarTy idx = gets (M.lookup (NoDecl idx) . esDeclNets) >>= \x -> case x of
 convConstExpr :: V.Expr -> ExtractM A.ConstExpr
 convConstExpr e = go e
   where
-    go (V.Param declId) = A.EParam <$> findParam declId
-    go (V.Const t) | Just i <- parseBitConst t = return $ A.EIntLit i
-    go (V.ConstInt _ i) = return $ A.EIntLit i
-    go (V.Binary V.BAdd l r) = A.EBinArith A.BAdd <$> go l <*> go r
-    go (V.Binary V.BSub l r) = A.EBinArith A.BSub <$> go l <*> go r
-    go (V.Binary V.BMul l r) = A.EBinArith A.BMul <$> go l <*> go r
-    go (V.Binary V.BEq l r) = A.EBinCmp A.BEq <$> go l <*> go r
-    go (V.Binary V.BNe l r) = A.EBinCmp A.BNe <$> go l <*> go r
-    go (V.Binary V.BLt l r) = A.EBinCmp A.BLt <$> go l <*> go r
-    go (V.Binary V.BLe l r) = A.EBinCmp A.BLe <$> go l <*> go r
-    go (V.Binary V.BGt l r) = A.EBinCmp A.BGt <$> go l <*> go r
-    go (V.Binary V.BGe l r) = A.EBinCmp A.BGe <$> go l <*> go r
-    go (V.Builtin BkClog2 [e]) = A.EUnArith A.UClog2 <$> go e
-    go (V.Builtin BkSize [e]) = typeofExpr e >>= \ty -> case ty of
-        A.TWire [] [] -> return $ A.EIntLit 1
-        A.TWire ws [] -> return $ foldl1 (A.EBinArith A.BMul) ws
+    go (V.Param' declId sp) = A.EParam sp <$> findParam declId
+    go (V.Const' t sp) | Just i <- parseBitConst t = return $ A.EIntLit sp i
+    go (V.ConstInt' _ i sp) = return $ A.EIntLit sp i
+    go (V.Binary' V.BAdd l r sp) = A.EBinArith sp A.BAdd <$> go l <*> go r
+    go (V.Binary' V.BSub l r sp) = A.EBinArith sp A.BSub <$> go l <*> go r
+    go (V.Binary' V.BMul l r sp) = A.EBinArith sp A.BMul <$> go l <*> go r
+    go (V.Binary' V.BEq l r sp) = A.EBinCmp sp A.BEq <$> go l <*> go r
+    go (V.Binary' V.BNe l r sp) = A.EBinCmp sp A.BNe <$> go l <*> go r
+    go (V.Binary' V.BLt l r sp) = A.EBinCmp sp A.BLt <$> go l <*> go r
+    go (V.Binary' V.BLe l r sp) = A.EBinCmp sp A.BLe <$> go l <*> go r
+    go (V.Binary' V.BGt l r sp) = A.EBinCmp sp A.BGt <$> go l <*> go r
+    go (V.Binary' V.BGe l r sp) = A.EBinCmp sp A.BGe <$> go l <*> go r
+    go (V.Builtin' BkClog2 [e] sp) = A.EUnArith sp A.UClog2 <$> go e
+    go (V.Builtin' BkSize [e] sp) = typeofExpr e >>= \ty -> case ty of
+        A.TWire [] [] -> return $ A.EIntLit sp 1
+        A.TWire ws [] -> return $ foldl1 (A.EBinArith sp A.BMul) ws
         t -> error $ "took $size of unsupported type " ++ show t
     go e = error $ "unsupported constexpr: " ++ show e
 
 convConstRangeSize :: V.Range -> ExtractM A.ConstExpr
 convConstRangeSize (V.Range l r) =
-    A.ERangeSize <$> convConstExpr l <*> convConstExpr r
+    A.ERangeSize dummySpan <$> convConstExpr l <*> convConstExpr r
 
 parseBitConst :: Text -> Maybe Int
 parseBitConst t =

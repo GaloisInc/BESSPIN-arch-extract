@@ -1,5 +1,10 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell, Rank2Types #-}
-module BESSPIN.ArchExtract.Architecture where
+module BESSPIN.ArchExtract.Architecture
+    ( module BESSPIN.ArchExtract.Architecture
+    , Span(..)
+    , HasSpan(..)
+    , dummySpan
+    ) where
 
 import Control.Monad.State
 import Data.Data
@@ -12,6 +17,8 @@ import Data.Typeable
 import Lens.Micro.Platform
 
 import BESSPIN.ArchExtract.Lens
+-- TODO: move span stuff out of verilog.ast
+import BESSPIN.ArchExtract.Verilog.AST (Span(..), HasSpan(..), dummySpan)
 
 
 -- The ID of a module is its position in `designMods`.
@@ -44,9 +51,19 @@ data Module ann = Module
 data Param = Param
     { paramName :: Text
     , paramDefault :: Maybe ConstExpr
+    , paramKind :: ParamKind
     }
     deriving (Show, Typeable, Data)
 
+data ParamKind =
+    -- Ordinary global parameter, which can be set by module instantiations.
+    PkNormal |
+    -- Local parameter, which always takes on its default value.
+    PkLocal |
+    -- Enum variant.  Behaves like `PkLocal`, but it may not have an
+    -- initializer.
+    PkEnum
+    deriving (Show, Eq, Data, Typeable)
 
 data Port = Port
     { portName :: Text
@@ -152,21 +169,21 @@ data Ty =
 
 
 data ConstExpr =
-      EIntLit Int
+      EIntLit Span Int
     -- A parameter of the enclosing module
-    | EParam Int
+    | EParam Span Int
     -- A parameter of a (nested) module instantiation.  `EInstParam [i, j] k`
     -- corresponds to `inst_i.inst_j.param_k`, relative to the enclosing
     -- module.
-    | EInstParam [Int] Int
+    | EInstParam Span [Int] Int
     -- `a -> a`
-    | EUnArith UnArithOp ConstExpr
+    | EUnArith Span UnArithOp ConstExpr
     -- `a -> a -> a`
-    | EBinArith BinArithOp ConstExpr ConstExpr
+    | EBinArith Span BinArithOp ConstExpr ConstExpr
     -- `a -> a -> Bool`
-    | EBinCmp BinCmpOp ConstExpr ConstExpr
+    | EBinCmp Span BinCmpOp ConstExpr ConstExpr
     -- Size of the range `e1:e2`.  Equal to `abs(e1 - e2) + 1`.
-    | ERangeSize ConstExpr ConstExpr
+    | ERangeSize Span ConstExpr ConstExpr
     deriving (Show, Eq, Typeable, Data)
 
 data UnArithOp = UClog2
@@ -187,6 +204,16 @@ data Side = Source | Sink
 
 flipSide Source = Sink
 flipSide Sink = Source
+
+
+instance HasSpan ConstExpr where
+    spanOf (EIntLit sp _) = sp
+    spanOf (EParam sp _) = sp
+    spanOf (EInstParam sp _ _) = sp
+    spanOf (EUnArith sp _ _) = sp
+    spanOf (EBinArith sp _ _ _) = sp
+    spanOf (EBinCmp sp _ _ _) = sp
+    spanOf (ERangeSize sp _ _) = sp
 
 
 -- Item-lookup functions.  For each `fooBars :: Foo -> Seq Bar` field above,

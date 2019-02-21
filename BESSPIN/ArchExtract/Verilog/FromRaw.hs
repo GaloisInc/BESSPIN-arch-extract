@@ -160,7 +160,8 @@ mkTy varDims (Just i) = do
         R.DataType ty _signed dims -> do
             packedDims <- mkDims dims
             return $ TTy' ty packedDims unpackedDims sp
-        R.Enum ty _variants -> TEnum' <$> mkTy Nothing ty <*> pure sp
+        R.Enum ty variants ->
+            TEnum' <$> mkTy Nothing ty <*> mapM declRef (M.elems variants) <*> pure sp
         R.TypeRef def -> TRef' <$> declRef def <*> pure sp
         _ -> error $ "expected datatype at " ++ show i
 
