@@ -297,7 +297,7 @@ convDecls vMod =
 convItems :: V.Module -> ExtractM ()
 convItems vMod =
     forM_ (V.moduleItems vMod) $ \item -> case item of
-        V.InitVar declId e -> doAssign (Var declId) e
+        V.InitVar declId e -> doAssign (Var' declId (spanOf item)) e
         V.InitInst declId portConns -> do
             let V.InstDecl _ modId _ = V.moduleDecls vMod `S.index` declId
             instSig <- findModSig modId
@@ -357,7 +357,7 @@ rvalPin (Var v) = lookupNet (NoDecl v) >>= \nt -> case nt of
     Just (net, ty) -> return $ Pin net ty
     -- If there's no net for this var, it must be a `ParamDecl`.  Treat it as
     -- an unknown expression, which will generate a 0-input `Logic`.
-    Nothing -> rvalPin UnknownExpr
+    Nothing -> rvalPin $ UnknownExpr' dummySpan
 rvalPin e = do
     ty <- typeofExpr e
     inPins <- netPins $ exprVarDecls e
@@ -368,7 +368,7 @@ rvalPin e = do
 lvalPin :: Expr -> ExtractM Pin
 lvalPin (Var v) = lookupNet (NoDecl v) >>= \nt -> case nt of
     Just (net, ty) -> return $ Pin net ty
-    Nothing -> lvalPin UnknownExpr
+    Nothing -> lvalPin $ UnknownExpr' dummySpan
 lvalPin e = do
     ty <- typeofExpr e
     inNet <- freshNet ty

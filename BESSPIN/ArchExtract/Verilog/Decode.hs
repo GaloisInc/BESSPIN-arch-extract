@@ -26,7 +26,7 @@ import BESSPIN.ArchExtract.Verilog.Token
 
 data S = S
     { sStack :: [[CBOR.Term]]
-    , sNodes :: Map NodeId Node
+    , sNodes :: Map NodeId (Node, Span)
     }
 
 newtype DecodeM a = DecodeM { runDecodeM :: S -> Either String (a, S) }
@@ -73,8 +73,7 @@ skipRest = DecodeM $ \s -> case sStack s of
 
 record :: NodeId -> Span -> Node -> DecodeM ()
 record nodeId sp n = DecodeM $ \s ->
-    -- TODO: do something with `sp`
-    let s' = s { sNodes = M.insert nodeId n $ sNodes s } in
+    let s' = s { sNodes = M.insert nodeId (n, sp) $ sNodes s } in
     Right ((), s')
 
 -- Parse the next term as a list, and "enter" it by pushing its list of subterms
@@ -639,7 +638,7 @@ topLevel = list $ do
 
 -- Bytestring deserialization
 
-deserialize :: BS.ByteString -> Either String (Map NodeId Node, [NodeId])
+deserialize :: BS.ByteString -> Either String (Map NodeId (Node, Span), [NodeId])
 deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ show cborErr
     Right (_, term) ->

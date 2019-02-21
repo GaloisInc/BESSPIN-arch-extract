@@ -18,7 +18,7 @@ import Text.Read
 
 import Debug.Trace
 
-import BESSPIN.ArchExtract.Verilog.AST hiding (Ty(..), BaseType(..))
+import BESSPIN.ArchExtract.Verilog.AST hiding (Ty(..), TTy, TEnum, TRef, BaseType(..))
 import qualified BESSPIN.ArchExtract.Verilog.AST as V
 import BESSPIN.ArchExtract.Architecture (Ty(..), ConstExpr(..))
 import qualified BESSPIN.ArchExtract.Architecture as A

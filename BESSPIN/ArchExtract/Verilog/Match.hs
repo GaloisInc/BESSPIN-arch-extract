@@ -92,11 +92,12 @@ flattenAssigns precise ss = fsAssigns <$>
 
     joinBranches :: Expr -> FlattenState -> FlattenState -> StateT FlattenState Maybe ()
     joinBranches cond s1 s2 = do
-        let shared = M.intersectionWith (\t e -> if t == e then t else IfExpr cond t e)
+        let shared = M.intersectionWith
+                (\t e -> if t == e then t else IfExpr' cond t e dummySpan)
                 (fsAssigns s1) (fsAssigns s2)
-        let only1 = M.mapWithKey (\i t -> IfExpr cond t (Var i)) $
+        let only1 = M.mapWithKey (\i t -> IfExpr' cond t (Var' i dummySpan) dummySpan) $
                 fsAssigns s1 M.\\ fsAssigns s2
-        let only2 = M.mapWithKey (\i e -> IfExpr cond (Var i) e) $
+        let only2 = M.mapWithKey (\i e -> IfExpr' cond (Var' i dummySpan) e dummySpan) $
                 fsAssigns s2 M.\\ fsAssigns s1
 
         -- The expressions in `only1` and `only2` introduce new references to
@@ -174,10 +175,10 @@ inferDFlipFlop (Always evts ss) = do
         guardMsg (Set.size clocks == 1) $
             "detected multiple clocks controlling variable " <> T.pack (show var)
         return $ DFlipFlop
-            { dffClk = Var $ Set.findMin clocks
+            { dffClk = Var' (Set.findMin clocks) dummySpan
             , dffD = dataExpr
             , dffQ = var
-            , dffAsyncResets = map Var asyncResetSigs
+            , dffAsyncResets = map (\i -> Var' i dummySpan) asyncResetSigs
             }
       where
         cvars = condVars expr
@@ -274,14 +275,14 @@ isConstExpr e = everything (&&) (True `mkQ` go) e
 evalConds :: Map Int Bool -> Expr -> Expr
 evalConds assign e = everywhere (mkT go) e
   where
-    go (Var i) = case M.lookup i assign of
-        Just False -> ConstBool "1'b0" False
-        Just True -> ConstBool "1'b1" True
-        Nothing -> Var i
-    go (IfExpr c t e) = case boolEval assign c of
+    go (Var' i sp) = case M.lookup i assign of
+        Just False -> ConstBool' "1'b0" False sp
+        Just True -> ConstBool' "1'b1" True sp
+        Nothing -> Var' i sp
+    go (IfExpr' c t e sp) = case boolEval assign c of
         Just True -> t
         Just False -> e
-        Nothing -> IfExpr c t e
+        Nothing -> IfExpr' c t e sp
     go x = x
 
 -- Simple evaluator for boolean expressions.  Returns `Nothing` for expressions
