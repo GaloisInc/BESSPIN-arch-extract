@@ -83,6 +83,12 @@ data Constraints = Constraints
     -- Generate override variables for the parameters affected by
     -- `force-module-defaults`.
     , constraintsOverrideForcedParams :: Bool
+    -- Allow generating override variables for non-constant parameter
+    -- expressions.  By default, only parameters that are set to constant
+    -- values (`parameter foo = 16`) are overridable.  If this flag is enabled,
+    -- all parameters become overridable instead (subject to the other override
+    -- flags).
+    , constraintsAllowOverrideNonConstant :: Bool
 
     -- Additional constraint generation options.
 
@@ -107,6 +113,7 @@ defaultConstraints = Constraints
     , constraintsOverrideInstParams = False
     , constraintsOverrideLocalParams = False
     , constraintsOverrideForcedParams = False
+    , constraintsAllowOverrideNonConstant = False
     , constraintsRequireBigEndianVectors = False
     , constraintsRequirePositiveParams = False
     }
@@ -252,6 +259,7 @@ constraints x = tableFold defaultConstraints x
     , ("override-inst-params", \c x -> c { constraintsOverrideInstParams = bool x })
     , ("override-local-params", \c x -> c { constraintsOverrideLocalParams = bool x })
     , ("override-forced-params", \c x -> c { constraintsOverrideForcedParams = bool x })
+    , ("allow-override-non-constant", \c x -> c { constraintsAllowOverrideNonConstant = bool x })
     , ("require-big-endian-vectors", \c x -> c { constraintsRequireBigEndianVectors = bool x })
     , ("require-positive-params", \c x -> c { constraintsRequirePositiveParams = bool x })
     ]

@@ -45,6 +45,10 @@ maybeWrap False _ x = x
 data ParamExpr = PeExplicit ConstExpr | PeDefault ConstExpr | PeUnset
   deriving (Show)
 
+-- Function that maybe wraps an expression using a function, or maybe doesn't,
+-- depending on the override config flags.
+type OverrideFunc = (ConstExpr -> ConstExpr) -> ConstExpr -> ConstExpr
+
 -- Generate constraints arising from module instantiation parameters.  That is,
 -- converts `mkMod #(foo = bar + baz) the_mod ...` into `parent$the_mod$foo =
 -- parent$bar + parent$baz`.  Includes constraints for parameters that are left
@@ -54,8 +58,8 @@ data ParamExpr = PeExplicit ConstExpr | PeDefault ConstExpr | PeUnset
 -- parameter expressions can be overridden.  This includes overrides for
 -- defaulted parameters (PkNormal ones only), since they can be overridden by
 -- providing a value at the instantiation site.
-instParamConstraints :: Bool -> Design a -> Module b -> Seq Constraint
-instParamConstraints override d m =
+instParamConstraints :: OverrideFunc -> Design a -> Module b -> Seq Constraint
+instParamConstraints maybeOverride d m =
     flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
         case logicKind logic of
             LkInst inst -> go idx inst
@@ -73,11 +77,11 @@ instParamConstraints override d m =
                 (Nothing, Nothing) -> mzero
             return $ Constraint
                 (EBinCmp dummySpan BEq (EInstParam dummySpan [idx] paramIdx)
-                    (maybeWrap override (EOverrideInstParam idx paramIdx) e))
+                    (maybeOverride (EOverrideInstParam idx paramIdx) e))
                 origin
 
-addInstParamConstraints override d m =
-    over _moduleConstraints (<> instParamConstraints override d m) m
+addInstParamConstraints maybeOverride d m =
+    over _moduleConstraints (<> instParamConstraints maybeOverride d m) m
 
 
 -- Generate constraints arising from default initializers of `PkLocal`
@@ -86,36 +90,36 @@ addInstParamConstraints override d m =
 --
 -- If `override` is set, generates `EOverrideLocalParam` expressions so that
 -- the initializer expressions can be overridden.
-localDefaultConstraints :: Bool -> Module a -> Seq Constraint
-localDefaultConstraints override m =
-    filteredDefaultConstraints override m (== PkLocal)
+localDefaultConstraints :: OverrideFunc -> Module a -> Seq Constraint
+localDefaultConstraints maybeOverride m =
+    filteredDefaultConstraints maybeOverride m (== PkLocal)
 
 -- Generate constraints arising from default initializers of `PkNormal`
 -- parameters.  This is like `localDefaultConstraints`, but for cases like
 -- `module #(foo = 17) top ...`, where you actually want a `parent$foo = 17`
 -- constraint in `top` itself.  Mostly useful for the root module, which
 -- doesn't have an instantiation to set values for those parameters.
-rootDefaultConstraints :: Bool -> Module a -> Seq Constraint
-rootDefaultConstraints override m =
-    filteredDefaultConstraints override m (== PkNormal)
+rootDefaultConstraints :: OverrideFunc -> Module a -> Seq Constraint
+rootDefaultConstraints maybeOverride m =
+    filteredDefaultConstraints maybeOverride m (== PkNormal)
 
 -- Helper function for local/rootDefaultConstraints
-filteredDefaultConstraints :: Bool -> Module a -> (ParamKind -> Bool) -> Seq Constraint
-filteredDefaultConstraints override m f =
+filteredDefaultConstraints :: OverrideFunc -> Module a -> (ParamKind -> Bool) -> Seq Constraint
+filteredDefaultConstraints maybeOverride m f =
     flip S.foldMapWithIndex (moduleParams m) $ \idx param -> case paramDefault param of
         Just e | f $ paramKind param -> S.singleton $
             Constraint
                 (EBinCmp dummySpan BEq (EParam dummySpan idx)
-                    (maybeWrap override (EOverrideLocalParam idx) e))
+                    (maybeOverride (EOverrideLocalParam idx) e))
                 (CoParamDefault idx)
         _ -> S.empty
 
 
-addLocalDefaultConstraints override m =
-    over _moduleConstraints (<> localDefaultConstraints override m) m
+addLocalDefaultConstraints maybeOverride m =
+    over _moduleConstraints (<> localDefaultConstraints maybeOverride m) m
 
-addRootDefaultConstraints override m =
-    over _moduleConstraints (<> rootDefaultConstraints override m) m
+addRootDefaultConstraints maybeOverride m =
+    over _moduleConstraints (<> rootDefaultConstraints maybeOverride m) m
 
 
 connTy m side (ExtPort i) = portTy $ moduleSidePort m side i
@@ -180,13 +184,13 @@ addConstraintsForConfig cfg d = over _designMods go d
   where
     go ms = flip S.mapWithIndex ms $ \idx m ->
         (if Config.constraintsUseInstParams cfg then
-            addInstParamConstraints (Config.constraintsOverrideInstParams cfg) d
+            addInstParamConstraints instParamOverride d
         else id) $
         (if Config.constraintsUseLocalDefaults cfg then
-            addLocalDefaultConstraints (Config.constraintsOverrideLocalParams cfg)
+            addLocalDefaultConstraints localParamOverride
         else id) $
         (if Set.member idx forceDefaultIds then
-            addRootDefaultConstraints (Config.constraintsOverrideForcedParams cfg)
+            addRootDefaultConstraints forcedParamOverride
         else id) $
         (if Config.constraintsUseNetTypes cfg then addNetTypeConstraints else id) $
         (if Config.constraintsUsePortTypes cfg then addPortTypeConstraints d else id) $
@@ -199,6 +203,24 @@ addConstraintsForConfig cfg d = over _designMods go d
     forceDefaultIds :: Set Int
     forceDefaultIds = Set.fromList $
         map (modIdMap M.!) $ Config.constraintsForceModuleDefaults cfg
+
+    instParamOverride f e = maybeOverride Config.constraintsOverrideInstParams f e
+    localParamOverride f e = maybeOverride Config.constraintsOverrideLocalParams f e
+    forcedParamOverride f e = maybeOverride Config.constraintsOverrideForcedParams f e
+
+    maybeOverride getFlag f e
+        | not $ getFlag cfg = e
+        | Config.constraintsAllowOverrideNonConstant cfg = f e
+        | isConstExpr e = f e
+        | otherwise = e
+
+-- Checks if a `ConstExpr` (which may be better named "param expr") is truly
+-- constant, meaning it doesn't depend on the values of any parameters.
+isConstExpr e = everything (&&) (True `mkQ` go) e
+  where
+    go (EParam _ _) = False
+    go (EInstParam _ _ _) = False
+    go _ = True
 
 
 data OverrideOrigin = OoLocal Int Int | OoInst Int Int Int

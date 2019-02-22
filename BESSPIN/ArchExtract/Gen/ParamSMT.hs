@@ -111,7 +111,7 @@ flattenConstraintsForDesign cfg d = flattenConstraints d rootId
 genSmt :: Config.SMT -> FlatConstraints -> [SExpr]
 genSmt cfg fc = cmds'
   where
-    cmds = toList $ initCommands fc
+    cmds = toList $ initCommands' unsatCore fc
     cmds' =
         (if unsatCore then
             [call "set-option" [Atom ":produce-unsat-cores", Atom "true"]]
@@ -129,7 +129,10 @@ genSmt' cfg d = T.unlines $ map printSExpr $ genSmt cfg fc
 
 
 initCommands :: FlatConstraints -> Seq SExpr
-initCommands fc =
+initCommands fc = initCommands' False fc
+
+initCommands' :: Bool -> FlatConstraints -> Seq SExpr
+initCommands' unsatCore fc =
     defineClog2 <|
     defineRangeSize <|
     fmap (\v -> call "declare-const" [Atom v, tInt]) (fcVars fc) <>
@@ -137,7 +140,7 @@ initCommands fc =
         [ call "declare-const" [Atom $ overrideValName o, tInt]
         , call "declare-const" [Atom $ overrideEnableName  o, tBool]
         ]) (fcOverrides fc) <>
-    fmap (convConstraint False fc 0) (fcConstraints fc)
+    S.mapWithIndex (convConstraint unsatCore fc) (fcConstraints fc)
 
 convExpr :: SExpr -> SMT.SExpr
 convExpr (Atom t) = SMT.Atom $ T.unpack t
