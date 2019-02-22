@@ -50,12 +50,14 @@ defaultVerilog = Verilog
     }
 
 data Constraints = Constraints
+    -- Constraint generation toggles.  Typically all of these should be set to
+    -- `true`, and `force-module-defaults` should be set to the root module of
+    -- the design.
+
     -- Derive constraints from parameters of module instantiations.
     { constraintsUseInstParams :: Bool
-    -- Derive constraints from default expressions for uninitialized parameters
-    -- in module instantiations.  Takes effect only if `use-inst-params` is
-    -- also enabled.
-    , constraintsUseInstParamDefaults :: Bool
+    -- Derive constraints from default expressions of local parameters.
+    , constraintsUseLocalDefaults :: Bool
     -- Derive constraints from the fact that the types of all ports connected
     -- to a net must match the type of the net.  For example, if a single net
     -- is connected to a port of type `logic[a:0]` and another port of type
@@ -70,7 +72,21 @@ data Constraints = Constraints
     -- instantiation) to take on their default values.  Mainly useful for
     -- setting the parameters of the top-level module to their defaults.
     , constraintsForceModuleDefaults :: [Text]
-    -- When set, all vectors are assumed to be big-endian (`[hi:lo]`).  This
+
+    -- Override toggles.  These enable generation of override variables for
+    -- certain parameters, essentially making them into features.
+
+    -- Generate override variables for all module instantiation parameters.
+    , constraintsOverrideInstParams :: Bool
+    -- Generate override variables for all local parameters.
+    , constraintsOverrideLocalParams :: Bool
+    -- Generate override variables for the parameters affected by
+    -- `force-module-defaults`.
+    , constraintsOverrideForcedParams :: Bool
+
+    -- Additional constraint generation options.
+
+    -- When set, all vectors are required to be big-endian (`[hi:lo]`).  This
     -- produces stricter constraints that rule out some undesirable solutions,
     -- such as setting `WIDTH` parameter to `-6` (so that `[WIDTH-1:0]` becomes
     -- `[-7:0]`) instead of `8` (`[7:0]`).
@@ -84,10 +100,13 @@ data Constraints = Constraints
 
 defaultConstraints = Constraints
     { constraintsUseInstParams = True
-    , constraintsUseInstParamDefaults = True
+    , constraintsUseLocalDefaults = True
     , constraintsUseNetTypes = True
     , constraintsUsePortTypes = True
     , constraintsForceModuleDefaults = []
+    , constraintsOverrideInstParams = False
+    , constraintsOverrideLocalParams = False
+    , constraintsOverrideForcedParams = False
     , constraintsRequireBigEndianVectors = False
     , constraintsRequirePositiveParams = False
     }
@@ -226,10 +245,13 @@ verilog x = tableFold defaultVerilog x
 constraints :: TOML.Value -> Constraints
 constraints x = tableFold defaultConstraints x
     [ ("use-inst-params", \c x -> c { constraintsUseInstParams = bool x })
-    , ("use-inst-param-defaults", \c x -> c { constraintsUseInstParamDefaults = bool x })
+    , ("use-local-defaults", \c x -> c { constraintsUseLocalDefaults = bool x })
     , ("use-net-types", \c x -> c { constraintsUseNetTypes = bool x })
     , ("use-port-types", \c x -> c { constraintsUsePortTypes = bool x })
     , ("force-module-defaults", \c x -> c { constraintsForceModuleDefaults = listOf str x })
+    , ("override-inst-params", \c x -> c { constraintsOverrideInstParams = bool x })
+    , ("override-local-params", \c x -> c { constraintsOverrideLocalParams = bool x })
+    , ("override-forced-params", \c x -> c { constraintsOverrideForcedParams = bool x })
     , ("require-big-endian-vectors", \c x -> c { constraintsRequireBigEndianVectors = bool x })
     , ("require-positive-params", \c x -> c { constraintsRequirePositiveParams = bool x })
     ]

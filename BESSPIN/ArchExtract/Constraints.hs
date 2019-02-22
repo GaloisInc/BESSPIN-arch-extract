@@ -3,6 +3,7 @@ module BESSPIN.ArchExtract.Constraints where
 
 import Control.Monad
 import Control.Monad.State
+import Control.Monad.Writer
 import Data.Foldable
 import Data.Generics
 import Data.Map (Map)
@@ -37,11 +38,24 @@ shiftTy idx t = everywhere (mkT go) t
     go t = t
 
 
+maybeWrap True f x = f x
+maybeWrap False _ x = x
+
+
 data ParamExpr = PeExplicit ConstExpr | PeDefault ConstExpr | PeUnset
   deriving (Show)
 
+-- Generate constraints arising from module instantiation parameters.  That is,
+-- converts `mkMod #(foo = bar + baz) the_mod ...` into `parent$the_mod$foo =
+-- parent$bar + parent$baz`.  Includes constraints for parameters that are left
+-- at their default values, but not PkLocal or PkEnum parameters.
+--
+-- If `override` is set, generates `EOverrideInstParam` expressions so that
+-- parameter expressions can be overridden.  This includes overrides for
+-- defaulted parameters (PkNormal ones only), since they can be overridden by
+-- providing a value at the instantiation site.
 instParamConstraints :: Bool -> Design a -> Module b -> Seq Constraint
-instParamConstraints useDefaults d m =
+instParamConstraints override d m =
     flip S.foldMapWithIndex (moduleLogics m) $ \idx logic ->
         case logicKind logic of
             LkInst inst -> go idx inst
@@ -49,38 +63,59 @@ instParamConstraints useDefaults d m =
   where
     go idx inst =
         let formals = (moduleParams $ d `designMod` instModId inst) in
-        flip S.foldMapWithIndex formals $ \paramIdx formal ->
-            let actualExpr = join $ instParams inst S.!? paramIdx in
-            let formalExpr = paramDefault formal in
-            let mkEq c = EBinCmp dummySpan BEq (EInstParam dummySpan [idx] paramIdx) c in
-            case paramVal idx actualExpr formalExpr of
-                PeExplicit c -> S.singleton $
-                    Constraint (mkEq c) (CoInstParam idx paramIdx)
-                PeDefault c | useDefaults -> S.singleton $
-                    Constraint (mkEq c) (CoInstParamDefault idx paramIdx)
-                _ -> S.empty
+        flip S.foldMapWithIndex formals $ \paramIdx formal -> do
+            guard $ paramKind formal == PkNormal
+            let actualExpr = join $ instParams inst S.!? paramIdx
+            let formalExpr = paramDefault formal
+            (e, origin) <- case (actualExpr, formalExpr) of
+                (Just e, _) -> return (e, CoInstParam idx paramIdx)
+                (Nothing, Just e) -> return (shiftExpr idx e, CoInstParam idx paramIdx)
+                (Nothing, Nothing) -> mzero
+            return $ Constraint
+                (EBinCmp dummySpan BEq (EInstParam dummySpan [idx] paramIdx)
+                    (maybeWrap override (EOverrideInstParam idx paramIdx) e))
+                origin
 
-    paramVal instIdx (Just e) _ = PeExplicit e
-    paramVal instIdx Nothing (Just e) = PeDefault $ shiftExpr instIdx e
-    paramVal instIdx Nothing Nothing = PeUnset
-
-addInstParamConstraints useDefaults d m =
-    over _moduleConstraints (<> instParamConstraints useDefaults d m) m
+addInstParamConstraints override d m =
+    over _moduleConstraints (<> instParamConstraints override d m) m
 
 
-defaultConstraints :: Module a -> Seq Constraint
-defaultConstraints m = flip S.foldMapWithIndex (moduleParams m) $ \idx param ->
-    case paramDefault param of
-        Just e -> S.singleton $
-            Constraint (EBinCmp dummySpan BEq (EParam dummySpan idx) e)
+-- Generate constraints arising from default initializers of `PkLocal`
+-- parameters.  That is, converts `parameter foo = bar + baz` into `parent$foo
+-- = parent$bar + parent$baz`.
+--
+-- If `override` is set, generates `EOverrideLocalParam` expressions so that
+-- the initializer expressions can be overridden.
+localDefaultConstraints :: Bool -> Module a -> Seq Constraint
+localDefaultConstraints override m =
+    filteredDefaultConstraints override m (== PkLocal)
+
+-- Generate constraints arising from default initializers of `PkNormal`
+-- parameters.  This is like `localDefaultConstraints`, but for cases like
+-- `module #(foo = 17) top ...`, where you actually want a `parent$foo = 17`
+-- constraint in `top` itself.  Mostly useful for the root module, which
+-- doesn't have an instantiation to set values for those parameters.
+rootDefaultConstraints :: Bool -> Module a -> Seq Constraint
+rootDefaultConstraints override m =
+    filteredDefaultConstraints override m (== PkNormal)
+
+-- Helper function for local/rootDefaultConstraints
+filteredDefaultConstraints :: Bool -> Module a -> (ParamKind -> Bool) -> Seq Constraint
+filteredDefaultConstraints override m f =
+    flip S.foldMapWithIndex (moduleParams m) $ \idx param -> case paramDefault param of
+        Just e | f $ paramKind param -> S.singleton $
+            Constraint
+                (EBinCmp dummySpan BEq (EParam dummySpan idx)
+                    (maybeWrap override (EOverrideLocalParam idx) e))
                 (CoParamDefault idx)
-        Nothing -> S.empty
+        _ -> S.empty
 
-addDefaultConstraints m = over _moduleConstraints (<> defaultConstraints m) m
 
-addRootDefaultConstraints d idx =
-    over (_designMod idx . _moduleConstraints)
-        (<> defaultConstraints (d `designMod` idx)) d
+addLocalDefaultConstraints override m =
+    over _moduleConstraints (<> localDefaultConstraints override m) m
+
+addRootDefaultConstraints override m =
+    over _moduleConstraints (<> rootDefaultConstraints override m) m
 
 
 connTy m side (ExtPort i) = portTy $ moduleSidePort m side i
@@ -141,18 +176,20 @@ portTypeConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic 
 addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m) m
 
 
-addTypeConstraints d m = addPortTypeConstraints d $ addNetTypeConstraints m
-
-
 addConstraintsForConfig cfg d = over _designMods go d
   where
     go ms = flip S.mapWithIndex ms $ \idx m ->
         (if Config.constraintsUseInstParams cfg then
-            addInstParamConstraints (Config.constraintsUseInstParamDefaults cfg) d
+            addInstParamConstraints (Config.constraintsOverrideInstParams cfg) d
+        else id) $
+        (if Config.constraintsUseLocalDefaults cfg then
+            addLocalDefaultConstraints (Config.constraintsOverrideLocalParams cfg)
+        else id) $
+        (if Set.member idx forceDefaultIds then
+            addRootDefaultConstraints (Config.constraintsOverrideForcedParams cfg)
         else id) $
         (if Config.constraintsUseNetTypes cfg then addNetTypeConstraints else id) $
         (if Config.constraintsUsePortTypes cfg then addPortTypeConstraints d else id) $
-        (if Set.member idx forceDefaultIds then addDefaultConstraints else id) $
         m
 
     modIdMap :: Map Text Int
@@ -164,29 +201,139 @@ addConstraintsForConfig cfg d = over _designMods go d
         map (modIdMap M.!) $ Config.constraintsForceModuleDefaults cfg
 
 
-type VarPath = ([Int], Int)
+data OverrideOrigin = OoLocal Int Int | OoInst Int Int Int
+    deriving (Show, Eq, Ord)
+
+data FlatConstraints = FlatConstraints
+    { fcVars :: Seq Text
+    , fcOverrides :: Seq (Text, OverrideOrigin)
+    , fcConstraints :: Seq Constraint
+    }
+    deriving (Show)
+
+
+data ModInfo = ModInfo
+    { miModId :: Int
+    , miPrefix :: Text
+    , miInsts :: Map Int ModInfo
+    -- Maps local parameter index to an index in the global var list.
+    , miVarMap :: Map Int Int
+    }
+
+data FlattenState = FlattenState
+    { fsVars :: Seq Text
+    , fsOverrides :: Seq (Text, OverrideOrigin)
+    , fsOverrideMap :: Map OverrideOrigin Int
+    , fsConstraints :: Seq Constraint
+    }
+
+addVar :: Text -> State FlattenState Int
+addVar n = do
+    i <- gets $ S.length . fsVars
+    modify $ \s -> s { fsVars = fsVars s |> n }
+    return i
+
+getOverride :: Design a -> OverrideOrigin -> State FlattenState Int
+getOverride d origin = state $ \s -> case M.lookup origin (fsOverrideMap s) of
+    Just i -> (i, s)
+    Nothing ->
+        let name = overrideName d origin in
+        let i = S.length $ fsOverrides s in
+        (i, s
+            { fsOverrides = fsOverrides s |> (name, origin)
+            , fsOverrideMap = M.insert origin i $ fsOverrideMap s
+            })
+
+overrideName d o = case o of
+    OoLocal modId paramIdx ->
+        let m = d `designMod` modId in
+        let p = m `moduleParam` paramIdx in
+        moduleName m <> "$" <> paramName p
+    OoInst modId instIdx paramIdx ->
+        let m = d `designMod` modId in
+        let LkInst i = logicKind $ m `moduleLogic` instIdx in
+        let p = (d `designMod` instModId i) `moduleParam` paramIdx in
+        moduleName m <> "$" <> instName i <> "$" <> paramName p
+
+addConstraint :: ConstExpr -> ConstraintOrigin -> State FlattenState ()
+addConstraint e o = modify $ \s -> s { fsConstraints = fsConstraints s |> Constraint e o }
+
 
 -- Flatten a design down to a list of variables and a list of constraints.  In
 -- the output `ConstExpr`s, `Param i` refers to the `i`th variable in the list.
-flattenConstraints :: Design a -> Int -> (Seq Text, Seq Constraint)
-flattenConstraints d rootId = (varNames, cons)
+flattenConstraints :: Design a -> Int -> FlatConstraints
+flattenConstraints d rootId = conv $ execState (go rootId "") initState
+  where
+    initState = FlattenState S.empty S.empty M.empty S.empty
+
+    go modId prefix = do
+        let m = d `designMod` modId
+
+        -- First, recurse into child instances.
+        insts <- liftM (foldMap id) $ flip S.traverseWithIndex (moduleLogics m) $ \idx l ->
+            case logicKind l of
+                LkInst inst -> do
+                    mi <- go (instModId inst) (prefix <> "$" <> instName inst)
+                    return $ M.singleton idx mi
+                _ -> return M.empty
+
+        -- Generate vars for all parameter of `m`
+        varMap <- liftM (foldMap id) $ flip S.traverseWithIndex (moduleParams m) $ \idx p -> do
+            varIdx <- addVar (prefix <> "$" <> paramName p)
+            return $ M.singleton idx varIdx
+
+        -- Translate constraints, defining overrides as a side effect.
+        let mi = ModInfo modId prefix insts varMap
+        forM_ (moduleConstraints m) $ \c -> do
+            e <- goExpr mi $ constraintExpr c
+            let o = CoText $ showOrigin d m $ constraintOrigin c
+            addConstraint e o
+
+        return mi
+
+    goExpr mi e = everywhereM (mkM go) e
+      where
+        go (EParam sp p) = return $ EParam sp (miVarMap mi M.! p)
+        go (EInstParam sp is p) =
+            let mi' = foldl (\mi i -> miInsts mi M.! i) mi is in
+            return $ EParam sp (miVarMap mi' M.! p)
+        go (EOverrideLocalParam i e) = do
+            o <- getOverride d $ OoLocal (miModId mi) i
+            return $ EOverride o e
+        go (EOverrideInstParam i j e) = do
+            o <- getOverride d $ OoInst (miModId mi) i j
+            return $ EOverride o e
+        go e = return e
+
+    conv fs = FlatConstraints
+        { fcVars = fsVars fs
+        , fcOverrides = fsOverrides fs
+        , fcConstraints = fsConstraints fs
+        }
+
+
+{-
+
   where
     varNames :: Seq Text
     -- Key is a path to a parameter in the design.  The list of inst indexes is
     -- stored in reverse, so `([a, b], c) = inst_b.inst_a.param_c`.
     pathMap :: Map ([Int], Int) Int
-    (varNames, pathMap) = mkVars "$" [] rootId S.empty M.empty
+    instNameMap :: Map [Int] Text
+    (varNames, pathMap, prefixMap) = mkVars "$" [] rootId S.empty M.empty M.empty
 
-    mkVars namePrefix instPath modId accNames accMap =
+    mkVars namePrefix instPath modId accNames accMap accPrefixes =
         let m = d `designMod` modId in
         let accNames' = accNames <> fmap (\p -> namePrefix <> paramName p) (moduleParams m) in
         let accMap' = accMap <> M.fromList [((instPath, i), S.length accNames + i) |
                 i <- [0 .. S.length (moduleParams m) - 1]] in
-        S.foldlWithIndex (\(accNames, accMap) idx logic -> case logicKind logic of
-            LkInst inst ->
-                mkVars (namePrefix <> instName inst <> "$") (idx : instPath)
-                    (instModId inst) accNames accMap
-            _ -> (accNames, accMap)) (accNames', accMap') (moduleLogics m)
+        let accPrefixes' = M.insert instPath namePrefix accPrefixes in
+        S.foldlWithIndex (\(accNames, accMap, accPrefixes) idx logic -> case logicKind logic of
+                LkInst inst ->
+                    mkVars (namePrefix <> instName inst <> "$") (idx : instPath)
+                        (instModId inst) accNames accMap
+                _ -> (accNames, accMap, accPrefixes))
+            (accNames', accMap', accPrefixes') (moduleLogics m)
 
     findVar :: ([Int], Int) -> Int
     findVar p = case M.lookup p pathMap of
@@ -210,6 +357,7 @@ flattenConstraints d rootId = (varNames, cons)
         S.foldMapWithIndex (\idx logic -> case logicKind logic of
             LkInst inst -> mkCons (idx : instPath) (instModId inst)
             _ -> S.empty) (moduleLogics m)
+-}
 
 showConn d m side c = case c of
     ExtPort i -> "port-" <> portName (moduleSidePort m side i)

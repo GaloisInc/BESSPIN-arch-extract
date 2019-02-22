@@ -184,6 +184,17 @@ data ConstExpr =
     | EBinCmp Span BinCmpOp ConstExpr ConstExpr
     -- Size of the range `e1:e2`.  Equal to `abs(e1 - e2) + 1`.
     | ERangeSize Span ConstExpr ConstExpr
+
+    -- Special expression types, used only in constraint generation:
+
+    -- If override `i` is enabled, use its value; otherwise, use `e`.
+    | EOverride Int ConstExpr
+    -- Like `EOverride`, but using a generated override associated with
+    -- parameter `i` of the current module.
+    | EOverrideLocalParam Int ConstExpr
+    -- Like `EOverride`, but using a generated override associated with
+    -- parameter `j` of instance `i` within the current module.
+    | EOverrideInstParam Int Int ConstExpr
     deriving (Show, Eq, Typeable, Data)
 
 data UnArithOp = UClog2
