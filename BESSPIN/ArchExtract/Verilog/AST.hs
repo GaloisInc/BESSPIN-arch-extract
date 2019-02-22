@@ -233,6 +233,16 @@ data Expr =
     , builtinArgs :: [Expr]
     , exprSpan :: Span
     } |
+
+    -- These exprs don't appear in source programs - they only exist
+    -- temporarily during analysis.
+
+    ArrayUpdate
+    { arrayUpdateArray :: Expr
+    , arrayUpdateIndices :: [Index]
+    , arrayUpdateValue :: Expr
+    } |
+
     UnknownExpr'
     { exprSpan :: Span
     }

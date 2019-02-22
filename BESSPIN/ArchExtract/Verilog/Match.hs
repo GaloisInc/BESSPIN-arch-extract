@@ -43,10 +43,8 @@ data FlattenState = FlattenState
     deriving (Show)
 
 -- Given a block of procedural statements, try to reduce its effect to a set of
--- nonblocking assignments.  If `precise` is true, the flattening fails on
--- assignments to array elements and struct fields; if it's false, it simply
--- treats such assignments as an assignment to the underlying variable
--- (producing ill-typed assignments as a result).
+-- nonblocking assignments.  The result is a map from variables to assigned
+-- expressions.
 --
 -- Note that blocking assignments can be converted to nonblocking ones as long
 -- as later statements in the same block don't read the assigned value.
@@ -67,12 +65,12 @@ flattenAssigns precise ss = fsAssigns <$>
         Case _ _ -> lift Nothing
         For _ _ _ _ -> lift Nothing
         NonBlockingAssign l r -> do
-            var <- lift $ getLvalVar l
+            (var, r) <- lift $ processAssign l r
             modify $ \s -> s
                 { fsAssigns = M.insert var r $ fsAssigns s
                 , fsNonblockingAssigned = Set.insert var $ fsNonblockingAssigned s }
         BlockingAssign l r -> do
-            var <- lift $ getLvalVar l
+            (var, r) <- lift $ processAssign l r
 
             checkVars r
             -- If the variable was previously the target of a nonblocking
@@ -122,35 +120,37 @@ flattenAssigns precise ss = fsAssigns <$>
         ba <- gets fsBlockingAssigned
         guard $ not $ any (flip Set.member ba) $ collectVars e
 
-    getLvalVar =
-        if precise then
-            let go (Var declId) = Just declId
-                go _ = Nothing
-            in go
-        else
-            let go (Var declId) = Just declId
-                go (Index base _) = go base
-                go (MemIndex base _) = go base
-                go _ = Nothing
-            in go
+    processAssign (Var declId) r = Just (declId, r)
+    processAssign (Index base idx) r = do
+        (var, r') <- processAssign base r
+        Just (var, addIdxs var [idx] r')
+    processAssign (MemIndex base idxs) r = do
+        (var, r') <- processAssign base r
+        Just (var, addIdxs var idxs r')
+    processAssign _ _ = Nothing
 
+    addIdxs var idxs (ArrayUpdate arr@(Var var') idxs' val)
+      | var == var' = ArrayUpdate arr (idxs' ++ idxs) val
+    addIdxs var idxs expr = ArrayUpdate (Var' var dummySpan) idxs expr
 
-data DFlipFlop = DFlipFlop
-    { dffClk :: Expr
-    -- Input expression.
-    , dffD :: Expr
-    -- Output net, identified by the decl ID of the net's `VarDecl`.
-    , dffQ :: Int
-    -- Async reset inputs.
-    , dffAsyncResets :: [Expr]
-    }
-    deriving (Show)
 
 guardMsg True _ = return ()
 guardMsg False msg = Left msg
 
 fromJustMsg (Just x) _ = return x
 fromJustMsg Nothing msg = Left msg
+
+
+data DFlipFlop = DFlipFlop
+    { dffClk :: Int
+    -- Input expression.
+    , dffD :: Expr
+    -- Output net, identified by the decl ID of the net's `VarDecl`.
+    , dffQ :: Int
+    -- Async reset inputs.
+    , dffAsyncResets :: [Int]
+    }
+    deriving (Show)
 
 -- Try to recognize an `Always` item as a set of D flip-flops.  Returns
 -- `Nothing` if the item doesn't appear to be D flip-flops.
@@ -159,7 +159,7 @@ inferDFlipFlop (Always evts ss) = do
     assigns <- fromJustMsg (flattenAssigns True ss)
         "failed to interpret `always` block as a compound nonblocking assignment"
     guardMsg (all (isJust . eventEdge) evts)
-        "sensitivity list contains non-edge-sensitive signals "
+        "sensitivity list contains non-edge-sensitive signals"
     let edgeMap = M.fromList $
             map (\e -> (eventVarDeclId e, fromJust $ eventEdge e)) evts
     guardMsg (M.size edgeMap == length evts)
@@ -174,11 +174,13 @@ inferDFlipFlop (Always evts ss) = do
             "detected no clocks controlling variable " <> T.pack (show var)
         guardMsg (Set.size clocks == 1) $
             "detected multiple clocks controlling variable " <> T.pack (show var)
+        guardMsg (isLegal dataExpr) $
+            "data expression " <> T.pack (show dataExpr) <> " contains unsupported constructs"
         return $ DFlipFlop
-            { dffClk = Var' (Set.findMin clocks) dummySpan
+            { dffClk = Set.findMin clocks
             , dffD = dataExpr
             , dffQ = var
-            , dffAsyncResets = map (\i -> Var' i dummySpan) asyncResetSigs
+            , dffAsyncResets = asyncResetSigs
             }
       where
         cvars = condVars expr
@@ -228,7 +230,7 @@ inferDFlipFlop (Always evts ss) = do
         -- `candMap` stores both the trigger level, as well as the result of
         -- evaluating `e` under each candidate's partial assignment.
         go :: Map Int (Bool, Expr) -> [(Int, Bool, Expr)]
-        go candMap = traceShow ("found reset", foundAsyncReset, "in", candMap) $ case foundAsyncReset of
+        go candMap = case foundAsyncReset of
             Nothing -> []
             Just v ->
                 let (level, resetVal) = candMap M.! v in
@@ -250,6 +252,75 @@ inferDFlipFlop (Always evts ss) = do
 inferDFlipFlop _ = Left "expected an `always` block"
 
 
+data Ram = Ram
+    { ramClk :: Int
+    , ramResets :: [Int]
+    -- The net representing the memory itself.
+    , ramVar :: Int
+    , ramWriteAddr :: Expr
+    , ramWriteData :: Expr
+    , ramWriteEnable :: Expr
+    }
+    deriving (Show)
+
+inferRam :: Item -> Either Text [Ram]
+inferRam (Always evts ss) = do
+    assigns <- fromJustMsg (flattenAssigns True ss)
+        "failed to interpret `always` block as a compound nonblocking assignment"
+    guardMsg (all (isJust . eventEdge) evts)
+        "sensitivity list contains non-edge-sensitive signals"
+    guardMsg (length evts == 1)
+        "sensitivity list contains multiple signals"
+    guardMsg (not $ M.member clk assigns)
+        "target of assignment appears in sensitivity list"
+
+    mapM go $ M.toList assigns
+  where
+    go (var, expr) = case dataExpr' of
+        ArrayUpdate (Var var') [ISingle addr] data_ | var' == var -> do
+            guardMsg (length enables <= 1) $
+                "found multiple enable conditions for writes to " <> T.pack (show var)
+            guardMsg (isLegal data_) $
+                "data expression " <> T.pack (show data_) <> " contains unsupported constructs"
+            return $ Ram clk resets var addr data_ enable
+        _ -> Left $ "expected array update assignment in RAM data expr"
+      where
+        (resets, dataExpr) = findResets expr
+        (enables, dataExpr') = findEnables var dataExpr
+        enable = case enables of
+            [] -> ConstBool' "1'b1" True dummySpan
+            [e] -> e
+            _ -> error $ "expected at most one enable condition"
+
+    -- These are only used when the `guardMsg` checks all pass, meaninng `evts`
+    -- contains excatly one element and its `eventEdge` is `Just`.
+    clkEvt = head evts
+    clk = eventVarDeclId clkEvt
+    clkValue = edgeLevel $ fromJust $ eventEdge clkEvt
+
+    findResets :: Expr -> ([Int], Expr)
+    findResets (IfExpr (Var declId) t e)
+      | isConstExpr t = addResult declId $ findResets e
+      | isConstExpr e = addResult declId $ findResets t
+    findResets e = ([], e)
+
+    -- Note: this probably doesn't work very well for RAMs that have multiple
+    -- ports with separate enables.  Need to find some real-world examples of
+    -- those in order to implement something better.
+    findEnables var (IfExpr c t e)
+      | isVarExpr var t = addResult (Unary' UNot c dummySpan) $ findEnables var e
+      | isVarExpr var e = addResult c $ findEnables var t
+    findEnables var e = ([], e)
+
+    addResult declId (resets, dataExpr) = (declId : resets, dataExpr)
+
+
+-- Check if `e` is legal as a DFF or RAM data input.
+isLegal e = everything (&&) (True `mkQ` go) e
+  where
+    go (ArrayUpdate _ _ _) = False
+    go _ = True
+
 edgeLevel PosEdge = True
 edgeLevel NegEdge = False
         
@@ -268,7 +339,15 @@ isConstExpr e = everything (&&) (True `mkQ` go) e
     go (Param _) = True
     go (Const _) = True
     go (ConstBool _ _) = True
+    go (ArrayUpdate _ _ _) = False
     go _ = True
+
+-- Check if `e` always evaluates to the value of `v`.  Looks through
+-- conditionals, if needed.
+isVarExpr :: Int -> Expr -> Bool
+isVarExpr v (Var' v' _) = v == v'
+isVarExpr v (IfExpr _ t e) = isVarExpr v t && isVarExpr v e
+isVarExpr _ _ = False
 
 -- Evaluate `e` under partial assignment `assign`, specifically with the goal
 -- of eliminating conditionals (`IfExpr`).

@@ -335,10 +335,11 @@ convItems vMod =
                 rPin <- netPin $ NoInstPort declId vIdx
                 addNetAlias lPin rPin
         V.ContAssign l r -> doAssign l r
+
         V.Always {} | Right dffs <- inferDFlipFlop item -> forM_ dffs $ \dff -> do
-            clkPin <- rvalPin $ dffClk dff
+            clkPin <- netPin $ NoDecl $ dffClk dff
             dPin <- rvalPin $ dffD dff
-            arstPins <- mapM rvalPin $ S.fromList $ dffAsyncResets dff
+            arstPins <- mapM (\v -> netPin $ NoDecl v) $ S.fromList $ dffAsyncResets dff
             qPin <- netPin $ NoDecl $ dffQ dff
             name <- findNetName $ NoDecl $ dffQ dff
             addLogic $ Logic
@@ -346,6 +347,37 @@ convItems vMod =
                 (dPin <| clkPin <| arstPins)
                 (S.singleton qPin)
                 ()
+
+        V.Always {} | Left err <- inferRam item, traceShow (V.moduleName vMod, "ram error", err, item) False -> undefined
+        V.Always {} | Right rams <- inferRam item -> forM_ rams $ \ram -> do
+            ramPin <- netPin $ NoDecl $ ramVar ram
+            clkPin <- netPin $ NoDecl $ ramClk ram
+            resetPins <- mapM (\v -> netPin $ NoDecl v) $ S.fromList $ ramResets ram
+            writeAddrPin <- rvalPin $ ramWriteAddr ram
+            writeDataPin <- rvalPin $ ramWriteData ram
+            writeEnPin <- rvalPin $ ramWriteEnable ram
+
+            let readAddrPins = S.empty
+            let writePins = writeAddrPin <| writeDataPin <| writeEnPin <| S.empty
+            let readDataPins = S.empty
+
+            net <- findNet' $ NoDecl $ ramVar ram
+            let depth = case netTy net of
+                    A.TWire _ [] -> error $ T.unpack $
+                        "inferred RAM for " <> netName net <> ", which has no depth?"
+                    A.TWire _ ds -> foldl1 (A.EBinArith dummySpan A.BMul) ds
+                    t -> error $ T.unpack $
+                        "inferred RAM for " <> netName net
+                            <> ", which has non-wire type " <> T.pack (show t)
+            addLogic $ Logic
+                -- Currently we always infer 0 read ports and 1 write port (LEG
+                -- uses only asynchronous read ports, which aren't handled by
+                -- `inferRam`)
+                (LkRam (netName net) depth (length resetPins) 0 1)
+                (ramPin <| clkPin <| resetPins <> readAddrPins <> writePins)
+                (ramPin <| readDataPins)
+                ()
+
         V.Always evts body | any (isJust . eventEdge) evts -> do
             let assigns = foldMap stmtAssigns body
             let regMap = M.unionsWith (<>) $

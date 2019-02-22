@@ -108,6 +108,7 @@ logicShowsPorts l = case logicKind l of
     LkInst _ -> True
     LkRegister _ -> True
     LkDFlipFlop _ _ -> True
+    LkRam _ _ _ _ _ -> True
     _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
@@ -284,6 +285,7 @@ logicLabel LkOther = T.pack "(logic)"
 logicLabel LkExpr = T.pack "(expr)"
 logicLabel (LkRegister name) = "(register " <> name <> ")"
 logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
+logicLabel (LkRam name _ _ _ _) = "(ram " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst _) = T.pack "(mod inst)"
 
@@ -312,6 +314,15 @@ logicPortNames d l@(Logic { logicKind = LkInst inst }) =
 logicPortNames d l@(Logic { logicKind = LkDFlipFlop _ numResets }) =
     ( "D" <| "clk" <| S.fromList ["rst" <> T.pack (show i) | i <- [0 .. numResets - 1]]
     , "Q" <| S.empty )
+logicPortNames d l@(Logic { logicKind = LkRam _ _ resets readPorts writePorts }) =
+    ( "RAM" <| "clk"
+        <| S.fromList ["rst" <> T.pack (show i) | i <- [0 .. resets - 1]]
+        <> S.fromList ["ra" <> T.pack (show i) | i <- [0 .. readPorts - 1]]
+        <> S.fromList (concat [["wa" <> i, "wd" <> i, "we" <> i]
+            | i <- map (T.pack . show) [0 .. writePorts - 1]])
+    , "RAM"
+        <| S.fromList ["rd" <> T.pack (show i) | i <- [0 .. readPorts - 1]]
+        )
 logicPortNames d l =
     (S.fromList $ map (T.pack . show) [0 .. maxInput],
         S.fromList $ map (T.pack . show) [0 .. maxOutput])
@@ -328,6 +339,10 @@ logicName d l@(Logic { logicKind = LkRegister name }) =
     [H.Str $ TL.fromStrict $ "(register " <> name <> ")"]
 logicName d l@(Logic { logicKind = LkDFlipFlop name _ }) =
     [H.Str $ TL.fromStrict $ "(dff " <> name <> ")"]
+logicName d l@(Logic { logicKind = LkRam name depth _ _ _ }) =
+    [H.Str $ TL.fromStrict $ "(ram " <> name <> ")",
+        H.Newline [],
+        H.Str $ TL.fromStrict $ "x" <> printConstExpr (\_ _ -> "?") depth]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
 printVar :: Design a -> Module b -> [Int] -> Int -> Text

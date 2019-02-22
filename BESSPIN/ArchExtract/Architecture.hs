@@ -85,9 +85,31 @@ data LogicKind =
     LkInst Inst |
     LkNetAlias |
     LkRegister Text |
+    -- Inputs:
+    -- - d
+    -- - clk
+    -- - async reset (* `lkDffNumResets`)
+    -- Outptus:
+    -- - q
     LkDFlipFlop
         { lkDffName :: Text
         , lkDffNumResets :: Int
+        } |
+    -- Inputs:
+    -- - ram
+    -- - clk
+    -- - reset (* `lkRamResets`)
+    -- - read addr (* `lkRamReadPorts`)
+    -- - write addr, write data, write enable (* `lkRamWritePorts`)
+    -- Outputs:
+    -- - ram
+    -- - read data (* `lkRamReadPorts`)
+    LkRam
+        { lkRamName :: Text
+        , lkRamDepth :: ConstExpr
+        , lkRamResets :: Int
+        , lkRamReadPorts :: Int
+        , lkRamWritePorts :: Int
         } |
     LkExpr |
     LkOther

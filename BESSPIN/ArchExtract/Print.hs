@@ -48,6 +48,7 @@ instance Pretty (Logic x) where
                 LkNetAlias -> "netAlias"
                 LkRegister name -> "reg" <+> pretty name
                 LkDFlipFlop name _ -> "dff" <+> pretty name
+                LkRam name _ _ _ _ -> "ram" <+> pretty name
                 LkExpr -> "expr"
                 LkOther -> emptyDoc
         in
@@ -59,6 +60,12 @@ instance Pretty (Logic x) where
                         Just x -> pretty x) $ instParams inst)
                 LkDFlipFlop _ numResets ->
                     [ "numResets" <+> pretty numResets ]
+                LkRam _ depth resets readPorts writePorts ->
+                    [ "depth" <+> pretty depth
+                    , "numResets" <+> pretty resets
+                    , "numReadPorts" <+> pretty readPorts
+                    , "numWritePorts" <+> pretty writePorts
+                    ]
                 _ -> []
         in
         labeled header $ vsep $

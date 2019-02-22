@@ -179,6 +179,7 @@ convLogic _ _ _ idx logic =
     let displayName = case logicKind logic of
             LkRegister t -> Just t
             LkDFlipFlop t _ -> Just t
+            LkRam t _ _ _ _ -> Just t
             _ -> Nothing
     in
     let inPorts = toList $ S.mapWithIndex (convPin Source) $ logicInputs logic in
