@@ -420,6 +420,7 @@ printTy printVar t = go t
         ["wire"] ++ map (\e -> "[" <> goExpr e <> "]") (ws ++ ds)
     go (TEnum base) = "enum " <> go base
     go (TAlias name base) = "typedef(" <> name <> ") " <> go base
+    go TUnsizedInt = "int"
     go TSimVal = "sim"
     go TUnknown = "unknown"
 
@@ -498,6 +499,7 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
         Just (TWire w d) -> [labelAttr $ StrLabel $ TL.fromStrict $ busLabel w d, bold]
         Just (TEnum ty) -> goTy labelAttr (Just ty)
         Just (TAlias _ ty) -> goTy labelAttr (Just ty)
+        Just TUnsizedInt -> []
         Just TSimVal -> [gray]
         Just TUnknown -> []
       where
