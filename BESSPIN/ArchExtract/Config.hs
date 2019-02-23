@@ -128,6 +128,7 @@ data Graphviz = Graphviz
     , graphvizDrawOnesidedNets :: Bool
     , graphvizDrawLogics :: Bool
     , graphvizDrawLogicPorts :: Bool
+    , graphvizDrawExtPorts :: Bool
     , graphvizDedupEdges :: Bool
     -- If `True`, names of merged nets will display as `foo (+2 more)` instead
     -- of listing the name of every net included in the merge.
@@ -146,6 +147,7 @@ defaultGraphviz = Graphviz
     , graphvizDrawOnesidedNets = False
     , graphvizDrawLogics = True
     , graphvizDrawLogicPorts = True
+    , graphvizDrawExtPorts = True
     , graphvizDedupEdges = False
     , graphvizShortenNetNames = False
     , graphvizNumPipelineStages = 0
@@ -278,6 +280,7 @@ graphviz x = tableFold defaultGraphviz x
     , ("draw-onesided-nets", \c x -> c { graphvizDrawOnesidedNets = bool x })
     , ("draw-logics", \c x -> c { graphvizDrawLogics = bool x })
     , ("draw-logic-ports", \c x -> c { graphvizDrawLogicPorts = bool x })
+    , ("draw-ext-ports", \c x -> c { graphvizDrawExtPorts = bool x })
     , ("dedup-edges", \c x -> c { graphvizDedupEdges = bool x })
     , ("shorten-net-names", \c x -> c { graphvizShortenNetNames = bool x })
     , ("num-pipeline-stages", \c x -> c { graphvizNumPipelineStages = int x })

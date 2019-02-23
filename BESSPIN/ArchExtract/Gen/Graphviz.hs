@@ -36,11 +36,18 @@ tOutputs = T.pack "Outputs"
 
 
 -- An ID of an endpoint of an edge.  "Port" is the name Graphviz uses for
--- places within a node where edges can begin/end.  `PConn`: a port
--- corresponding to a `Conn`.  `PNet`: the central node representing a `Net`.
--- `PBasicLogic`: the single-port node representing a basic logic element,
--- where the individual ports are not displayed.
-data PortId = PConn Side Conn | PNet Int | PBasicLogic Int
+-- places within a node where edges can begin/end.
+data PortId =
+    -- A port corresponding to a `Conn`.
+      PConn Side Conn
+    -- The central node representing a `Net`.
+    | PNet Int
+    -- The single-port node representing a basic logic element, where the
+    -- individual ports are not displayed.
+    | PBasicLogic Int
+    -- The single-port node representing all external ports on the input/output
+    -- side, where the individual ports are not displayed.
+    | PBasicExt Side
     deriving (Show, Eq, Ord)
 
 type EdgeMap = Map PortId (Seq PortId)
@@ -123,6 +130,13 @@ clearLogicPorts f edges = fmap go edges
     goNode (PConn _ (LogicPort i _)) | f i = PBasicLogic i
     goNode n = n
 
+clearExtPorts :: (Side -> Bool) -> Seq (PortId, PortId) -> Seq (PortId, PortId)
+clearExtPorts f edges = fmap go edges
+  where
+    go (a, b) = (goNode a, goNode b)
+    goNode (PConn side (ExtPort _)) | f side = PBasicExt side
+    goNode n = n
+
 dedupEdges m = fmap go m
   where
     go xs = fst $ foldl (\(acc, seen) x ->
@@ -142,7 +156,9 @@ filterEdges :: Cfg -> Module Ann -> Seq (PortId, PortId) -> Seq (PortId, PortId)
 filterEdges cfg mod edges = edges'
   where
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
-        clearLogicPorts (\idx -> not $ logicShowsPorts cfg $ mod `moduleLogic` idx) edges
+        clearLogicPorts (\idx -> not $ logicShowsPorts cfg $ mod `moduleLogic` idx) $
+        clearExtPorts (\_ -> not $ cfgDrawExtPorts cfg) $
+        edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
         PBasicLogic i -> not $ drawLogicNode cfg (mod `moduleLogic` i)
@@ -158,6 +174,7 @@ data Cfg = Cfg
     , cfgDrawOnesidedNets :: Bool
     , cfgDrawLogics :: Bool
     , cfgDrawLogicPorts :: Bool
+    , cfgDrawExtPorts :: Bool
     , cfgHideNamedNets :: Set Text
     , cfgDedupEdges :: Bool
     , cfgShortenNetNames :: Bool
@@ -170,6 +187,7 @@ defaultCfg = Cfg
     , cfgDrawOnesidedNets = True
     , cfgDrawLogics = True
     , cfgDrawLogicPorts = True
+    , cfgDrawExtPorts = True
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = False
     , cfgShortenNetNames = True
@@ -183,6 +201,7 @@ fromConfig g = Cfg
     , cfgDrawOnesidedNets = Config.graphvizDrawOnesidedNets g
     , cfgDrawLogics = Config.graphvizDrawLogics g
     , cfgDrawLogicPorts = Config.graphvizDrawLogicPorts g
+    , cfgDrawExtPorts = Config.graphvizDrawExtPorts g
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = Config.graphvizDedupEdges g
     , cfgShortenNetNames = Config.graphvizShortenNetNames g
@@ -274,6 +293,14 @@ portNode cfg side idx (Port name _ _) =
     let key = extKey cfg side idx in
     let label = name in
     DotNode key [mkLabel label]
+
+basicPortNode :: Cfg -> Side -> DotNode Text
+basicPortNode cfg side =
+    let key = extKey cfg side 0 in
+    DotNode key
+        [ mkLabel $ if side == Source then "Inputs" else "Outputs"
+        , Shape BoxShape
+        ]
 
 
 netNode :: Cfg -> Design a -> Module b -> Int -> Net Ann -> Maybe (DotNode Text)
@@ -456,6 +483,7 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
             Nothing,
             Just $ netTy $ mod `moduleNet` NetId idx)
     go (PBasicLogic idx) = (logicKey cfg idx, Nothing, Nothing)
+    go (PBasicExt side) = (extKey cfg side 0, Nothing, Nothing)
 
     (end1, port1, ty1) = go n1
     (end2, port2, ty2) = go n2
@@ -578,9 +606,11 @@ modulePortNodes cfg mod =
     go Source (moduleInputs mod) <>
     go Sink (moduleOutputs mod)
   where
-    go side ports =
-        S.foldMapWithIndex (\idx port ->
-            [(NExtPort side idx, portNode cfg side idx port)]) ports
+    go side ports
+      | cfgDrawExtPorts cfg = S.foldMapWithIndex (\idx port ->
+        [(NExtPort side idx, portNode cfg side idx port)]) ports
+      | otherwise = [(NExtPort side 0, basicPortNode cfg side)]
+
 
 moduleLogicNodes :: Design a -> Cfg -> Module Ann -> [(NodeId, DotNode Text)]
 moduleLogicNodes design cfg mod =
