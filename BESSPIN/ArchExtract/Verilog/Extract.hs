@@ -24,6 +24,7 @@ import Text.Read (readMaybe)
 import Debug.Trace
 import Data.List
 
+import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Architecture hiding (moduleNets)
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.AST
@@ -155,16 +156,17 @@ findModSig i = use $ _esModSigs . singular (ix i)
 
 -- Top level
 
-extractArch :: V.Design -> A.Design ()
-extractArch vDes =
+extractArch :: Config.Verilog -> V.Design -> A.Design ()
+extractArch cfg vDes =
     -- Run cleanup on each constructed module.
     mapMods (\mod ->
         mergeAliasedNets $
         -- Break up "uninteresting" nets early, before they can get merged with
         -- other nets.
         disconnect (\_ _ _ net ->
-            let baseName = last $ T.splitOn (T.singleton '.') (netName net) in
-            not $ baseName `elem` map T.pack ["clock", "clk", "reset"]) $
+            let baseNames = Set.fromList $ map (last . T.splitOn ".") $
+                    T.lines $ netName net in
+            Set.null $ Set.intersection baseNames dcNames) $
         reconnectNets $
         mod) $
     A.Design mods
@@ -179,6 +181,8 @@ extractArch vDes =
     sigStates = fmap buildModSig vMods
     modSigs = fmap stateSig sigStates
     mods = fmap (buildMod modSigs) $ S.zip vMods sigStates
+
+    dcNames = Set.fromList $ Config.verilogDisconnectNets cfg
 
 
 -- Module signatures

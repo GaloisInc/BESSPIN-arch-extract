@@ -63,8 +63,8 @@ main = do
         _ -> error "too many arguments - expected only a config file path"
 
     a <- case Config.configInput config of
-        Config.VerilogInput v -> do
-            bs <- BS.readFile $ T.unpack $ Config.verilogSourceFile v
+        Config.VerilogInput vCfg -> do
+            bs <- BS.readFile $ T.unpack $ Config.verilogSourceFile vCfg
 
             (raw, modIds) <- case D.deserialize bs of
                     Left errs -> do
@@ -72,11 +72,11 @@ main = do
                         error $ "decoding error"
                     Right x -> return x
 
-            let blackboxNames = Set.fromList $ Config.verilogBlackboxModules v
+            let blackboxNames = Set.fromList $ Config.verilogBlackboxModules vCfg
 
             let v = fromRaw raw blackboxNames modIds
             writeFile "verilog.txt" $ T.unpack $ printVerilog v
-            return $ extractArch v
+            return $ extractArch vCfg v
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a
 

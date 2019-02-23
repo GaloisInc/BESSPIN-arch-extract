@@ -41,12 +41,17 @@ data Verilog = Verilog
     { verilogBlackboxModules :: [Text]
     -- Path to the CBOR file containing the exported Verilog source.
     , verilogSourceFile :: Text
+    -- Names of nets to disconnect.  Useful for hiding clock and reset nets,
+    -- which would otherwise wind up connected to nearly every part of the
+    -- design.
+    , verilogDisconnectNets :: [Text]
     }
     deriving (Show)
 
 defaultVerilog = Verilog
     { verilogBlackboxModules = []
     , verilogSourceFile = "out.cbor"
+    , verilogDisconnectNets = []
     }
 
 data Constraints = Constraints
@@ -122,6 +127,7 @@ data Graphviz = Graphviz
     { graphvizDrawNets :: Bool
     , graphvizDrawOnesidedNets :: Bool
     , graphvizDrawLogics :: Bool
+    , graphvizDrawLogicPorts :: Bool
     , graphvizDedupEdges :: Bool
     -- If `True`, names of merged nets will display as `foo (+2 more)` instead
     -- of listing the name of every net included in the merge.
@@ -139,6 +145,7 @@ defaultGraphviz = Graphviz
     { graphvizDrawNets = True
     , graphvizDrawOnesidedNets = False
     , graphvizDrawLogics = True
+    , graphvizDrawLogicPorts = True
     , graphvizDedupEdges = False
     , graphvizShortenNetNames = False
     , graphvizNumPipelineStages = 0
@@ -247,6 +254,7 @@ verilog :: TOML.Value -> Verilog
 verilog x = tableFold defaultVerilog x
     [ ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
     , ("source-file", \c x -> c { verilogSourceFile = str x })
+    , ("disconnect-nets", \c x -> c { verilogDisconnectNets = listOf str x })
     ]
 
 constraints :: TOML.Value -> Constraints
@@ -269,6 +277,7 @@ graphviz x = tableFold defaultGraphviz x
     [ ("draw-nets", \c x -> c { graphvizDrawNets = bool x })
     , ("draw-onesided-nets", \c x -> c { graphvizDrawOnesidedNets = bool x })
     , ("draw-logics", \c x -> c { graphvizDrawLogics = bool x })
+    , ("draw-logic-ports", \c x -> c { graphvizDrawLogicPorts = bool x })
     , ("dedup-edges", \c x -> c { graphvizDedupEdges = bool x })
     , ("shorten-net-names", \c x -> c { graphvizShortenNetNames = bool x })
     , ("num-pipeline-stages", \c x -> c { graphvizNumPipelineStages = int x })

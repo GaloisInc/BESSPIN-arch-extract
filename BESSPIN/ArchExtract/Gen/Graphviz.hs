@@ -103,13 +103,15 @@ bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
             else
                 loop seen pending (acc |> cur)
 
-logicShowsPorts :: Logic a -> Bool
-logicShowsPorts l = case logicKind l of
-    LkInst _ -> True
-    LkRegister _ -> True
-    LkDFlipFlop _ _ -> True
-    LkRam _ _ _ _ _ -> True
-    _ -> False
+logicShowsPorts :: Cfg -> Logic a -> Bool
+logicShowsPorts cfg l =
+    cfgDrawLogicPorts cfg &&
+    case logicKind l of
+        LkInst _ -> True
+        LkRegister _ -> True
+        LkDFlipFlop _ _ -> True
+        LkRam _ _ _ _ _ -> True
+        _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
 -- switch to a `PBasicLogic` `PortId`.  This is used to get proper
@@ -140,10 +142,10 @@ filterEdges :: Cfg -> Module Ann -> Seq (PortId, PortId) -> Seq (PortId, PortId)
 filterEdges cfg mod edges = edges'
   where
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
-        clearLogicPorts (\idx -> not $ logicShowsPorts $ mod `moduleLogic` idx) edges
+        clearLogicPorts (\idx -> not $ logicShowsPorts cfg $ mod `moduleLogic` idx) edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
-        PBasicLogic _ -> not $ cfgDrawLogics cfg
+        PBasicLogic i -> not $ drawLogicNode cfg (mod `moduleLogic` i)
         PNet i -> not $ drawNetNode cfg (mod `moduleNet` NetId i)
         _ -> False
     edges' = M.foldlWithKey (\es s ts -> es <> fmap (\t -> (s, t)) ts) S.empty edgeMap'
@@ -155,6 +157,7 @@ data Cfg = Cfg
     , cfgDrawNets :: Bool
     , cfgDrawOnesidedNets :: Bool
     , cfgDrawLogics :: Bool
+    , cfgDrawLogicPorts :: Bool
     , cfgHideNamedNets :: Set Text
     , cfgDedupEdges :: Bool
     , cfgShortenNetNames :: Bool
@@ -166,6 +169,7 @@ defaultCfg = Cfg
     , cfgDrawNets = True
     , cfgDrawOnesidedNets = True
     , cfgDrawLogics = True
+    , cfgDrawLogicPorts = True
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = False
     , cfgShortenNetNames = True
@@ -178,6 +182,7 @@ fromConfig g = Cfg
     , cfgDrawNets = Config.graphvizDrawNets g
     , cfgDrawOnesidedNets = Config.graphvizDrawOnesidedNets g
     , cfgDrawLogics = Config.graphvizDrawLogics g
+    , cfgDrawLogicPorts = Config.graphvizDrawLogicPorts g
     , cfgHideNamedNets = Set.empty
     , cfgDedupEdges = Config.graphvizDedupEdges g
     , cfgShortenNetNames = Config.graphvizShortenNetNames g
@@ -191,6 +196,15 @@ drawNetNode cfg net =
     (not onesided || cfgDrawOnesidedNets cfg)
   where
     onesided = S.null (netSources net) || S.null (netSinks net)
+
+drawLogicNode cfg logic =
+    cfgDrawLogics cfg ||
+    case logicKind logic of
+        LkInst _ -> True
+        LkRegister _ -> True
+        LkDFlipFlop _ _ -> True
+        LkRam _ _ _ _ _ -> True
+        _ -> False
 
 drawNetEdges cfg net =
     (not $ last (T.splitOn (T.singleton '.') (netName net))
@@ -287,21 +301,21 @@ logicLabel (LkRegister name) = "(register " <> name <> ")"
 logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
 logicLabel (LkRam name _ _ _ _) = "(ram " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
-logicLabel (LkInst _) = T.pack "(mod inst)"
+logicLabel (LkInst inst) = "(inst " <> instName inst <> ")"
 
 logicNode :: Design a -> Cfg -> Module b -> Int -> Logic Ann -> Maybe (DotNode Text)
 logicNode design cfg mod idx logic
-    | logicShowsPorts logic = Just $
+    | not $ drawLogicNode cfg logic = Nothing
+    | logicShowsPorts cfg logic = Just $
         logicTableNode cfg design mod idx logic
-    | otherwise = logicBasicNode cfg idx logic
+    | otherwise = Just $ logicBasicNode cfg idx logic
 
-logicBasicNode :: Cfg -> Int -> Logic Ann -> Maybe (DotNode Text)
+logicBasicNode :: Cfg -> Int -> Logic Ann -> DotNode Text
 logicBasicNode cfg idx logic =
-    if cfgDrawLogics cfg then Just node else Nothing
+    DotNode (logicKey cfg idx)
+        ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
   where
     color = convColor $ annColor $ logicAnn logic
-    node = DotNode (logicKey cfg idx)
-        ([ mkLabel $ logicLabel $ logicKind logic, Shape BoxShape ] ++ color)
 
 -- List of input port names and output port names for a logic item.  Uses the
 -- module declaration's port names for `LkInst`, and numbers otherwise.
