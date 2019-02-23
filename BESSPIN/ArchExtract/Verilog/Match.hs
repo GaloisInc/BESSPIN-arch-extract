@@ -5,6 +5,7 @@ import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.State
 import Data.Generics
+import Data.List (partition)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
@@ -62,7 +63,7 @@ flattenAssigns precise ss = fsAssigns <$>
                 Nothing -> return s
                 Just else_ -> lift $ execStateT (mapM go else_) s
             joinBranches cond s1 s2
-        Case _ _ -> lift Nothing
+        Case expr cases -> go $ caseToIf expr cases
         For _ _ _ _ -> lift Nothing
         NonBlockingAssign l r -> do
             (var, r) <- lift $ processAssign l r
@@ -132,6 +133,29 @@ flattenAssigns precise ss = fsAssigns <$>
     addIdxs var idxs (ArrayUpdate arr@(Var var') idxs' val)
       | var == var' = ArrayUpdate arr (idxs' ++ idxs) val
     addIdxs var idxs expr = ArrayUpdate (Var' var dummySpan) idxs expr
+
+
+caseToIf :: Expr -> [([Expr], [Stmt])] -> Stmt
+caseToIf e cs = go normalCs
+  where
+    -- All the normal cases are checked in order, ignoring the default case (if
+    -- present).  If none of the normal cases match, the default runs.  There
+    -- should be at most one default case.
+    (defaultCs, normalCs) = partition (null . fst) cs
+
+    defaultSs = case defaultCs of
+        [] -> Nothing
+        [(_, ss)] -> Just ss
+        _ -> error "case stmt has multiple defaults?"
+
+    go [] = error "case stmt has no cases?" 
+    go [(fs, ss)] = If' (mkCond fs) ss defaultSs dummySpan
+    go ((fs, ss) : cs) = If' (mkCond fs) ss (Just [go cs]) dummySpan
+
+    mkCond [] = error "non-default case has empty expr list?"
+    mkCond fs = foldl1 (\a b -> Binary' BOr a b dummySpan) $
+        map (\f -> Binary' BEq e f dummySpan) fs
+
 
 
 guardMsg True _ = return ()
