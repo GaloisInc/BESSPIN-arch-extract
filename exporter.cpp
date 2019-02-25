@@ -718,7 +718,29 @@ void encode_project(Encoder& enc) {
 }
 
 int main(int argc, char **argv) {
+    std::string out_file = "out.cbor";
     for (uint32_t idx = 1; idx < argc; idx += 1) {
+        if (argv[idx][0] == '-') {
+            if (strlen(argv[idx]) != 2) {
+                std::cerr << "unsupported option " << argv[idx] << "\n";
+                return 1;
+            }
+            if (argv[idx][1] == 'o') {
+                ++idx;
+                if (idx < argc) {
+                    out_file = argv[idx];
+                } else {
+                    std::cerr << "option -o requires an argument\n";
+                    return 1;
+                }
+            } else {
+                std::cerr << "unsupported option " << argv[idx] << "\n";
+                return 1;
+            }
+
+            continue;
+        }
+
         if (!veri_file::Analyze(argv[idx], veri_file::SYSTEM_VERILOG)) {
             std::cerr << "failed to analyze " << argv[idx] << "\n";
             return 1;
@@ -744,7 +766,7 @@ int main(int argc, char **argv) {
         encode_project(enc);
     }
 
-    std::ofstream out("out.cbor", std::ofstream::binary);
+    std::ofstream out(out_file, std::ofstream::binary);
     size_t used = cbor_encoder_get_buffer_size(enc.ce.get(), buf);
     std::cout << "generated " << used << " bytes\n";
     out.write((const char*)buf, used);
