@@ -54,17 +54,17 @@
 #include <memory>
 #include <vector>
 
-#include <Array.h>
-#include <Map.h>
-#include <veri_file.h>
-#include <VeriId.h>
-#include <VeriExpression.h>
-#include <VeriConstVal.h>
-#include <VeriMisc.h>
-#include <VeriModule.h>
-#include <VeriStatement.h>
-#include <VeriScope.h>
-#include <veri_yacc.h>
+#include <verific/Array.h>
+#include <verific/Map.h>
+#include <verific/veri_file.h>
+#include <verific/VeriId.h>
+#include <verific/VeriExpression.h>
+#include <verific/VeriConstVal.h>
+#include <verific/VeriMisc.h>
+#include <verific/VeriModule.h>
+#include <verific/VeriStatement.h>
+#include <verific/VeriScope.h>
+#include <verific/veri_yacc.h>
 
 #include <tinycbor/cbor.h>
 

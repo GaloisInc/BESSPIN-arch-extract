@@ -1,25 +1,25 @@
 CXX = g++
-OBJECTS = main.o
 
-VERIFIC_ROOT ?= ../verific
+CXXFLAGS = -O3 -std=c++11 -g
 
-CXXFLAGS = -I$(VERIFIC_ROOT)/verilog -I$(VERIFIC_ROOT)/util \
-    -I$(VERIFIC_ROOT)/containers -O3 -std=c++11 -g
+LDFLAGS = -lz -ltinycbor \
+	-lverific_verilog -lverific_util -lverific_containers -lverific_database
 
-LDFLAGS = $(VERIFIC_ROOT)/verilog/verilog-linux.a   \
-    $(VERIFIC_ROOT)/util/util-linux.a               \
-    $(VERIFIC_ROOT)/containers/containers-linux.a   \
-    $(VERIFIC_ROOT)/database/database-linux.a -lz -ltinycbor
+all:    exporter importer
 
-all:    arch-extract exporter
+EXPORTER_OBJS = exporter.o
 
-arch-extract:    main.o
-	$(CXX) $^ $(LDFLAGS) -o $@ -O3
+%.o: %.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
-exporter:    exporter.o
-	$(CXX) $^ $(LDFLAGS) -o $@ -O3
+exporter:    $(EXPORTER_OBJS)
+	# Note - order of -l flags matters for linking
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(LDFLAGS)
 
 clean:
-	$(RM) $(OBJECTS) arch-extract exporter
+	rm -fv $(EXPORTER_OBJS) exporter
 
-.PHONY: all clean
+importer:
+	ghc -j1 --make -O3 importer.hs
+
+.PHONY: all clean importer

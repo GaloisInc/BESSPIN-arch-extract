@@ -53,10 +53,13 @@ let pkgs = import <nixpkgs> {};
     };
 
 
+    verific = pkgs.callPackage ./verific.nix {};
+
+
 in pkgs.mkShell {
     buildInputs = attrValues {
         inherit (pkgs) stdenv flex bison readline zlib;
-        inherit tinycbor python3;
+        inherit verific tinycbor python3;
 
         inherit (pkgs) cabal2nix nix-prefetch-git;
         inherit (pkgs) graphviz;
