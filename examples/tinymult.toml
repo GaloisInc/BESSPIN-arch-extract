@@ -1,0 +1,95 @@
+# Configuration file for processing the `tinymult.sv` example design.
+#
+# This file demonstrates some of the most useful configuration options, but not
+# all of them.  See `BESSPIN/ArchExtract/Config.hs` for the full list.
+
+
+# (System)Verilog input configuration.
+[verilog]
+# Path to the CBOR file containing the SystemVerilog AST.  This file is
+# produced by running the `exporter` tool on the `tinymult.sv` source file.
+source-file = "tinymult.cbor"
+
+
+# Constraint generation configuration.  After extracting the architecture
+# information from the input, the tool builds up a set of constraints
+# describing valid configurations of the design, which is used by the Clafer
+# and SMT backends.  This section controls how the constraints are generated.
+[constraints]
+# Add constraints to the `tinymult` module that set each parameter to its
+# default value.  Normally, the parameters of each instance of a module are
+# constrained to match the parameter expressions provided in the module
+# instantiation statement (or to match the parameters' default expressions, for
+# parameters that are unset).  But `tinymult` is the top-level module of this
+# design, so it is never instantiated explicitly, and its parameter values must
+# be constrained some other way.
+force-module-defaults = ["tinymult"]
+
+# Generate "override" variables for parameter values in module instantiations,
+# local parameter definitions (`parameter foo = 123;`), and the parameter
+# values enforced by the effects of `force-module-defaults`.  Each override is
+# a potential feature, which might be able to vary to produce different
+# configurations of the design.  (But not all overrides give rise to features:
+# some overrides can't be set to anything but their initial value due to other
+# constraints on the design.)
+override-inst-params = true
+override-local-params = true
+override-forced-params = true
+
+
+# Graphviz output configuration.
+[graphviz]
+# Directory where generated `*.dot` files should be placed.  The graphviz
+# backend generates one output file for each module in the design.
+out-dir = "tinymult/modules"
+
+# Don't draw nodes for combinational logic elements, but do draw a node for
+# each net.  When a node is omitted, each of its inputs is connected directly
+# to each of its outputs, so any dataflows that passed through that node will
+# still be visible.
+draw-logics = false
+draw-nets = true
+
+# Merge together edges that connect the same source to the same destination.
+# These can arise from expressions that reference the same net multiple times,
+# as in `x + x`, or as a result of omitting nodes.
+dedup-edges = true
+
+
+# Graphviz module tree output configuration.  This output mode generates a
+# single graph showing the dependency graph of modules (where `a` depends on
+# `b` if `a` contains one or more instances of `b`).  For `tinymult`, the graph
+# shows only that each instance of `tinymult` contains one instance of `adder`.
+[module-tree]
+# Where to write the graphviz representation of the module dependency graph.
+out-file = "tinymult/deps.dot"
+
+# The module to place at the root of the dependency graph.
+root-module = "tinymult"
+
+
+# Clafer output configuration.
+[clafer]
+out-file = "tinymult/tinymult.cfr"
+
+# Modules to instantiate at the root of the clafer model.  If this is empty,
+# only abstract clafers will be generated (one for each module declaration).
+root-modules = ["tinymult"]
+
+
+# SMTLIB2 output configuration.  This backend emits all the design's
+# constraints in SMTLIB2 format so they can be checked or configurations can be
+# generated using an SMT solver.
+[smt]
+out-file = "tinymult/tinymult.smtlib2"
+
+# Root module of the design.  The SMTLIB2 output will contain constraints
+# describing the parameter values of one instance of this module and any
+# modules it instantiates.
+root-module = "tinymult"
+
+# Assign a name to each constraint in the output, so that unsat core generation
+# will work properly.  This is useful for locating unsupported type conversions
+# (such as implicit widening or narrowing of Verilog buses) that result in
+# unsatisfiable constraints.
+gen-unsat-core = false
