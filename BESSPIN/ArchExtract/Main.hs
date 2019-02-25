@@ -95,7 +95,10 @@ main = do
                     Just ns -> S.fromList $ map (\n -> case M.lookup n modsByName of
                         Nothing -> error $ "no such module " ++ show n
                         Just x -> x) ns
+
             let dir = T.unpack $ Config.graphvizOutDir g
+            createDirectoryIfMissing False dir
+
             forM_ mods $ \mod -> do
                 putStrLn " ----------------------"
                 putStrLn $ T.unpack $ moduleName mod

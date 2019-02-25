@@ -26,6 +26,8 @@ source files, followed by the `-o out.cbor` option.
 Second, run the `importer` tool, which reads a design from the CBOR file and
 produces several outputs, based on a configuration file:
 
+    # Create a directory to store the outputs
+    mkdir tinymult
     ./importer examples/tinymult.toml
 
 `examples/tinymult.toml` configures the tool to read a SystemVerilog AST from
