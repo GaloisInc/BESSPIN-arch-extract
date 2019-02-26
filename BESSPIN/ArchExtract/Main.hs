@@ -26,6 +26,7 @@ import qualified BESSPIN.ArchExtract.Verilog.Decode as D
 import BESSPIN.ArchExtract.Verilog.Print
 import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Constraints
+import BESSPIN.ArchExtract.NameMap
 import BESSPIN.ArchExtract.Print
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
@@ -49,6 +50,18 @@ netsNamed ns mod = S.foldMapWithIndex go (moduleNets mod)
     ns' = Set.fromList $ map T.pack ns
     go i net = if not $ Set.null $ Set.intersection ns' (Set.fromList $ T.lines $ netName net)
         then Set.singleton $ NetId i else Set.empty
+
+loadNameMap nm = do
+    fromFile <- case Config.nameMapFile nm of
+        Nothing -> return []
+        Just f -> do
+            t <- T.readFile $ T.unpack f
+            return $ parseNameMap t
+
+    let fromEntries = map (\(k,v) -> (parseFilter k, v)) $ Config.nameMapEntries nm
+
+    -- Inline entries take precedence over ones read from the file.
+    return $ fromEntries ++ fromFile
 
 main = do
     args <- getArgs
@@ -80,12 +93,19 @@ main = do
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a
 
+    nameMap <- loadNameMap $ Config.configNameMap config
+    putStrLn "name map:"
+    mapM_ print nameMap
+    putStrLn "end name map"
+
     let a' = addConstraintsForConfig (Config.configConstraints config) a
     let a = a'
+    let aMapped = applyNameMap nameMap a'
 
     case Config.configGraphvizOutput config of
         Nothing -> return ()
         Just g -> do
+            let a = aMapped
             let a' = Design $ fmap (mapAnn (\_ -> defaultAnn)) $ designMods a
             let a = a'
             let modsByName = M.fromList $ map (\m -> (moduleName m, m)) $
@@ -110,6 +130,7 @@ main = do
     case Config.configModuleTreeOutput config of
         Nothing -> return ()
         Just mt -> do
+            let a = aMapped
             let g = graphModuleTree mt a
             let path = T.unpack $ Config.moduleTreeOutFile mt
             writeFile path $ printGraphviz g

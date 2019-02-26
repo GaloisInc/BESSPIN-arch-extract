@@ -9,6 +9,7 @@ import qualified TOML
 
 data Config = Config
     { configInput :: Input
+    , configNameMap :: NameMap
     , configConstraints :: Constraints
     , configGraphvizOutput :: Maybe Graphviz
     , configModuleTreeOutput :: Maybe ModuleTree
@@ -19,6 +20,7 @@ data Config = Config
 
 defaultConfig = Config
     { configInput = defaultInput
+    , configNameMap = defaultNameMap
     , configConstraints = defaultConstraints
     , configGraphvizOutput = Nothing
     , configModuleTreeOutput = Nothing
@@ -52,6 +54,17 @@ defaultVerilog = Verilog
     { verilogBlackboxModules = []
     , verilogSourceFile = "out.cbor"
     , verilogDisconnectNets = []
+    }
+
+data NameMap = NameMap
+    { nameMapFile :: Maybe Text
+    , nameMapEntries :: [(Text, Text)]
+    }
+    deriving (Show)
+
+defaultNameMap = NameMap
+    { nameMapFile = Nothing
+    , nameMapEntries = []
     }
 
 data Constraints = Constraints
@@ -210,6 +223,9 @@ defaultSMT = SMT
 listOf f (TOML.List xs) = map f xs
 listOf _ x = error $ "expected list, but got " ++ show x
 
+tableOf f (TOML.Table kvs) = map (\(k,v) -> (k, f v)) kvs
+tableOf _ x = error $ "expected table, but got " ++ show x
+
 str (TOML.String s) = s
 str x = error $ "expected string, but got " ++ show x
 
@@ -243,6 +259,7 @@ config x =
     else
         tableFold defaultConfig x
             [ ("verilog", \c x -> c { configInput = VerilogInput $ verilog x })
+            , ("name-map", \c x -> c { configNameMap = nameMap x })
             , ("constraints", \c x -> c { configConstraints = constraints x })
             , ("graphviz", \c x -> c { configGraphvizOutput = Just $ graphviz x })
             , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
@@ -257,6 +274,12 @@ verilog x = tableFold defaultVerilog x
     [ ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
     , ("source-file", \c x -> c { verilogSourceFile = str x })
     , ("disconnect-nets", \c x -> c { verilogDisconnectNets = listOf str x })
+    ]
+
+nameMap :: TOML.Value -> NameMap
+nameMap x = tableFold defaultNameMap x
+    [ ("file", \c x -> c { nameMapFile = Just $ str x })
+    , ("entries", \c x -> c { nameMapEntries = tableOf str x })
     ]
 
 constraints :: TOML.Value -> Constraints

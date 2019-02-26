@@ -27,10 +27,13 @@ let pkgs = import <nixpkgs> {};
       clafer
       cborg
       graphviz
-      syb union-find microlens-platform
+      syb
+      union-find
+      microlens-platform
       prettyprinter
       toml-parser
       simple-smt
+      attoparsec
     ]);
 
     clafer_0_4_4 = haskellPackages.callPackage ./clafer-0.4.4.nix {};
