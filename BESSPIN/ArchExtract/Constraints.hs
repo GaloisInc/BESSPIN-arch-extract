@@ -22,6 +22,8 @@ import Debug.Trace
 
 import BESSPIN.ArchExtract.Architecture
 import qualified BESSPIN.ArchExtract.Config as Config
+import qualified BESSPIN.ArchExtract.Constraints.Parser as P
+import qualified BESSPIN.ArchExtract.Constraints.Resolve as R
 
 
 -- Shift all `EParam` and `EInstParam` by prepending `idx`.  This converts
@@ -180,6 +182,10 @@ portTypeConstraints d m = flip S.foldMapWithIndex (moduleLogics m) $ \idx logic 
 addPortTypeConstraints d m = over _moduleConstraints (<> portTypeConstraints d m) m
 
 
+addCustomConstraints es m =
+    over _moduleConstraints (<> S.fromList (map (\e -> Constraint e CoCustom) es)) m
+
+
 addConstraintsForConfig cfg d = over _designMods go d
   where
     go ms = flip S.mapWithIndex ms $ \idx m ->
@@ -194,6 +200,9 @@ addConstraintsForConfig cfg d = over _designMods go d
         else id) $
         (if Config.constraintsUseNetTypes cfg then addNetTypeConstraints else id) $
         (if Config.constraintsUsePortTypes cfg then addPortTypeConstraints d else id) $
+        (case M.lookup idx customMap of
+            Nothing -> id
+            Just es -> addCustomConstraints es) $
         m
 
     modIdMap :: Map Text Int
@@ -213,6 +222,15 @@ addConstraintsForConfig cfg d = over _designMods go d
         | Config.constraintsAllowOverrideNonConstant cfg = f e
         | isConstExpr e = f e
         | otherwise = e
+
+    rcx = R.mkContext d
+
+    parseResolve idx s = R.resolve (R.withCurModule idx rcx) $ P.parseConstraint s
+
+    customMap = foldMap (\(modName, conStrs) -> case M.lookup modName modIdMap of
+            Nothing -> error $ "got constraints for unknown module " <> T.unpack modName
+            Just idx -> M.singleton idx $ map (parseResolve idx) conStrs) $
+        Config.constraintsCustom cfg
 
 -- Checks if a `ConstExpr` (which may be better named "param expr") is truly
 -- constant, meaning it doesn't depend on the values of any parameters.
@@ -423,4 +441,5 @@ showOrigin d m o = case o of
         let instMod = d `designMod` instModId inst in
         "port-conn-" <> moduleName m <> "$" <> instName inst <> "$" <>
             portName (moduleSidePort instMod (flipSide side) j)
+    CoCustom -> "custom"
     CoText t -> t

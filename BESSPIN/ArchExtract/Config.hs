@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.Config where
 
+import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -119,6 +120,9 @@ data Constraints = Constraints
     -- This is an alternative to `require-big-endian-vectors` for ruling out
     -- undesirable solutions.
     , constraintsRequirePositiveParams :: Bool
+
+    -- Map from module name to a list of custom constraints for that module.
+    , constraintsCustom :: [(Text, [Text])]
     }
     deriving (Show)
 
@@ -134,6 +138,7 @@ defaultConstraints = Constraints
     , constraintsAllowOverrideNonConstant = False
     , constraintsRequireBigEndianVectors = False
     , constraintsRequirePositiveParams = False
+    , constraintsCustom = []
     }
 
 data Graphviz = Graphviz
@@ -295,6 +300,7 @@ constraints x = tableFold defaultConstraints x
     , ("allow-override-non-constant", \c x -> c { constraintsAllowOverrideNonConstant = bool x })
     , ("require-big-endian-vectors", \c x -> c { constraintsRequireBigEndianVectors = bool x })
     , ("require-positive-params", \c x -> c { constraintsRequirePositiveParams = bool x })
+    , ("custom", \c x -> c { constraintsCustom = tableOf (listOf str) x })
     ]
 
 graphviz :: TOML.Value -> Graphviz

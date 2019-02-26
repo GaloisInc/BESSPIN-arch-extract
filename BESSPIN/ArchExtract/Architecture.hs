@@ -166,6 +166,7 @@ data ConstraintOrigin =
     CoNetConn NetId Side Int |
     -- From the port connection for port `side, j` of LkInst logic `i`.
     CoPortConn Int Side Int |
+    CoCustom |
     CoText Text
     deriving (Show, Eq, Typeable, Data)
 
