@@ -275,6 +275,7 @@ convParamExpr paramPath e = go e
     go (EInstParam _ [] idx) = Just $ mkPath $ paramPath idx
     go (EInstParam _ _ _) = Nothing
     go (EUnArith _ UClog2 _) = Nothing
+    go (EUnArith _ UIsPow2 _) = Nothing
     go (EBinArith _ BAdd l r) = EAdd noSpan <$> go l <*> go r
     go (EBinArith _ BSub l r) = ESub noSpan <$> go l <*> go r
     go (EBinArith _ BMul l r) = EMul noSpan <$> go l <*> go r

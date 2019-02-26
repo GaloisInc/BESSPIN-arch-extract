@@ -48,6 +48,7 @@ convConstExpr fc e = go e
     go (EParam _ idx) = Atom $ fcVars fc `S.index` idx
     go (EInstParam _ insts idx) = error $ "unexpected EInstParam in flattened constraint"
     go (EUnArith _ UClog2 e) = call "clog2" [go e]
+    go (EUnArith _ UIsPow2 e) = call "is-pow2" [go e]
     go (EBinArith _ BAdd l r) = call "+" [go l, go r]
     go (EBinArith _ BSub l r) = call "-" [go l, go r]
     go (EBinArith _ BMul l r) = call "*" [go l, go r]
@@ -94,6 +95,11 @@ defineClog2 = defineFun "clog2" [("x", tInt)] tInt body
     maxBits = 64
     cases = [(call "<=" [Atom "x", intLit (2 ^ i)], intLit i) | i <- [0 .. maxBits - 1]]
 
+defineIsPow2 = defineFun "is-pow2" [("x", tInt)] tBool body
+  where
+    body = call "or" [call "=" [Atom "x", intLit $ 2 ^ i] | i <- [0 .. maxBits - 1]]
+    maxBits = 64
+
 --defineRangeSize = defineFun "range-size" [("l", tInt), ("r", tInt)] tInt $
 --    call "+" [Atom "1", call "abs" [call "-" [Atom "l", Atom "r"]]]
 defineRangeSize = defineFun "range-size" [("l", tInt), ("r", tInt)] tInt $
@@ -134,6 +140,7 @@ initCommands fc = initCommands' False fc
 initCommands' :: Bool -> FlatConstraints -> Seq SExpr
 initCommands' unsatCore fc =
     defineClog2 <|
+    defineIsPow2 <|
     defineRangeSize <|
     fmap (\v -> call "declare-const" [Atom v, tInt]) (fcVars fc) <>
     foldMap (\o -> S.fromList

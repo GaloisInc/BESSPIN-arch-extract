@@ -101,6 +101,7 @@ callExpr = do
         "rangesize" -> ERangeSize <$> expr <* "," <* whitespace <*> expr
         "size" -> ESize <$> dotted
         "clog2" -> EUnArith UClog2 <$> expr
+        "ispow2" -> EUnArith UIsPow2 <$> expr
     ")" >> whitespace
     return e
 

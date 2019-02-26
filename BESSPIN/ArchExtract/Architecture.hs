@@ -220,7 +220,7 @@ data ConstExpr =
     | EOverrideInstParam Int Int ConstExpr
     deriving (Show, Eq, Typeable, Data)
 
-data UnArithOp = UClog2
+data UnArithOp = UClog2 | UIsPow2
     deriving (Show, Eq, Typeable, Data)
 
 data BinArithOp = BAdd | BSub | BMul
