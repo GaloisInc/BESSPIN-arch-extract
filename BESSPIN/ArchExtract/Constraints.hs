@@ -327,7 +327,7 @@ flattenConstraints d rootId = conv $ execState (go rootId "") initState
         forM_ (moduleConstraints m) $ \c -> do
             e <- goExpr mi $ constraintExpr c
             let o = CoText $ showOrigin d m $ constraintOrigin c
-            addConstraint e o
+            traceShow ("one-to-one", checkOneToOneEq e, o) $ addConstraint e o
 
         return mi
 
@@ -443,3 +443,51 @@ showOrigin d m o = case o of
             portName (moduleSidePort instMod (flipSide side) j)
     CoCustom -> "custom"
     CoText t -> t
+
+
+
+data OneToOneResult =
+    -- The expression's value is a constant.
+      RConst
+    -- The expression is a one-to-one expression of the indicated variable.
+    | RVar Int
+    -- Neither of the above conditions holds.
+    | RUnknown
+    deriving (Show, Eq)
+
+joinOneToOne RConst x = x
+joinOneToOne x RConst = x
+joinOneToOne _ _ = RUnknown
+
+oneToOneExpr :: ConstExpr -> OneToOneResult
+oneToOneExpr e = go e
+  where
+    go (EIntLit _ _) = RConst
+    go (EParam _ v) = RVar v
+    go (EInstParam _ _ _) = RUnknown
+    go (EUnArith _ UClog2 e) = go e
+    go (EUnArith _ UIsPow2 e) = scramble $ go e
+    go (EBinArith _ _ l r) = mix (go l) (go r)
+    go (EBinCmp _ _ l r) = scramble $ mix (go l) (go r)
+    go (ERangeSize _ l r) = mix (go l) (go r)
+    go (EOverride _ e) = go e       -- TODO
+    go (EOverrideLocalParam _ _) = RUnknown
+    go (EOverrideInstParam _ _ _) = RUnknown
+
+    -- Simulate the effect of a non-one-to-one function.
+    scramble RConst = RConst
+    scramble (RVar _)  = RUnknown
+    scramble RUnknown  = RUnknown
+
+    -- Simulate the effect of a binary operation that mixes its two operands in
+    -- a reversible way.  If one side is `RConst`, the operation can be
+    -- reversed to retrieve the other operand, but if both sides are `RVar`
+    -- (even the same `RVar`), information may be lost.
+    mix RConst x = x
+    mix x RConst = x
+    mix _ _ = RUnknown
+
+checkOneToOneEq :: ConstExpr -> Maybe (Int, Int)
+checkOneToOneEq (EBinCmp _ BEq l r)
+  | RVar i <- oneToOneExpr l, RVar j <- oneToOneExpr r = Just (i, j)
+checkOneToOneEq _ = Nothing
