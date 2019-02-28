@@ -100,10 +100,11 @@ flattenAssigns precise ss = fsAssigns <$>
                 fsAssigns s2 M.\\ fsAssigns s1
 
         -- The expressions in `only1` and `only2` introduce new references to
-        -- some variables.  We need to check that those variables weren't
-        -- previously blocking-assigned.  We only need to check the pre-branch
-        -- `fsBlockingAssigned` set, because if a variable `i` is in `only1`,
-        -- then the new reference is 
+        -- some variables, to handle the "unmodified" case.  We need to check
+        -- that those variables weren't previously blocking-assigned.  We only
+        -- need to check the pre-branch `fsBlockingAssigned` set, because if a
+        -- variable `i` is in `only1`, then the new reference comes from the
+        -- `s2` side, where `i` is not modified.
         ba <- gets fsBlockingAssigned
         guard $ not $ any (flip Set.member ba) $
             Set.toList (M.keysSet only1 <> M.keysSet only2)
@@ -148,13 +149,39 @@ caseToIf e cs = go normalCs
         [(_, ss)] -> Just ss
         _ -> error "case stmt has multiple defaults?"
 
-    go [] = error "case stmt has no cases?" 
+    go [] = error "case stmt has no cases?"
     go [(fs, ss)] = If' (mkCond fs) ss defaultSs dummySpan
     go ((fs, ss) : cs) = If' (mkCond fs) ss (Just [go cs]) dummySpan
 
     mkCond [] = error "non-default case has empty expr list?"
     mkCond fs = foldl1 (\a b -> Binary' BOr a b dummySpan) $
         map (\f -> Binary' BEq e f dummySpan) fs
+
+-- Try to push `IfExpr` underneath `ArrayUpdate`.  This is needed to recognize
+-- the declarative specification of some RAMs.
+pushIfUnderUpdate :: Expr -> Expr
+pushIfUnderUpdate e = everywhere (mkT go) e
+  where
+    go (IfExpr' cond e1 e2 sp) | Just (arr, idxs, value1, value2) <- sideInfo e1 e2 =
+        ArrayUpdate arr idxs (IfExpr' cond value1 value2 sp)
+    go e = e
+
+    sideInfo (ArrayUpdate arr1 idxs1 value1) (ArrayUpdate arr2 idxs2 value2)
+      | arr1 `eqNoSpan` arr2 && idxs1 `eqNoSpan` idxs2 =
+        Just (arr1, idxs1, value1, value2)
+    sideInfo (ArrayUpdate arr1 idxs1 value1) e2
+      | arr1 `eqNoSpan` e2 =
+        Just (arr1, idxs1, value1, MemIndex' e2 idxs1 dummySpan)
+    sideInfo e1 (ArrayUpdate arr2 idxs2 value2)
+      | e1 `eqNoSpan` arr2 =
+        Just (arr2, idxs2, MemIndex' e1 idxs2 dummySpan, value2)
+    sideInfo _ _ = Nothing
+
+
+    unspan e = everywhere (mkT $ \_ -> Span 0 0) e
+
+    eqNoSpan a b = unspan a == unspan b
+
 
 
 
@@ -309,7 +336,8 @@ inferRam (Always evts ss) = do
             return $ Ram clk resets var addr data_ enable
         _ -> Left $ "expected array update assignment in RAM data expr"
       where
-        (resets, dataExpr) = findResets expr
+        expr' = pushIfUnderUpdate expr
+        (resets, dataExpr) = findResets expr'
         (enables, dataExpr') = findEnables var dataExpr
         enable = case enables of
             [] -> ConstBool' "1'b1" True dummySpan
@@ -347,7 +375,7 @@ isLegal e = everything (&&) (True `mkQ` go) e
 
 edgeLevel PosEdge = True
 edgeLevel NegEdge = False
-        
+
 
 -- Find all variables that appear in outermost `IfExpr` conditions (i.e.,
 -- `IfExpr`s that aren't nested under non-`IfExpr` expressions).

@@ -50,9 +50,9 @@ exprType varType convExpr e = go e
             return $ TWire [ERangeSize dummySpan l r] []
         t -> return $ warn "index (range)" t
     -- `MemIndex` indexes should always be `ISingle`.
-    go (MemIndex mem []) = (resolve <$> go mem) >>= \ty -> case ty of
-        TWire ws (d : ds) -> return $ TWire ws ds
-        t -> return $ warn "memindex (single)" t
+    go (MemIndex mem idxs) = (resolve <$> go mem) >>= \ty -> case ty of
+        TWire ws ds | length ds >= length idxs -> return $ TWire ws (drop (length idxs) ds)
+        t -> return $ warn ("memindex (" <> (show $ length idxs) <> " idxs)") t
     go (Const t) | Just width <- bitConstSize t = return $ TWire [EIntLit dummySpan width] []
     go (Const _) = return TUnknown
     -- This is just a bad guess at a possible type.  TODO: actually track types
