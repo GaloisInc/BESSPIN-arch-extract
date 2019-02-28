@@ -2,6 +2,7 @@
 module BESSPIN.ArchExtract.Gen.Clafer where
 
 import Control.Monad
+import Control.Monad.Writer
 import Data.Foldable
 import Data.Generics
 import qualified Data.Map as M
@@ -24,6 +25,7 @@ import BESSPIN.ArchExtract.Architecture hiding (Span)
 import qualified BESSPIN.ArchExtract.Config as Config
 
 joinName parts = T.intercalate "_" parts
+
 
 mkPath :: [Text] -> Exp
 mkPath (name : names) = foldl (\e n -> EJoin noSpan e (go n)) (go name) names
@@ -97,48 +99,60 @@ convModule :: Config.Clafer -> Design a -> Module a -> [Element]
 convModule cfg design mod = [ modCfr ]
   where
     name = moduleName mod
-    implName = joinName ["origin"]
+    originName = joinName ["origin"]
     modName = joinName ["module", name]
 
-    impl = mkClafer implName concrete (Just ["verilog_implementation"])
-        [ mkEqCon' ["name"] (mkStrLit name)
-        -- TODO: file
-        ]
+    origin = mkClafer originName concrete originParentName originParts
+    originParentName =
+        if Config.claferUseBackgroundTheory cfg then
+            Just ["verilog_implementation"] else Nothing
+    originParts = execWriter $ do
+        if Config.claferUseBackgroundTheory cfg then
+            tell [mkEqCon' ["name"] (mkStrLit name)]
+        else
+            tell [mkRef "name" (mkStrLit name)]
 
     inPorts = [mkPath [cfrPortName Source i] | i <- [0 .. S.length (moduleInputs mod) - 1]]
     outPorts = [mkPath [cfrPortName Sink i] | i <- [0 .. S.length (moduleOutputs mod) - 1]]
 
-    baseParts =
-        [ mkEqCon' ["name"] (mkStrLit name)
-        , impl
-        , mkEqCon' ["refinement"] (mkPath [implName])
-        ]
+    baseParts = execWriter $ do
+        when (Config.claferUseBackgroundTheory cfg) $
+            tell [mkEqCon' ["name"] (mkStrLit name)]
+
+        when (Config.claferEmitOrigin cfg) $ do
+            tell [origin]
+            when (Config.claferUseBackgroundTheory cfg) $
+                tell [mkEqCon' ["refinement"] (mkPath [originName])]
 
     paramParts = toList (S.mapWithIndex convParam (moduleParams mod))
 
-    netParts = S.foldMapWithIndex convNet (moduleNets mod)
+    netParts = S.foldMapWithIndex (convNet cfg) (moduleNets mod)
 
-    portParts = concat
-        [ toList (S.mapWithIndex (convPort Source) (moduleInputs mod))
-        , toList (S.mapWithIndex (convPort Sink) (moduleOutputs mod))
-        , mkEqSetCon' ["in_ports"] inPorts
-        , mkEqSetCon' ["unbound_in_ports"] inPorts
-        , mkEqSetCon' ["out_ports"] outPorts
-        , mkEqSetCon' ["unbound_out_ports"] outPorts
-        ]
+    portParts = execWriter $ do
+        tell $ toList (S.mapWithIndex (convPort cfg Source) (moduleInputs mod))
+        tell $ toList (S.mapWithIndex (convPort cfg Sink) (moduleOutputs mod))
+        when (Config.claferUseBackgroundTheory cfg) $ do
+            tell $ mkEqSetCon' ["in_ports"] inPorts
+            tell $ mkEqSetCon' ["unbound_in_ports"] inPorts
+            tell $ mkEqSetCon' ["out_ports"] outPorts
+            tell $ mkEqSetCon' ["unbound_out_ports"] outPorts
 
     -- List of the indexes of all logics we should emit.
     emitLogicIdxs = S.foldMapWithIndex (\idx l -> case logicKind l of
         LkInst _ | Config.claferEmitInsts cfg -> [idx]
         _ | Config.claferEmitLogics cfg -> [idx]
         _ -> []) (moduleLogics mod)
-    logicParts =
-        foldMap (\idx ->
-            let l = mod `moduleLogic` idx in
-            convLogic cfg design mod idx l) emitLogicIdxs
-        ++ mkEqSetCon' ["parts"] [mkPath [cfrLogicName i] | i <- emitLogicIdxs]
+    logicParts = execWriter $ do
+        forM_ emitLogicIdxs $ \idx -> do
+            let l = mod `moduleLogic` idx
+            tell $ convLogic cfg design mod idx l
 
-    modCfr = mkClafer modName Abstract (Just ["component"]) (
+        when (Config.claferUseBackgroundTheory cfg) $
+            tell $ mkEqSetCon' ["parts"] [mkPath [cfrLogicName i] | i <- emitLogicIdxs]
+
+    parentName =
+        if Config.claferUseBackgroundTheory cfg then Just ["component"] else Nothing
+    modCfr = mkClafer modName Abstract parentName (
         baseParts
         ++ (if Config.claferEmitParams cfg then paramParts else [])
         ++ (if Config.claferEmitNets cfg then netParts else [])
@@ -154,19 +168,20 @@ convParam idx param =
 
 convLogic :: Config.Clafer -> Design a -> Module a -> Int -> Logic a -> [Element]
 convLogic cfg design mod idx logic@(Logic { logicKind = LkInst inst }) =
-    [ mkClafer (cfrLogicName idx) concrete (Just [instModName]) (
-        [ mkEqCon' ["name"] (mkStrLit $ instName inst)
-        ]
-        ++ (if Config.claferEmitParams cfg then paramCons else [])
-        )]
+    [ mkClafer (cfrLogicName idx) concrete (Just [instModName]) parts]
   where
     instMod = design `designMod` instModId inst
     instModName = joinName ["module", moduleName instMod]
 
+    parts = execWriter $ do
+        when (Config.claferUseBackgroundTheory cfg) $
+            tell [mkEqCon' ["name"] (mkStrLit $ instName inst)]
+        when (Config.claferEmitParams cfg) $
+            tell $ S.foldMapWithIndex go (moduleParams instMod)
+
     parentVar i = ["parent", cfrParamName i $ mod `moduleParam` i]
     childVar i = [cfrParamName i $ instMod `moduleParam` i]
 
-    paramCons = S.foldMapWithIndex go (moduleParams instMod)
     go idx decl = case join $ S.lookup idx (instParams inst) of
         Just expr -> maybeToList $
             mkEqCon' [cfrParamName idx decl] <$> convParamExpr parentVar expr
@@ -175,33 +190,40 @@ convLogic cfg design mod idx logic@(Logic { logicKind = LkInst inst }) =
                 mkEqCon' [cfrParamName idx decl] <$> convParamExpr childVar expr
             Nothing ->
                 traceShow ("no default available for", decl) []
-convLogic _ _ _ idx logic =
-    let displayName = case logicKind logic of
-            LkRegister t -> Just t
-            LkDFlipFlop t _ -> Just t
-            LkRam t _ _ _ _ -> Just t
-            _ -> Nothing
-    in
-    let inPorts = toList $ S.mapWithIndex (convPin Source) $ logicInputs logic in
-    let outPorts = toList $ S.mapWithIndex (convPin Sink) $ logicOutputs logic in
-    let inPortExps = [mkPath [cfrPortName Source i] | i <- [0 .. length inPorts - 1]] in
-    let outPortExps = [mkPath [cfrPortName Sink i] | i <- [0 .. length outPorts - 1]] in
-    let nameCon = case displayName of
-            Nothing -> []
-            Just t -> [mkEqCon' ["name"] (mkStrLit t)]
-    in
-    [ mkClafer (cfrLogicName idx) concrete (Just ["logic"])
-        ( inPorts
-        ++ outPorts
-        ++ nameCon
-        ++ mkEqSetCon' ["in_ports"] inPortExps
-        ++ mkEqSetCon' ["unbound_in_ports"] inPortExps
-        ++ mkEqSetCon' ["out_ports"] outPortExps
-        ++ mkEqSetCon' ["unbound_out_ports"] outPortExps
-        ) ]
 
-convNet :: Int -> Net a -> [Element]
-convNet idx net =
+convLogic cfg _ _ idx logic =
+    [ mkClafer (cfrLogicName idx) concrete parentName parts ]
+  where
+    parts = execWriter $ do
+        tell $ toList $ S.mapWithIndex (convPin cfg Source) $ logicInputs logic
+        tell $ toList $ S.mapWithIndex (convPin cfg Sink) $ logicOutputs logic
+        when (Config.claferUseBackgroundTheory cfg) $ do
+            tell $ case displayName of
+                Nothing -> []
+                Just t -> [mkEqCon' ["name"] (mkStrLit t)]
+            let inPortExps = [mkPath [cfrPortName Source i] |
+                    i <- [0 .. S.length (logicInputs logic) - 1]]
+            let outPortExps = [mkPath [cfrPortName Sink i] |
+                    i <- [0 .. S.length (logicOutputs logic) - 1]]
+            tell $ mkEqSetCon' ["in_ports"] inPortExps
+            tell $ mkEqSetCon' ["unbound_in_ports"] inPortExps
+            tell $ mkEqSetCon' ["out_ports"] outPortExps
+            tell $ mkEqSetCon' ["unbound_out_ports"] outPortExps
+
+    displayName = case logicKind logic of
+        LkRegister t -> Just t
+        LkDFlipFlop t _ -> Just t
+        LkRam t _ _ _ _ -> Just t
+        _ -> Nothing
+
+    parentName =
+        if Config.claferUseBackgroundTheory cfg then Just ["logic"] else Nothing
+
+convNet :: Config.Clafer -> Int -> Net a -> [Element]
+convNet cfg idx net | not $ Config.claferUseBackgroundTheory cfg =
+    [ mkClafer (cfrNetName idx 0) concrete Nothing
+        [ mkRef "name" (mkStrLit $ netName net) ] ]
+convNet cfg idx net =
     [ mkClafer (cfrNetName idx j) concrete (Just ["connector"])
         [ mkEqCon' ["name"] (mkStrLit $ netName net)
         , mkEqCon' ["first"] (mkPath $ connComponent conn1)
@@ -227,34 +249,46 @@ typeName (TWire _ []) = "ty_bus"
 typeName (TWire _ _) = "ty_memory"
 typeName _ = "ty_unknown"
 
-convPort :: Side -> Int -> Port -> Element
-convPort side idx port =
-    mkClafer (cfrPortName side idx) concrete (Just ["port"])
-        [ mkEqCon' ["name"] (mkStrLit $ portName port)
-        , mkEqCon' ["type"] (mkPath [typeName $ portTy port])
-        , mkClafer (if side == Source then "input" else "output") concrete Nothing []
-        , mkClafer "unbound" concrete Nothing []
-        ]
+convPort :: Config.Clafer -> Side -> Int -> Port -> Element
+convPort cfg side idx port =
+    mkClafer (cfrPortName side idx) concrete parentName parts
+  where
+    parts = execWriter $ do
+        when (Config.claferUseBackgroundTheory cfg) $ do
+            tell [mkEqCon' ["name"] (mkStrLit $ portName port)]
+            tell [mkEqCon' ["type"] (mkPath [typeName $ portTy port])]
+        tell [mkClafer (if side == Source then "input" else "output") concrete Nothing []]
+        tell [mkClafer "unbound" concrete Nothing []]
 
-convPin :: Side -> Int -> Pin -> Element
-convPin side idx pin =
-    mkClafer (cfrPortName side idx) concrete (Just ["port"])
-        [ mkClafer (if side == Source then "input" else "output") concrete Nothing []
-        , mkClafer "unbound" concrete Nothing []
-        , mkEqCon' ["type"] (mkPath [typeName $ pinTy pin])
-        ]
+    parentName =
+        if Config.claferUseBackgroundTheory cfg then Just ["port"] else Nothing
+
+convPin :: Config.Clafer -> Side -> Int -> Pin -> Element
+convPin cfg side idx pin =
+    mkClafer (cfrPortName side idx) concrete parentName parts
+  where
+    parts = execWriter $ do
+        when (Config.claferUseBackgroundTheory cfg) $ do
+            tell [mkEqCon' ["type"] (mkPath [typeName $ pinTy pin])]
+        tell [mkClafer (if side == Source then "input" else "output") concrete Nothing []]
+        tell [mkClafer "unbound" concrete Nothing []]
+
+    parentName =
+        if Config.claferUseBackgroundTheory cfg then Just ["port"] else Nothing
 
 
 convRoot :: Config.Clafer -> Design a -> Int -> Element
 convRoot cfg design modId =
-    mkClafer (joinName ["root", moduleName instMod]) concrete (Just [instModName]) (
-        [ mkEqCon' ["name"] (mkStrLit $ "root " <> moduleName instMod)
-        ]
-        ++ (if Config.claferEmitParams cfg then paramCons else [])
-        )
+    mkClafer (joinName ["root", moduleName instMod]) concrete (Just [instModName]) parts
   where
     instMod = design `designMod` modId
     instModName = joinName ["module", moduleName instMod]
+
+    parts = execWriter $ do
+        when (Config.claferUseBackgroundTheory cfg) $
+            tell [mkEqCon' ["name"] (mkStrLit $ "root " <> moduleName instMod)]
+        when (Config.claferEmitParams cfg) $
+            tell $ S.foldMapWithIndex go (moduleParams instMod)
 
     childVar i = [cfrParamName i $ instMod `moduleParam` i]
 

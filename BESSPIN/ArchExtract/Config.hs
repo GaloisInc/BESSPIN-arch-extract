@@ -196,6 +196,13 @@ data Clafer = Clafer
     , claferEmitNets :: Bool
     , claferEmitPorts :: Bool
     , claferEmitParams :: Bool
+    -- Whether modules should contain an `origin` subclafer giving the file
+    -- where the module was defined.
+    , claferEmitOrigin :: Bool
+    -- Whether clafers should extend `component` and other clafers from the
+    -- background theory.  If so, additional constraints will be added to set
+    -- inherited fields such as `name`.
+    , claferUseBackgroundTheory :: Bool
     }
     deriving (Show)
 
@@ -207,6 +214,8 @@ defaultClafer = Clafer
     , claferEmitNets = True
     , claferEmitPorts = True
     , claferEmitParams = True
+    , claferEmitOrigin = True
+    , claferUseBackgroundTheory = True
     }
 
 data SMT = SMT
@@ -332,6 +341,8 @@ clafer x = tableFold defaultClafer x
     , ("emit-nets", \c x -> c { claferEmitNets = bool x })
     , ("emit-ports", \c x -> c { claferEmitPorts = bool x })
     , ("emit-params", \c x -> c { claferEmitParams = bool x })
+    , ("emit-origin", \c x -> c { claferEmitOrigin = bool x })
+    , ("use-background-theory", \c x -> c { claferUseBackgroundTheory = bool x })
     ]
 
 smt :: TOML.Value -> SMT
