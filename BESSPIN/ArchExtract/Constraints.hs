@@ -446,6 +446,12 @@ showOrigin d m o = case o of
 
 
 
+simplifyConstraints :: FlatConstraints -> FlatConstraints
+simplifyConstraints fc = fc { fcConstraints = S.filter go $ fcConstraints fc }
+  where
+    go c = not $ checkConstEq $ constraintExpr c
+
+
 data OneToOneResult =
     -- The expression's value is a constant.
       RConst
@@ -491,3 +497,8 @@ checkOneToOneEq :: ConstExpr -> Maybe (Int, Int)
 checkOneToOneEq (EBinCmp _ BEq l r)
   | RVar i <- oneToOneExpr l, RVar j <- oneToOneExpr r = Just (i, j)
 checkOneToOneEq _ = Nothing
+
+checkConstEq :: ConstExpr -> Bool
+checkConstEq (EBinCmp _ BEq l r)
+  | RConst <- oneToOneExpr l, RConst <- oneToOneExpr r = True
+checkConstEq _ = False

@@ -107,7 +107,7 @@ defineRangeSize = defineFun "range-size" [("l", tInt), ("r", tInt)] tInt $
 
 
 flattenConstraintsForDesign :: Config.SMT -> Design a -> FlatConstraints
-flattenConstraintsForDesign cfg d = flattenConstraints d rootId
+flattenConstraintsForDesign cfg d = simplifyConstraints $ flattenConstraints d rootId
   where
     rootName = Config.smtRootModule cfg
     optRootId = S.findIndexL (\m -> moduleName m == rootName) (designMods d)
