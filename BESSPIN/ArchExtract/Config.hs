@@ -16,6 +16,7 @@ data Config = Config
     , configModuleTreeOutput :: Maybe ModuleTree
     , configClaferOutput :: Maybe Clafer
     , configSMTOutput :: Maybe SMT
+    , configParamClaferOutput :: Maybe ParamClafer
     }
     deriving (Show)
 
@@ -27,6 +28,7 @@ defaultConfig = Config
     , configModuleTreeOutput = Nothing
     , configClaferOutput = Nothing
     , configSMTOutput = Nothing
+    , configParamClaferOutput = Nothing
     }
 
 defaultConfigWithClafer = defaultConfig { configClaferOutput = Just $ defaultClafer }
@@ -233,6 +235,19 @@ defaultSMT = SMT
     , smtGenUnsatCore = False
     }
 
+data ParamClafer = ParamClafer
+    -- Names of modules to instantiate at top level.  If this is empty, the
+    -- output will contain (almost) no concrete clafers.
+    { paramClaferRootModule :: Text
+    , paramClaferOutFile :: Text
+    }
+    deriving (Show)
+
+defaultParamClafer = ParamClafer
+    { paramClaferRootModule = "top"
+    , paramClaferOutFile = "out.p.cfr"
+    }
+
 
 listOf f (TOML.List xs) = map f xs
 listOf _ x = error $ "expected list, but got " ++ show x
@@ -279,6 +294,7 @@ config x =
             , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
             , ("smt", \c x -> c { configSMTOutput = Just $ smt x })
+            , ("param-clafer", \c x -> c { configParamClaferOutput = Just $ paramClafer x })
             ]
   where
     inputKeys = filter (\k -> k == "verilog") $ tableKeys x
@@ -350,6 +366,12 @@ smt x = tableFold defaultSMT x
     [ ("root-module", \c x -> c { smtRootModule = str x })
     , ("out-file", \c x -> c { smtOutFile = str x })
     , ("gen-unsat-core", \c x -> c { smtGenUnsatCore = bool x })
+    ]
+
+paramClafer :: TOML.Value -> ParamClafer
+paramClafer x = tableFold defaultParamClafer x
+    [ ("root-module", \c x -> c { paramClaferRootModule = str x })
+    , ("out-file", \c x -> c { paramClaferOutFile = str x })
     ]
 
 

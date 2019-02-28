@@ -145,7 +145,7 @@ initCommands' unsatCore fc =
     fmap (\v -> call "declare-const" [Atom v, tInt]) (fcVars fc) <>
     foldMap (\o -> S.fromList
         [ call "declare-const" [Atom $ overrideValName o, tInt]
-        , call "declare-const" [Atom $ overrideEnableName  o, tBool]
+        , call "declare-const" [Atom $ overrideEnableName o, tBool]
         ]) (fcOverrides fc) <>
     S.mapWithIndex (convConstraint unsatCore fc) (fcConstraints fc)
 

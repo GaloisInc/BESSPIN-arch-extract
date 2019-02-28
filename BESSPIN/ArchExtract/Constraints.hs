@@ -447,9 +447,18 @@ showOrigin d m o = case o of
 
 
 simplifyConstraints :: FlatConstraints -> FlatConstraints
-simplifyConstraints fc = fc { fcConstraints = S.filter go $ fcConstraints fc }
+simplifyConstraints fc = fc
+    { fcConstraints =
+        S.filter (not . trivial . constraintExpr) $
+        S.filter (\c -> not $ checkConstEq $ constraintExpr c) $
+        fcConstraints fc
+    }
   where
-    go c = not $ checkConstEq $ constraintExpr c
+    trivial (EBinCmp _ BEq l r) | unspan l == unspan r = True
+    trivial _ = False
+
+    -- TODO: copied from Verilog.Match
+    unspan e = everywhere (mkT $ \_ -> Span 0 0) e
 
 
 data OneToOneResult =

@@ -32,6 +32,7 @@ import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 import BESSPIN.ArchExtract.Gen.ModuleTree
 import BESSPIN.ArchExtract.Gen.ParamSMT
+import BESSPIN.ArchExtract.Gen.ParamClafer
 
 import BESSPIN.ArchExtract.Aggregate
 import BESSPIN.ArchExtract.GraphOps
@@ -156,6 +157,13 @@ main = do
             T.writeFile path $ genSmt' s a
 
             groupParameters s a
+
+    case Config.configParamClaferOutput config of
+        Nothing -> return ()
+        Just pc -> do
+            let path = T.unpack $ Config.paramClaferOutFile pc
+            let cfr = genParamClafer' pc a
+            writeFile path $ render $ prt 0 $ cfr
 
 
 {-
