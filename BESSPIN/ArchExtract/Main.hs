@@ -28,6 +28,7 @@ import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Constraints
 import BESSPIN.ArchExtract.NameMap
 import BESSPIN.ArchExtract.Print
+import BESSPIN.ArchExtract.Rewrite
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 import BESSPIN.ArchExtract.Gen.ModuleTree
@@ -76,11 +77,11 @@ main = do
         [path] -> Config.parse <$> T.readFile path
         _ -> error "too many arguments - expected only a config file path"
 
-    a <- case Config.configInput config of
+    (a, fileInfos) <- case Config.configInput config of
         Config.VerilogInput vCfg -> do
             bs <- BS.readFile $ T.unpack $ Config.verilogSourceFile vCfg
 
-            (raw, modIds) <- case D.deserialize bs of
+            (raw, modIds, fileInfos) <- case D.deserialize bs of
                     Left errs -> do
                         putStrLn ("error decoding verilog AST:\n" ++ errs)
                         error $ "decoding error"
@@ -90,7 +91,7 @@ main = do
 
             let v = fromRaw raw blackboxNames modIds
             writeFile "verilog.txt" $ T.unpack $ printVerilog v
-            return $ extractArch vCfg v
+            return (extractArch vCfg v, fileInfos)
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a
 
@@ -102,6 +103,10 @@ main = do
     let a' = addConstraintsForConfig (Config.configConstraints config) a
     let a = a'
     let aMapped = applyNameMap nameMap a'
+
+    case Config.configRewrite config of
+        Nothing -> return ()
+        Just r -> runRewrite r a fileInfos
 
     case Config.configGraphvizOutput config of
         Nothing -> return ()

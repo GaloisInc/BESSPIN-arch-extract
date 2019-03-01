@@ -12,6 +12,7 @@ data Config = Config
     { configInput :: Input
     , configNameMap :: NameMap
     , configConstraints :: Constraints
+    , configRewrite :: Maybe Rewrite
     , configGraphvizOutput :: Maybe Graphviz
     , configModuleTreeOutput :: Maybe ModuleTree
     , configClaferOutput :: Maybe Clafer
@@ -24,6 +25,7 @@ defaultConfig = Config
     { configInput = defaultInput
     , configNameMap = defaultNameMap
     , configConstraints = defaultConstraints
+    , configRewrite = Nothing
     , configGraphvizOutput = Nothing
     , configModuleTreeOutput = Nothing
     , configClaferOutput = Nothing
@@ -141,6 +143,28 @@ defaultConstraints = Constraints
     , constraintsRequireBigEndianVectors = False
     , constraintsRequirePositiveParams = False
     , constraintsCustom = []
+    }
+
+data Rewrite = Rewrite
+    -- Base directory for the rewrite.  Paths recorded in the CBOR file will be
+    -- interpreted relative to this directory.  Usually this should be the
+    -- directory from which `exporter` was initially run.
+    { rewriteBaseDir :: Text
+    -- List of (name, value) pairs for overrides whose values should be
+    -- rewritten.  For each pair, the expression corresponding to override
+    -- `name` will be replaced with the `value` text.  This process is
+    -- idempotent, so (for now) we simply apply these rewrites each time the
+    -- tool is run.
+    , rewriteOverrides :: [(Text, Text)]
+    -- Root module.  TODO: unify the various root-module options
+    , rewriteRootModule :: Text
+    }
+    deriving (Show)
+
+defaultRewrite = Rewrite
+    { rewriteBaseDir = "."
+    , rewriteOverrides = []
+    , rewriteRootModule = "top"
     }
 
 data Graphviz = Graphviz
@@ -290,6 +314,7 @@ config x =
             [ ("verilog", \c x -> c { configInput = VerilogInput $ verilog x })
             , ("name-map", \c x -> c { configNameMap = nameMap x })
             , ("constraints", \c x -> c { configConstraints = constraints x })
+            , ("rewrite", \c x -> c { configRewrite = Just $ rewrite x })
             , ("graphviz", \c x -> c { configGraphvizOutput = Just $ graphviz x })
             , ("module-tree", \c x -> c { configModuleTreeOutput = Just $ moduleTree x })
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
@@ -326,6 +351,13 @@ constraints x = tableFold defaultConstraints x
     , ("require-big-endian-vectors", \c x -> c { constraintsRequireBigEndianVectors = bool x })
     , ("require-positive-params", \c x -> c { constraintsRequirePositiveParams = bool x })
     , ("custom", \c x -> c { constraintsCustom = tableOf (listOf str) x })
+    ]
+
+rewrite :: TOML.Value -> Rewrite
+rewrite x = tableFold defaultRewrite x
+    [ ("base-dir", \c x -> c { rewriteBaseDir = str x })
+    , ("overrides", \c x -> c { rewriteOverrides = tableOf str x })
+    , ("root-module", \c x -> c { rewriteRootModule = str x })
     ]
 
 graphviz :: TOML.Value -> Graphviz

@@ -234,7 +234,7 @@ data BinOp =
     deriving (Show, Eq, Data, Typeable)
 
 data Span = Span !Word32 !Word32
-    deriving (Show, Eq, Data, Typeable)
+    deriving (Show, Eq, Ord, Data, Typeable)
 
 data FileInfo = FileInfo Text Span
     deriving (Show, Data, Typeable)

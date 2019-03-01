@@ -638,10 +638,9 @@ topLevel = list $ do
 
 -- Bytestring deserialization
 
-deserialize :: BS.ByteString -> Either String (Map NodeId (Node, Span), [NodeId])
+deserialize :: BS.ByteString -> Either String (Map NodeId (Node, Span), [NodeId], [FileInfo])
 deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ show cborErr
     Right (_, term) ->
         runDecodeM topLevel (S [[term]] M.empty) >>= \((is, fs), s) ->
-            -- TODO: do something with `fs :: [FileInfo]`
-            return (sNodes s, is)
+            return (sNodes s, is, fs)
