@@ -23,12 +23,15 @@ import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
+import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
 import BESSPIN.ArchExtract.Verilog.Print
+import BESSPIN.ArchExtract.Verilog.Defines
 import BESSPIN.ArchExtract.Architecture
 import BESSPIN.ArchExtract.Constraints
 import BESSPIN.ArchExtract.NameMap
 import BESSPIN.ArchExtract.Print
 import BESSPIN.ArchExtract.Rewrite
+import BESSPIN.ArchExtract.GlobalParam
 import BESSPIN.ArchExtract.Gen.Clafer
 import BESSPIN.ArchExtract.Gen.Graphviz
 import BESSPIN.ArchExtract.Gen.ModuleTree
@@ -95,14 +98,18 @@ main = do
 
     writeFile "arch.txt" $ T.unpack $ printArchitecture a
 
+    fileSrcs <- mapM (T.readFile . T.unpack . fileInfoName) fileInfos
+
     nameMap <- loadNameMap $ Config.configNameMap config
     putStrLn "name map:"
     mapM_ print nameMap
     putStrLn "end name map"
 
-    let a' = addConstraintsForConfig (Config.configConstraints config) a
-    let a = a'
-    let aMapped = applyNameMap nameMap a'
+    let a' = convertDefines fileInfos fileSrcs a
+    let a = addConstraintsForConfig (Config.configConstraints config) a'
+    let aMapped = applyNameMap nameMap a
+
+    writeFile "arch2.txt" $ T.unpack $ printArchitecture aMapped
 
     case Config.configRewrite config of
         Nothing -> return ()

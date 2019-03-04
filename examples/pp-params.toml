@@ -1,0 +1,12 @@
+[verilog]
+source-file = "pp-params.cbor"
+
+[constraints]
+force-module-defaults = ["top"]
+override-inst-params = true
+override-local-params = true
+override-forced-params = true
+allow-override-non-constant = true
+
+[smt]
+out-file = "test.smtlib2"

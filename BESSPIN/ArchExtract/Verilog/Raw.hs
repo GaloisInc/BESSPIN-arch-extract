@@ -236,5 +236,8 @@ data BinOp =
 data Span = Span !Word32 !Word32
     deriving (Show, Eq, Ord, Data, Typeable)
 
-data FileInfo = FileInfo Text Span
+data FileInfo = FileInfo
+    { fileInfoName :: Text
+    , fileInfoSpan :: Span
+    }
     deriving (Show, Data, Typeable)

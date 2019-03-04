@@ -29,6 +29,7 @@ import BESSPIN.ArchExtract.Architecture hiding (moduleNets)
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.AST
 import qualified BESSPIN.ArchExtract.Verilog.AST as V
+import BESSPIN.ArchExtract.Verilog.Defines
 import BESSPIN.ArchExtract.Verilog.Match
 import BESSPIN.ArchExtract.Verilog.TypeCheck
 import BESSPIN.ArchExtract.Simplify hiding (mkNet)
