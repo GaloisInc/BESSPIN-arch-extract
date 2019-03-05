@@ -5,11 +5,11 @@ let
 
 in stdenv.mkDerivation rec {
   name = "verific-${version}";
-  version = "2019-01";
+  version = "2019-02";
 
   src = builtins.fetchGit {
     url = "git@gitlab-ext.galois.com:ssith/verific.git";
-    rev = "92b032e9a4eb01af6bede9a5a7f8027693e9367b";
+    rev = "0747952da1bda23408a738921be965917a13f3c6";
   };
 
   buildInputs = [ flex yacc zlib ];
