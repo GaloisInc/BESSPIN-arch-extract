@@ -87,7 +87,31 @@ instance Pretty Conn where
     pretty c = "conn" <+> viaShow c
 
 instance Pretty ConstExpr where
-    pretty e = viaShow e
+    pretty (EIntLit _ i) = pretty i
+    pretty (EParam _ i) = "param_" <> pretty i
+    pretty (EInstParam _ is j) = hcat $ ["param_"] ++ map pretty is ++ [pretty j]
+    pretty (EUnArith _ UClog2 e) = "$clog2" <> parens (pretty e)
+    pretty (EUnArith _ UIsPow2 e) = "$ispow2" <> parens (pretty e)
+    pretty (EBinArith _ op l r) = parens $ hsep [pretty l, pretty op, pretty r]
+    pretty (EBinCmp _ op l r) = parens $ hsep [pretty l, pretty op, pretty r]
+    pretty (ERangeSize _ l r) = "$rangesize" <> parens (pretty l <> comma <+> pretty r)
+    pretty (EOverride i e) = "override_" <> pretty i <> parens (pretty e)
+    pretty (EOverrideLocalParam i e) = "override_local_" <> pretty i <> parens (pretty e)
+    pretty (EOverrideInstParam i j e) =
+        "override_inst_" <> pretty i <> "_" <> pretty j <> parens (pretty e)
+
+instance Pretty BinArithOp where
+    pretty BAdd = "+"
+    pretty BSub = "-"
+    pretty BMul = "*"
+
+instance Pretty BinCmpOp where
+    pretty BEq = "=="
+    pretty BNe = "!="
+    pretty BLt = "<"
+    pretty BLe = "<="
+    pretty BGt = ">"
+    pretty BGe = ">="
 
 instance Pretty Constraint where
     pretty e = viaShow e
@@ -96,5 +120,8 @@ instance Pretty Ty where
     pretty e = viaShow e
 
 
+showPretty :: Pretty a => a -> Text
+showPretty x = renderStrict $ layoutPretty defaultLayoutOptions $ pretty x
+
 printArchitecture :: Design a -> Text
-printArchitecture d = renderStrict $ layoutPretty defaultLayoutOptions $ pretty d
+printArchitecture d = showPretty d

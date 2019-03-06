@@ -1,5 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
-module BESSPIN.ArchExtract.Constraints where
+module BESSPIN.ArchExtract.Constraints
+    ( module BESSPIN.ArchExtract.Constraints
+    , module BESSPIN.ArchExtract.Constraints.Flat
+    , simplifyConstraints
+    ) where
 
 import Control.Monad
 import Control.Monad.State
@@ -21,9 +25,11 @@ import Lens.Micro.Platform
 import Debug.Trace
 
 import BESSPIN.ArchExtract.Architecture
+import BESSPIN.ArchExtract.Constraints.Flat
 import qualified BESSPIN.ArchExtract.Config as Config
 import qualified BESSPIN.ArchExtract.Constraints.Parser as P
 import qualified BESSPIN.ArchExtract.Constraints.Resolve as R
+import BESSPIN.ArchExtract.Constraints.Simplify
 
 
 -- Shift all `EParam` and `EInstParam` by prepending `idx`.  This converts
@@ -241,17 +247,6 @@ isConstExpr e = everything (&&) (True `mkQ` go) e
     go _ = True
 
 
-data OverrideOrigin = OoLocal Int Int | OoInst Int Int Int
-    deriving (Show, Eq, Ord)
-
-data FlatConstraints = FlatConstraints
-    { fcVars :: Seq Text
-    , fcOverrides :: Seq (Text, OverrideOrigin)
-    , fcConstraints :: Seq Constraint
-    }
-    deriving (Show)
-
-
 data ModInfo = ModInfo
     { miModId :: Int
     , miPrefix :: Text
@@ -327,7 +322,7 @@ flattenConstraints d rootId = conv $ execState (go rootId "") initState
         forM_ (moduleConstraints m) $ \c -> do
             e <- goExpr mi $ constraintExpr c
             let o = CoText $ showOrigin d m $ constraintOrigin c
-            traceShow ("one-to-one", checkOneToOneEq e, o) $ addConstraint e o
+            addConstraint e o
 
         return mi
 
@@ -351,53 +346,6 @@ flattenConstraints d rootId = conv $ execState (go rootId "") initState
         , fcConstraints = fsConstraints fs
         }
 
-
-{-
-
-  where
-    varNames :: Seq Text
-    -- Key is a path to a parameter in the design.  The list of inst indexes is
-    -- stored in reverse, so `([a, b], c) = inst_b.inst_a.param_c`.
-    pathMap :: Map ([Int], Int) Int
-    instNameMap :: Map [Int] Text
-    (varNames, pathMap, prefixMap) = mkVars "$" [] rootId S.empty M.empty M.empty
-
-    mkVars namePrefix instPath modId accNames accMap accPrefixes =
-        let m = d `designMod` modId in
-        let accNames' = accNames <> fmap (\p -> namePrefix <> paramName p) (moduleParams m) in
-        let accMap' = accMap <> M.fromList [((instPath, i), S.length accNames + i) |
-                i <- [0 .. S.length (moduleParams m) - 1]] in
-        let accPrefixes' = M.insert instPath namePrefix accPrefixes in
-        S.foldlWithIndex (\(accNames, accMap, accPrefixes) idx logic -> case logicKind logic of
-                LkInst inst ->
-                    mkVars (namePrefix <> instName inst <> "$") (idx : instPath)
-                        (instModId inst) accNames accMap
-                _ -> (accNames, accMap, accPrefixes))
-            (accNames', accMap', accPrefixes') (moduleLogics m)
-
-    findVar :: ([Int], Int) -> Int
-    findVar p = case M.lookup p pathMap of
-        Just i -> i
-        Nothing -> error $ "no var has path " ++ show p
-
-    convExpr :: [Int] -> ConstExpr -> ConstExpr
-    convExpr instPath e = everywhere (mkT go) e
-      where
-        go (EParam sp p) = EParam sp $ findVar (instPath, p)
-        go (EInstParam sp is p) = EParam sp $ findVar (reverse is ++ instPath, p)
-        go e = e
-
-    cons = mkCons [] rootId
-
-    mkCons instPath modId =
-        let m = d `designMod` modId in
-        let conv (Constraint e o) =
-                Constraint (convExpr instPath e) (CoText $ showOrigin d m o) in
-        fmap conv (moduleConstraints m) <>
-        S.foldMapWithIndex (\idx logic -> case logicKind logic of
-            LkInst inst -> mkCons (idx : instPath) (instModId inst)
-            _ -> S.empty) (moduleLogics m)
--}
 
 showConn d m side c = case c of
     ExtPort i -> "port-" <> portName (moduleSidePort m side i)
@@ -443,71 +391,3 @@ showOrigin d m o = case o of
             portName (moduleSidePort instMod (flipSide side) j)
     CoCustom -> "custom"
     CoText t -> t
-
-
-
-simplifyConstraints :: FlatConstraints -> FlatConstraints
-simplifyConstraints fc = fc
-    { fcConstraints =
-        S.filter (not . trivial . constraintExpr) $
-        S.filter (\c -> not $ checkConstEq $ constraintExpr c) $
-        fcConstraints fc
-    }
-  where
-    trivial (EBinCmp _ BEq l r) | unspan l == unspan r = True
-    trivial _ = False
-
-    -- TODO: copied from Verilog.Match
-    unspan e = everywhere (mkT $ \_ -> Span 0 0) e
-
-
-data OneToOneResult =
-    -- The expression's value is a constant.
-      RConst
-    -- The expression is a one-to-one expression of the indicated variable.
-    | RVar Int
-    -- Neither of the above conditions holds.
-    | RUnknown
-    deriving (Show, Eq)
-
-joinOneToOne RConst x = x
-joinOneToOne x RConst = x
-joinOneToOne _ _ = RUnknown
-
-oneToOneExpr :: ConstExpr -> OneToOneResult
-oneToOneExpr e = go e
-  where
-    go (EIntLit _ _) = RConst
-    go (EParam _ v) = RVar v
-    go (EInstParam _ _ _) = RUnknown
-    go (EUnArith _ UClog2 e) = go e
-    go (EUnArith _ UIsPow2 e) = scramble $ go e
-    go (EBinArith _ _ l r) = mix (go l) (go r)
-    go (EBinCmp _ _ l r) = scramble $ mix (go l) (go r)
-    go (ERangeSize _ l r) = mix (go l) (go r)
-    go (EOverride _ e) = go e       -- TODO
-    go (EOverrideLocalParam _ _) = RUnknown
-    go (EOverrideInstParam _ _ _) = RUnknown
-
-    -- Simulate the effect of a non-one-to-one function.
-    scramble RConst = RConst
-    scramble (RVar _)  = RUnknown
-    scramble RUnknown  = RUnknown
-
-    -- Simulate the effect of a binary operation that mixes its two operands in
-    -- a reversible way.  If one side is `RConst`, the operation can be
-    -- reversed to retrieve the other operand, but if both sides are `RVar`
-    -- (even the same `RVar`), information may be lost.
-    mix RConst x = x
-    mix x RConst = x
-    mix _ _ = RUnknown
-
-checkOneToOneEq :: ConstExpr -> Maybe (Int, Int)
-checkOneToOneEq (EBinCmp _ BEq l r)
-  | RVar i <- oneToOneExpr l, RVar j <- oneToOneExpr r = Just (i, j)
-checkOneToOneEq _ = Nothing
-
-checkConstEq :: ConstExpr -> Bool
-checkConstEq (EBinCmp _ BEq l r)
-  | RConst <- oneToOneExpr l, RConst <- oneToOneExpr r = True
-checkConstEq _ = False

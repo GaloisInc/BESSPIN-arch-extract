@@ -218,16 +218,29 @@ data ConstExpr =
     -- Like `EOverride`, but using a generated override associated with
     -- parameter `j` of instance `i` within the current module.
     | EOverrideInstParam Int Int ConstExpr
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)
 
 data UnArithOp = UClog2 | UIsPow2
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)
 
 data BinArithOp = BAdd | BSub | BMul
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)
 
 data BinCmpOp = BEq | BNe | BLt | BLe | BGt | BGe
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data)
+
+_subexprs :: Traversal' ConstExpr ConstExpr
+_subexprs f e = case e of
+    EIntLit _ _ -> pure e
+    EParam _ _ -> pure e
+    EInstParam _ _ _ -> pure e
+    EUnArith sp op x -> EUnArith sp op <$> f x
+    EBinArith sp op x y -> EBinArith sp op <$> f x <*> f y
+    EBinCmp sp op x y -> EBinCmp sp op <$> f x <*> f y
+    ERangeSize sp x y -> ERangeSize sp <$> f x <*> f y
+    EOverride i x -> EOverride i <$> f x
+    EOverrideLocalParam i x -> EOverrideLocalParam i <$> f x
+    EOverrideInstParam i j x -> EOverrideInstParam i j <$> f x
 
 
 -- Enum for indicating a side of a net, logic, or module.  For clarity, these
@@ -394,6 +407,7 @@ makeLenses' ''Net
 makeLenses' ''Inst
 makeLenses' ''Pin
 makeLenses' ''Ty
+makeLenses' ''Constraint
 
 _designMod :: Int -> Lens' (Design ann) (Module ann)
 _designMod i = _designMods . singular (ix i)
