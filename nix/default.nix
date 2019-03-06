@@ -59,6 +59,15 @@ let pkgs = import <nixpkgs> {};
     verific = pkgs.callPackage ./verific.nix {};
 
 
+    genRacketConfig = pkgs.callPackage ./gen-racket-config.nix {};
+    callRacketPackage = p: a: pkgs.callPackage p (a // {
+      inherit genRacketConfig;
+    });
+    racket-rfc6455 = callRacketPackage ./racket-rfc6455.nix {};
+    racket-rosette = callRacketPackage ./racket-rosette.nix { inherit racket-rfc6455; };
+    racketWithPkgs = callRacketPackage ./racket-with-pkgs.nix {};
+
+
 in pkgs.mkShell {
     buildInputs = attrValues {
         inherit (pkgs) stdenv flex bison readline zlib;
@@ -68,6 +77,8 @@ in pkgs.mkShell {
         inherit (pkgs) graphviz;
         inherit (pkgs) alloy;
         inherit (pkgs) z3;
+
+        racket = racketWithPkgs [ racket-rfc6455 racket-rosette ];
 
         #inherit (pkgs.openjdk8) jre;
         inherit (pkgs) openjdk8 maven;
