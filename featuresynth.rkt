@@ -1,6 +1,7 @@
 #lang rosette
 (require rosette/lib/angelic)
 (require rosette/lib/match)
+(require rosette/lib/synthax)
 (current-bitwidth #f)
 
 
@@ -20,149 +21,228 @@
 
 (define (feature-model-group-members fm j)
   (apply +
-    (map (lambda (f) (if (= j (feature-group-id f)) 1 0))
-         (vector->list (feature-model-features fm)))))
+    (for/list ([f (feature-model-features fm)])
+      (if (= j (feature-group-id f)) 1 0))))
 
 (define (count-enabled-group-members fm cfg j)
   (apply +
-    (for/list ([i (in-range (vector-length (feature-model-features fm)))])
-      (define f (feature-model-feature fm i))
+    (for/list ([(f i) (in-indexed (feature-model-features fm))])
       (if (and (= j (feature-group-id f)) (vector-ref cfg i)) 1 0))))
 
 (define (all-group-members-disabled fm cfg j)
   (apply &&
-    (for/list ([i (in-range (vector-length (feature-model-features fm)))])
-      (define f (feature-model-feature fm i))
+    (for/list ([(f i) (in-indexed (feature-model-features fm))])
       (if (= j (feature-group-id f)) (not (vector-ref cfg i)) #t))))
+
+(define (feature-model-num-features fm) (vector-length (feature-model-features fm)))
+(define (feature-model-num-groups fm) (vector-length (feature-model-groups fm)))
+(define (feature-model-num-dependencies fm) (vector-length (feature-model-dependencies fm)))
+
+
+; Feature model validity checks
+
+(define (valid-feature-id fm i)
+  (&&
+    (>= i -1)
+    (< i (feature-model-num-features fm))))
+
+(define (valid-group-id fm i)
+  (&&
+    (>= i -1)
+    (< i (feature-model-num-groups fm))))
+
+(define (valid-feature fm f)
+  (&&
+    (valid-feature-id fm (feature-parent-id f))
+    (valid-group-id fm (feature-group-id f))
+    (if (>= (feature-parent-id f) 0)
+      (let
+        ([pf (feature-model-feature fm (feature-parent-id f))])
+        (= (feature-depth f) (+ 1 (feature-depth pf))))
+      (= 0 (feature-depth f)))
+    (if (>= (feature-group-id f) 0)
+      (let
+        ([g (feature-model-group fm (feature-group-id f))])
+        (= (feature-parent-id f) (group-parent-id g)))
+      #t)
+    ))
+
+(define (valid-group fm j g)
+  (&&
+    (valid-feature-id fm (group-parent-id g))
+    (let
+      ([n (feature-model-group-members fm j)])
+      (||
+        ; Disabled/unused group
+        (= 0 n (group-min-card g) (group-max-card g))
+        ; XOR group
+        (&&
+          (= 1 (group-min-card g) (group-max-card g))
+          (>= n 2))
+        ; OR group
+        (&&
+          (= 1 (group-min-card g))
+          (= n (group-max-card g))
+          (>= n 2))
+        ))))
+
+(define (valid-dependency fm d)
+  (&&
+    (valid-feature-id fm (dependency-a d))
+    (valid-feature-id fm (dependency-b d))
+    (||
+      (= -1 (dependency-a d) (dependency-b d))
+      (&&
+        (<= 0 (dependency-a d))
+        (<= 0 (dependency-b d))
+        (not (= (dependency-a d) (dependency-b d)))
+        (not (= (feature-parent-id (feature-model-feature fm (dependency-a d)))
+                (dependency-b d)))
+      )
+    )))
 
 (define (valid-feature-model fm)
   (apply &&
     (append
-      (for/list ([i (in-range (vector-length (feature-model-features fm)))])
-        (define f (feature-model-feature fm i))
-        (define p (feature-parent-id f))
-        (define j (feature-group-id f))
-        (&&
-          (if (>= p 0)
-            (= (feature-depth f) (+ 1 (feature-depth (feature-model-feature fm p))))
-            (= (feature-depth f) 0))
-          (if (>= j 0) (= p (group-parent-id (feature-model-group fm j))) #t)
-          ))
-      (for/list ([j (in-range (vector-length (feature-model-groups fm)))])
-        (define g (feature-model-group fm j))
-        (||
-          ; Either the group is unused (no members, and 0..0 cardinality) ...
-          (= 0 (group-min-card g) (group-max-card g)
-             (feature-model-group-members fm j))
-          ; Or it's an "xor" group (2+ members, 1..1 cardinality)
-          (&&
-            (= 1 (group-min-card g) (group-max-card g))
-            (>= (feature-model-group-members fm j) 2)
-            )
-          ; Or it's an "or" group (1+ members, 1..* cardinality)
-          (&&
-            (= 1 (group-min-card g))
-            (= (feature-model-group-members fm j) (group-max-card g))
-            (>= (feature-model-group-members fm j) 1)
-            )))
-      (for/list ([k (in-range (vector-length (feature-model-dependencies fm)))])
-        (define d (feature-model-dependency fm k))
-        (define a (dependency-a d))
-        (define b (dependency-b d))
-        (||
-          (= -1 a b)
-          (&&
-            (not (= a b))
-            (<= 0 a)
-            (<= 0 b)
-            (< a (vector-length (feature-model-features fm)))
-            (< b (vector-length (feature-model-features fm)))
-          ))))))
+      (for/list ([f (feature-model-features fm)]) (valid-feature fm f))
+      (for/list ([(g j) (in-indexed (feature-model-groups fm))])
+        (valid-group fm j g))
+      (for/list ([d (feature-model-dependencies fm)]) (valid-dependency fm d))
+      )))
 
-(define (valid-configuration fm cfg)
+
+; Feature model evaluator
+
+(define (eval-feature fm i f cfg)
+  (let
+    ([p (feature-parent-id f)])
+    (if (>= p 0) (=> (vector-ref cfg i) (vector-ref cfg p)) #t)))
+
+(define (eval-group fm j g cfg)
+  (let
+    ([p (group-parent-id g)])
+    (if (or (< p 0) (vector-ref cfg p))
+      ; Group's parent is enabled, or group has no parent (always enabled).
+      (<=
+        (group-min-card g)
+        (count-enabled-group-members fm cfg j)
+        (group-max-card g))
+      ; Group has a parent, and it's disabled.
+      (all-group-members-disabled fm cfg j))))
+
+(define (eval-dependency fm d cfg)
+  (let
+    ([a (dependency-a d)]
+     [b (dependency-b d)])
+    (if (not (= a -1)) (=> (vector-ref cfg a) (vector-ref cfg b)) #t)))
+
+(define (eval-feature-model fm cfg)
   (apply &&
     (append
-      (for/list ([i (in-range (vector-length (feature-model-features fm)))])
-        (define f (feature-model-feature fm i))
-        (define p (feature-parent-id f))
-        (&&
-          (if (>= p 0) (=> (vector-ref cfg i) (vector-ref cfg p)) #t)
-          ))
-      (for/list ([j (in-range (vector-length (feature-model-groups fm)))])
-        (define g (feature-model-group fm j))
-        (define p (group-parent-id g))
-        (if (or (< p 0) (vector-ref cfg p))
-          ; Group's parent is enabled, or group has no parent (always enabled).
-          (&&
-            (<= (group-min-card g)
-                (count-enabled-group-members fm cfg j)
-                (group-max-card g)))
-          ; Group has a parent, and it's disabled.
-          (all-group-members-disabled fm cfg j)
-          ))
-      (for/list ([k (in-range (vector-length (feature-model-dependencies fm)))])
-        (define d (feature-model-dependency fm k))
-        (define a (dependency-a d))
-        (define b (dependency-b d))
-        (&&
-          (if (not (= a -1)) (=> (vector-ref cfg a) (vector-ref cfg b)) #t)
-          )))))
+      (for/list ([(f i) (in-indexed (feature-model-features fm))])
+        (eval-feature fm i f cfg))
+      (for/list ([(g j) (in-indexed (feature-model-groups fm))])
+        (eval-group fm j g cfg))
+      (for/list ([d (feature-model-dependencies fm)])
+        (eval-dependency fm d cfg))
+      )))
+
+
+; Symbolic construction helpers
+
+; (?*) is a dynamic version of (??) - it generates a distinct constant on
+; every call.
+
+(define (?*) (define-symbolic* i integer?) i)
+(define (?*bool) (define-symbolic* b boolean?) b)
+
+(define (?*feature-id) (define-symbolic* fid integer?) fid)
+(define (?*group-id) (define-symbolic* gid integer?) gid)
+
+(define (?*feature)
+  (feature (?*feature-id) (?*group-id) (?*)))
+
+(define (?*group)
+  (group (?*feature-id) (?*) (?*)))
+
+(define (?*dependency)
+  (dependency (?*feature-id) (?*feature-id)))
+
+(define (?*feature-model num-features num-groups num-dependencies)
+  (feature-model
+    (build-vector num-features (lambda (i) (?*feature)))
+    (build-vector num-groups (lambda (i) (?*group)))
+    (build-vector num-dependencies (lambda (i) (?*dependency)))
+  ))
+
+(define (?*config num-features)
+  (build-vector num-features (lambda (i) (?*bool))))
 
 (define (make-symbolic-feature-model num-features num-groups num-dependencies)
-  (define (sym-feature-id)
-    (define-symbolic* fid integer?)
-    (assert (<= -1 fid))
-    (assert (< fid num-features))
-    fid)
-  (define (sym-group-id)
-    (define-symbolic* gid integer?)
-    (assert (<= -1 gid))
-    (assert (< gid num-groups))
-    gid)
+  (?*feature-model num-features num-groups num-dependencies))
 
-  (define (sym-feature i)
-    (define-symbolic* depth integer?)
-    (feature (sym-feature-id) (sym-group-id) depth))
-  (define (sym-group i)
-    (define-symbolic* min-card integer?)
-    (define-symbolic* max-card integer?)
-    (group (sym-feature-id) min-card max-card))
-  (define (sym-dependency i)
-    (dependency (sym-feature-id) (sym-feature-id)))
 
+; Concrete construction helpers
+
+; These functions operate on "unresolved" features, groups, and dependencies,
+; which are instances of the normal feature/group/dependency structs, except
+; with names in place of feature/group indexes.
+
+(struct name-map (features groups) #:transparent)
+
+(define (resolve-feature-id nm i)
+  (if i
+    (hash-ref (name-map-features nm) i)
+    -1))
+
+(define (resolve-group-id nm j)
+  (if j
+    (hash-ref (name-map-groups nm) j)
+    -1))
+
+(define (resolve-feature nm f)
+  (feature
+    (resolve-feature-id nm (feature-parent-id f))
+    (resolve-group-id nm (feature-group-id f))
+    (feature-depth f)
+  ))
+
+(define (resolve-group nm g)
+  (group
+    (resolve-feature-id nm (group-parent-id g))
+    (group-min-card g)
+    (group-max-card g)
+  ))
+
+(define (resolve-dependency nm d)
+  (dependency
+    (resolve-feature-id nm (dependency-a d))
+    (resolve-feature-id nm (dependency-b d))
+  ))
+
+(define (resolve-feature-model nm fm)
   (feature-model
-    (apply vector (build-list num-features sym-feature))
-    (apply vector (build-list num-groups sym-group))
-    (apply vector (build-list num-dependencies sym-dependency))
-    ))
+    (vector-map (lambda (f) (resolve-feature nm f)) (feature-model-features fm))
+    (vector-map (lambda (f) (resolve-group nm f)) (feature-model-groups fm))
+    (vector-map (lambda (f) (resolve-dependency nm f)) (feature-model-dependencies fm))
+  ))
+
+(define (make-feature-model fs gs ds)
+  (let*
+    ([nm (name-map (make-hash) (make-hash))]
+     [fs  ; vector of unresolved features
+       (for/vector ([(kv i) (in-indexed fs)])
+         (hash-set! (name-map-features nm) (car kv) i)
+         (cdr kv))]
+     [gs  ; vector of unresolved groups
+       (for/vector ([(kv i) (in-indexed gs)])
+         (hash-set! (name-map-groups nm) (car kv) i)
+         (cdr kv))]
+     [ds (for/vector ([d ds]) d)])
+    (resolve-feature-model nm (feature-model fs gs ds))))
 
 
-(define (feature-with-parent f p)
-  (feature p (feature-group-id f) (feature-depth f)))
-
-(define (feature-model-with-features fm fs)
-  (feature-model fs (feature-model-groups fm)))
-
-(define (feature-model-with-feature-parents fm parents)
-  (feature-model-with-features fm
-    (for/vector ([f (feature-model-features fm)] [p parents])
-      (feature-with-parent f p))))
-
-(define example-fm
-  (feature-model
-    (vector
-      (feature -1 0 0)
-      (feature -1 0 0)
-      (feature -1 -1 0))
-    (vector
-      (group -1 1 1))
-    (vector)))
-
-(feature-model-group-members example-fm 0)
-(valid-feature-model example-fm)
-(valid-configuration example-fm #(#t #f #t))
-(valid-configuration example-fm #(#t #t #t))
-(displayln (list 'enabled (count-enabled-group-members example-fm #(#t #f #t) 0)))
+; Synthesis
 
 (define (synthesize-feature-model symbolic-fm tests)
   (define M
@@ -172,7 +252,7 @@
       (begin
         (assert (valid-feature-model symbolic-fm))
         (for ([t tests])
-          (assert (<=> (cdr t) (valid-configuration symbolic-fm (car t))))))))
+          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t))))))))
 
   (if (unsat? M) #f (evaluate symbolic-fm M)))
 
@@ -184,7 +264,7 @@
       (begin
         (assert (valid-feature-model symbolic-fm))
         (for ([t tests])
-          (assert (<=> (cdr t) (valid-configuration symbolic-fm (car t)))))
+          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
         (for ([fm concrete-fms])
           (assert (not (equal? symbolic-fm fm))))
         )))
@@ -192,10 +272,7 @@
   (if (unsat? M) #f (evaluate symbolic-fm M)))
 
 (define (distinguishing-input symbolic-fm concrete-fm tests)
-  (define symbolic-config
-    (build-vector
-      (vector-length (feature-model-features symbolic-fm))
-      (lambda (i) (define-symbolic* en boolean?) en)))
+  (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
 
   (define M
     (synthesize
@@ -205,14 +282,14 @@
         (assert (valid-feature-model symbolic-fm))
         ; symbolic-fm passes all tests
         (for ([t tests])
-          (assert (<=> (cdr t) (valid-configuration symbolic-fm (car t)))))
+          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
         ; but symbolic-fm produces a different output from concrete-fm on
         ; symbolic-config
         (assert
           (not
             (<=>
-              (valid-configuration symbolic-fm symbolic-config)
-              (valid-configuration concrete-fm symbolic-config)))))))
+              (eval-feature-model symbolic-fm symbolic-config)
+              (eval-feature-model concrete-fm symbolic-config)))))))
 
   (if (unsat? M) #f (evaluate symbolic-config M)))
 
@@ -233,34 +310,28 @@
     #f))
 
 
+; Demo
 
 (define example-fm-2
-  (feature-model
-    (vector
-      (feature -1 -1 0)
-      (feature -1 -1 0)
-      (feature 0 0 1)
-      (feature 0 0 1)
-      (feature 1 1 1)
-      (feature 1 1 1)
+  (make-feature-model
+    (list
+      (cons 'a1 (feature #f #f 0))
+      (cons 'a2 (feature #f #f 0))
+      (cons 'b1 (feature 'a1 'gb 1))
+      (cons 'b2 (feature 'a1 'gb 1))
+      (cons 'c1 (feature 'a2 'gc 1))
+      (cons 'c2 (feature 'a2 'gc 1))
     )
-    (vector
-      ;(group -1 1 1)
-      (group 0 1 1)
-      (group 1 1 1)
+    (list
+      (cons 'gb (group 'a1 1 1))
+      (cons 'gc (group 'a2 1 1))
     )
-    (vector
-      (dependency 2 5)
+    (list
+      (dependency 'b1 'c2)
     )
   ))
 
-(define (init-tests fm oracle)
-  (define num-features (vector-length (feature-model-features fm)))
-  (for/list ([i (in-range num-features)])
-    (define t (build-vector num-features (lambda (j) (= i j))))
-    (cons t (oracle t))))
-
-(define sketch-fm (make-symbolic-feature-model 6 2 1))
-(define (oracle inp) (valid-configuration example-fm-2 inp))
-(define synth-fm (oracle-guided-synthesis sketch-fm oracle '()))
+(define symbolic-fm (?*feature-model 6 2 1))
+(define (oracle inp) (eval-feature-model example-fm-2 inp))
+(define synth-fm (oracle-guided-synthesis symbolic-fm oracle '()))
 (pretty-write (list "synthesis result" synth-fm))
