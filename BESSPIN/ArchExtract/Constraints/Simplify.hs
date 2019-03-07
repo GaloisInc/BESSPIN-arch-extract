@@ -76,11 +76,13 @@ findOverrides e = everything (<>) (Set.empty `mkQ` go) e
     go _ = Set.empty
 
 
+mkParam i = EParam dummySpan i
 mkAdd l r = EBinArith dummySpan BAdd l r
 mkSub l r = EBinArith dummySpan BSub l r
 mkMul l r = EBinArith dummySpan BMul l r
 mkIntLit n = EIntLit dummySpan n
 mkEq l r = EBinCmp dummySpan BEq l r
+mkClog2 e = EUnArith dummySpan UClog2 e
 
 
 -- A polynomial is a sum of terms, each multiplied by an integer constant.
@@ -315,10 +317,10 @@ elimVarVar fc = runST $ do
   where
     vars = fcVars fc
 
--- Eliminate all constraints of the form `var = expr`, by substituting `expr`
--- for `var` in all other constraints.
-elimVarExpr :: FlatConstraints -> FlatConstraints
-elimVarExpr fc = fc { fcConstraints = cons' <> extraCons }
+-- Eliminate all constraints of the form `var = expr` that match `filt`, by
+-- substituting `expr` for `var` in all other constraints.
+elimVarExpr :: (ConstExpr -> Bool) -> FlatConstraints -> FlatConstraints
+elimVarExpr filt fc = fc { fcConstraints = cons' <> extraCons }
   where
     record :: Int -> ConstExpr -> State (Map Int (Set ConstExpr)) ()
     record v e = modify $ \m ->
@@ -326,6 +328,7 @@ elimVarExpr fc = fc { fcConstraints = cons' <> extraCons }
 
     (cons, constMap) = flip runState M.empty $ liftM S.fromList $
         flip filterM (toList $ fcConstraints fc) $ \c -> case constraintExpr c of
+            e | not $ filt e -> return True
             EBinCmp _ BEq (EParam _ i) e | hasNoVars e -> record i e >> return False
             EBinCmp _ BEq e (EParam _ i) | hasNoVars e -> record i e >> return False
             _ -> return True
@@ -398,6 +401,42 @@ dedupConstraints fc = fc
     }
 
 
+liftClog2Calls :: FlatConstraints -> FlatConstraints
+liftClog2Calls fc = fc
+    & _fcVars %~ (<> newVars)
+    & _fcConstraints .~ (oldConstraints <> newConstraints)
+  where
+    args :: Set ConstExpr
+    args = everything (<>) (Set.empty `mkQ` go) (fcConstraints fc)
+      where
+        go (EUnArith _ UClog2 e) = Set.singleton e
+        go _ = Set.empty
+
+    varBase = S.length $ fcVars fc
+
+    exprName _ (EParam _ i) = fcVars fc `S.index` i
+    exprName _ (EOverride i _) = fst $ fcOverrides fc `S.index` i
+    exprName idx _ = "expr$" <> T.pack (show idx)
+
+    newVars = S.mapWithIndex (\idx e -> "clog2$" <> exprName idx e)
+        (S.fromList $ Set.toList args)
+    newConstraints = S.mapWithIndex (\idx e -> Constraint
+            (mkEq (mkParam $ varBase + idx) (mkClog2 e))
+            (CoText $ newVars `S.index` idx))
+        (S.fromList $ Set.toList args)
+
+    argVar :: ConstExpr -> Int
+    argVar e = varBase + Set.findIndex e args
+
+    oldConstraints = fmap (everywhere (mkT go)) (fcConstraints fc)
+      where
+        go (EUnArith sp UClog2 e) = EParam sp $ argVar e
+        go e = e
+
+isClog2Constraint (EBinCmp _ BEq (EParam _ _) (EUnArith _ UClog2 _)) = True
+isClog2Constraint _ = False
+
+
 simplifyConstraints :: FlatConstraints -> FlatConstraints
 simplifyConstraints fc = fc
     & traceConstraints "orig"
@@ -405,18 +444,23 @@ simplifyConstraints fc = fc
     & _fcConstraints %~ S.filter (not . isTriviallyTrue)
     & _fcConstraints . traversed . _constraintExpr %~ simplify . inlineRangeSizeBE
     & dedupConstraints
-    & go
+    & go (const True)
+    & traceConstraints "before clog2 lifting"
+    & liftClog2Calls
+    & go (not . isClog2Constraint)
     & traceConstraints "before override cleanup"
     & elimOverrideConst
+    & traceConstraints "after override cleanup"
     & _fcConstraints %~ S.filter (not . isTriviallyTrue)
+    & traceConstraints "before dedup"
     & dedupConstraints
     & traceConstraints "final"
   where
-    go fc = fc
+    go varExprFilt fc = fc
         & traceConstraints "begin"
         & elimVarVar
         & traceConstraints "after var-var"
-        & elimVarExpr
+        & elimVarExpr varExprFilt
         & traceConstraints "after var-const"
         & _fcConstraints %~ S.filter (not . isTriviallyTrue)
         & traceConstraints "after trivial"
@@ -424,7 +468,7 @@ simplifyConstraints fc = fc
         & maybeLoop
       where
         maybeLoop fc' =
-            if S.length (fcVars fc') < S.length (fcVars fc) then go fc' else fc'
+            if S.length (fcVars fc') < S.length (fcVars fc) then go varExprFilt fc' else fc'
 
 
 traceConstraints desc fc = flip trace fc $ unlines $
