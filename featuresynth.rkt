@@ -331,7 +331,37 @@
     )
   ))
 
-(define symbolic-fm (?*feature-model 6 2 1))
-(define (oracle inp) (eval-feature-model example-fm-2 inp))
+(define secure-cpu-isa-fm
+  (make-feature-model
+    (list
+      (cons 'riscv  (feature #f 'g-isa 0))
+      (cons 'intel  (feature #f 'g-isa 0))
+      (cons 'arm    (feature #f 'g-isa 0))
+      (cons 'rv32   (feature 'riscv 'g-riscv-width 1))
+      (cons 'rv64   (feature 'riscv 'g-riscv-width 1))
+      (cons 'rv128  (feature 'riscv 'g-riscv-width 1))
+      (cons 'rv-m   (feature 'riscv #f 1))
+      (cons 'rv-a   (feature 'riscv #f 1))
+      (cons 'rv-d   (feature 'riscv #f 1))
+      (cons 'rv-c   (feature 'riscv #f 1))
+      (cons 'rv-f   (feature 'riscv #f 1))
+      (cons 'ia32   (feature 'intel 'g-intel-arch 1))
+      (cons 'x86-64 (feature 'intel 'g-intel-arch 1))
+      (cons 'aarch32 (feature 'arm 'g-arm-arch 1))
+      (cons 'aarch64 (feature 'arm 'g-arm-arch 1))
+    )
+    (list
+      (cons 'g-isa (group #f 1 1))
+      (cons 'g-riscv-width (group 'riscv 1 1))
+      (cons 'g-intel-arch (group 'intel 1 1))
+      (cons 'g-arm-arch (group 'arm 1 1))
+    )
+    (list
+      (dependency 'rv-d 'rv-f)
+    )
+  ))
+
+(define symbolic-fm (?*feature-model 15 4 1))
+(define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
 (define synth-fm (oracle-guided-synthesis symbolic-fm oracle '()))
 (pretty-write (list "synthesis result" synth-fm))
