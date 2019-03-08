@@ -54,7 +54,7 @@ runRewrite :: Config.Rewrite -> Design a -> [FileInfo] -> IO ()
 runRewrite cfg d fs = rewriteFiles fs rws
   where
     fc = flattenConstraintsForDesign cfg d
-    originMap = M.fromList $ toList $ fcOverrides fc
+    originMap = M.fromList [(overrideName o, overrideOrigin o) | o <- toList $ fcOverrides fc]
     rws = fromMaybe [] $ mconcat $ map (\(overName, newText) -> do
         origin <- M.lookup overName originMap
         span <- overrideSpan d origin

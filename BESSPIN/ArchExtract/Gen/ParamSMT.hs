@@ -38,8 +38,8 @@ intLit :: (Show a, Integral a) => a -> SExpr
 intLit i = Atom $ T.pack $ show i
 
 
-overrideValName (n, _) = "over-val-" <> n
-overrideEnableName (n, _) = "over-en-" <> n
+overrideValName o = "over-val-" <> overrideName o
+overrideEnableName o = "over-en-" <> overrideName o
 
 convConstExpr :: FlatConstraints -> ConstExpr -> SExpr
 convConstExpr fc e = go e

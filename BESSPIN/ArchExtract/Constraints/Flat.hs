@@ -27,11 +27,19 @@ import BESSPIN.ArchExtract.Lens
 data OverrideOrigin = OoLocal Int Int | OoInst Int Int Int
     deriving (Show, Eq, Ord)
 
+data Override = Override
+    { overrideName :: Text
+    , overrideOrigin :: OverrideOrigin
+    , overrideDefault :: Maybe ConstExpr
+    }
+    deriving (Show)
+
 data FlatConstraints = FlatConstraints
     { fcVars :: Seq Text
-    , fcOverrides :: Seq (Text, OverrideOrigin)
+    , fcOverrides :: Seq Override
     , fcConstraints :: Seq Constraint
     }
     deriving (Show)
 
+makeLenses' ''Override
 makeLenses' ''FlatConstraints

@@ -415,7 +415,7 @@ liftClog2Calls fc = fc
     varBase = S.length $ fcVars fc
 
     exprName _ (EParam _ i) = fcVars fc `S.index` i
-    exprName _ (EOverride i _) = fst $ fcOverrides fc `S.index` i
+    exprName _ (EOverride i _) = overrideName $ fcOverrides fc `S.index` i
     exprName idx _ = "expr$" <> T.pack (show idx)
 
     newVars = S.mapWithIndex (\idx e -> "clog2$" <> exprName idx e)
@@ -478,8 +478,8 @@ traceConstraints desc fc = flip trace fc $ unlines $
     ++ ["  " ++ show (S.length $ fcOverrides fc) ++ " overrides"]
     ++ toList (flip S.mapWithIndex (fcVars fc) $ \idx n ->
         "var " ++ show idx ++ ": " ++ T.unpack n)
-    ++ toList (flip S.mapWithIndex (fcOverrides fc) $ \idx (n,_) ->
-        "override " ++ show idx ++ ": " ++ T.unpack n)
+    ++ toList (flip S.mapWithIndex (fcOverrides fc) $ \idx o ->
+        "override " ++ show idx ++ ": " ++ T.unpack (overrideName o))
     ++ map (\c -> "constraint: " ++ T.unpack (showPretty $ constraintExpr c)) (toList $ fcConstraints fc)
     ++ [" ========== end =========="]
 

@@ -257,7 +257,7 @@ data ModInfo = ModInfo
 
 data FlattenState = FlattenState
     { fsVars :: Seq Text
-    , fsOverrides :: Seq (Text, OverrideOrigin)
+    , fsOverrides :: Seq Override
     , fsOverrideMap :: Map OverrideOrigin Int
     , fsConstraints :: Seq Constraint
     }
@@ -268,18 +268,22 @@ addVar n = do
     modify $ \s -> s { fsVars = fsVars s |> n }
     return i
 
-getOverride :: Design a -> OverrideOrigin -> State FlattenState Int
-getOverride d origin = state $ \s -> case M.lookup origin (fsOverrideMap s) of
-    Just i -> (i, s)
+getOverride :: Design a -> OverrideOrigin -> ConstExpr -> State FlattenState Int
+getOverride d origin expr = state $ \s -> case M.lookup origin (fsOverrideMap s) of
+    Just i ->
+        (i, s
+            { fsOverrides = fsOverrides s &
+                ix i . _overrideDefault %~ mergeOverrideDefault expr
+            })
     Nothing ->
-        let name = overrideName d origin in
+        let name = genOverrideName d origin in
         let i = S.length $ fsOverrides s in
         (i, s
-            { fsOverrides = fsOverrides s |> (name, origin)
+            { fsOverrides = fsOverrides s |> (Override name origin (Just expr))
             , fsOverrideMap = M.insert origin i $ fsOverrideMap s
             })
 
-overrideName d o = case o of
+genOverrideName d o = case o of
     OoLocal modId paramIdx ->
         let m = d `designMod` modId in
         let p = m `moduleParam` paramIdx in
@@ -289,6 +293,18 @@ overrideName d o = case o of
         let LkInst i = logicKind $ m `moduleLogic` instIdx in
         let p = (d `designMod` instModId i) `moduleParam` paramIdx in
         moduleName m <> "$" <> instName i <> "$" <> paramName p
+
+-- Combine new expr `e` with the existing default for an override.  Constant
+-- exprs take precedence over non-constant exprs, but two distinct constants
+-- conflict, producing `Nothing`.
+mergeOverrideDefault _ Nothing = Nothing
+mergeOverrideDefault e (Just e')
+  | not (isConstExpr e) = Just e'
+  | not (isConstExpr e') = Just e
+  | unspan e == unspan e' = Just e
+  | otherwise = Nothing
+  where
+    unspan e = everywhere (mkT $ \_ -> Span 0 0) e
 
 addConstraint :: ConstExpr -> ConstraintOrigin -> State FlattenState ()
 addConstraint e o = modify $ \s -> s { fsConstraints = fsConstraints s |> Constraint e o }
@@ -333,10 +349,10 @@ flattenConstraints d rootId = conv $ execState (go rootId "") initState
             let mi' = foldl (\mi i -> miInsts mi M.! i) mi is in
             return $ EParam sp (miVarMap mi' M.! p)
         go (EOverrideLocalParam i e) = do
-            o <- getOverride d $ OoLocal (miModId mi) i
+            o <- getOverride d (OoLocal (miModId mi) i) e
             return $ EOverride o e
         go (EOverrideInstParam i j e) = do
-            o <- getOverride d $ OoInst (miModId mi) i j
+            o <- getOverride d (OoInst (miModId mi) i j) e
             return $ EOverride o e
         go e = return e
 
