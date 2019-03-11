@@ -5,7 +5,7 @@ CXXFLAGS = -O3 -std=c++11 -g
 LDFLAGS = -lz -ltinycbor \
 	-lverific_verilog -lverific_util -lverific_containers -lverific_database
 
-all:    exporter importer
+all:    exporter importer ppfeatures
 
 EXPORTER_OBJS = exporter.o
 
@@ -22,4 +22,7 @@ clean:
 importer:
 	ghc -j1 --make -O3 importer.hs
 
-.PHONY: all clean importer
+ppfeatures:
+	ghc -j1 --make -O3 ppfeatures.hs
+
+.PHONY: all clean importer ppfeatures

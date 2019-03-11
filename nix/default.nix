@@ -33,7 +33,7 @@ let pkgs = import <nixpkgs> {};
       prettyprinter
       toml-parser
       simple-smt
-      attoparsec
+      parsec attoparsec
     ]);
 
     clafer_0_4_4 = haskellPackages.callPackage ./clafer-0.4.4.nix {};
