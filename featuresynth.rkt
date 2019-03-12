@@ -288,70 +288,94 @@
 
 ; Synthesis
 
-(define (synthesize-feature-model symbolic-fm tests)
-  (define M
-    (synthesize
-      #:forall '()
-      #:guarantee
-      (begin
-        (assert (valid-feature-model symbolic-fm))
-        (for ([t tests])
-          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t))))))))
+; Like `(evaluate cfg M)`, but for any entries of the config that remain
+; symbolic, it flips a coin.
+(define (evaluate-config cfg M)
+  (for/vector ([x (evaluate cfg M)])
+    (if (term? x)
+      (let ([y (= 1 (random 2))])
+        (displayln (list "concretize" x "->" y))
+        y)
+      x)))
 
-  (if (unsat? M) #f (evaluate symbolic-fm M)))
+(define-syntax-rule (if-let ([x e]) f1 f2)
+  (let ([x e])
+    (if x f1 f2)))
 
-(define (synthesize-alternative-feature-model symbolic-fm concrete-fms tests)
-  (define M
-    (synthesize
-      #:forall '()
-      #:guarantee
-      (begin
-        (assert (valid-feature-model symbolic-fm))
-        (for ([t tests])
-          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
-        (for ([fm concrete-fms])
-          (assert (not (equal? symbolic-fm fm))))
-        )))
+(define (try-evaluate e M)
+  (if (unsat? M) #f (evaluate e M)))
 
-  (if (unsat? M) #f (evaluate symbolic-fm M)))
+(define (try-evaluate-config e M)
+  (if (unsat? M) #f (evaluate-config e M)))
 
-(define (distinguishing-input symbolic-fm concrete-fm tests)
-  (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
 
-  (define M
-    (synthesize
-      #:forall '()
-      #:guarantee
-      (begin
-        (assert (valid-feature-model symbolic-fm))
-        ; symbolic-fm passes all tests
-        (for ([t tests])
-          (assert (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
-        ; but symbolic-fm produces a different output from concrete-fm on
-        ; symbolic-config
-        (assert
-          (not
-            (<=>
-              (eval-feature-model symbolic-fm symbolic-config)
-              (eval-feature-model concrete-fm symbolic-config)))))))
+(define (count-set cfg)
+  (for/sum ([x cfg]) (if x 1 0)))
 
-  (if (unsat? M) #f (evaluate symbolic-config M)))
+(define (config-distance cfg1 cfg2)
+  (for/sum ([x cfg1] [y cfg2]) (if (not (<=> x y)) 1 0)))
+
+(define (config-min-distance cfg1 cfgs2)
+  (for/fold ([acc (vector-length cfg1)]) ([cfg2 cfgs2])
+    (let ([dist (config-distance cfg1 cfg2)])
+      (if (< dist acc) dist acc))))
+
+(define (choose-input tests inp1 inp2)
+  ; Pick the one that's most different from all previous tests.
+  (if (> (config-min-distance inp1 tests) (config-min-distance inp2 tests)) inp1 inp2))
+  ; Pick the one with fewer features enabled.  This should generally choose the
+  ; one that's more likely to succeed.
+  ;(if (< (count-set inp1) (count-set inp2)) inp1 inp2))
+
+
+(define (distinguishing-input solver-func symbolic-fm concrete-fm
+                               symbolic-config tests)
+  (let*
+    ([pops 0]
+     [get-input
+       (lambda (constraint)
+         (set! pops (+ pops 1))
+         (try-evaluate-config symbolic-config (solver-func constraint)))]
+     [base-constraint
+       (not (<=> (eval-feature-model symbolic-fm symbolic-config)
+                 (eval-feature-model concrete-fm symbolic-config)))]
+     [alt-constraint
+       (lambda (concrete-config)
+         (not (equal? symbolic-config concrete-config)))])
+
+    (begin0
+      (if-let ([inp1 (get-input base-constraint)])
+        ;(if-let ([inp2 (get-input (alt-constraint inp1))])
+        ;  (choose-input tests inp1 inp2)
+        ;  inp1)
+        inp1
+        #f)
+      (when (> pops 0) (solver-func pops)))))
 
 (define (oracle-guided-synthesis symbolic-fm oracle tests)
-  (displayln (list "synthesizing from" (length tests) "tests"))
-  (define synth-fm (synthesize-feature-model symbolic-fm tests))
-  (if synth-fm
-    (begin
-      (define dist-input (distinguishing-input symbolic-fm synth-fm tests))
-      (if dist-input
-        (begin
-          (define new-test (cons dist-input (oracle dist-input)))
-          (oracle-guided-synthesis symbolic-fm oracle (cons new-test tests)))
-        (begin
-          (define alt-fm (synthesize-alternative-feature-model symbolic-fm (list synth-fm) tests))
-          (when alt-fm (displayln (list "alt result" alt-fm)))
-          synth-fm)))
-    #f))
+  (letrec
+    ([solver (solve+)]
+     [symbolic-config (?*config (feature-model-num-features symbolic-fm))]
+     [synthesize
+       (lambda (tests M)
+         (displayln (list "synthesizing from" (length tests) "tests"))
+         (if-let ([concrete-fm (try-evaluate symbolic-fm M)])
+           (distinguish tests concrete-fm)
+           #f))]
+     [distinguish
+       (lambda (tests concrete-fm)
+         (if-let
+           ([input
+              (distinguishing-input solver symbolic-fm concrete-fm
+                                    symbolic-config tests)])
+           (let ([output (oracle input)])
+             (synthesize (cons (cons input output) tests)
+                         (solver (<=> output (eval-feature-model symbolic-fm input)))))
+           concrete-fm))])
+    (solver (valid-feature-model symbolic-fm))
+    (for ([t tests])
+      (solver (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
+    (synthesize tests (solver #t))))
 
 
 ; Demo
@@ -374,6 +398,7 @@
       (dependency 'b1 'c2)
     )
     (list
+      (fforce 'a2 #t)
     )
   ))
 
@@ -409,7 +434,10 @@
     )
   ))
 
+(random-seed 12345)
 (define symbolic-fm (?*feature-model 15 4 1 0))
 (define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
+;(define symbolic-fm (?*feature-model 6 2 1 0))
+;(define (oracle inp) (eval-feature-model example-fm-2 inp))
 (define synth-fm (oracle-guided-synthesis symbolic-fm oracle '()))
 (pretty-write (list "synthesis result" synth-fm))
