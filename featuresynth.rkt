@@ -8,7 +8,8 @@
 (struct feature (parent-id group-id depth) #:transparent)
 (struct group (parent-id min-card max-card) #:transparent)
 (struct dependency (a b) #:transparent)
-(struct feature-model (features groups dependencies) #:transparent)
+(struct fforce (feature-id value) #:transparent)
+(struct feature-model (features groups dependencies fforces) #:transparent)
 
 (define (feature-model-feature fm i)
   (vector-ref (feature-model-features fm) i))
@@ -18,6 +19,9 @@
 
 (define (feature-model-dependency fm k)
   (vector-ref (feature-model-dependencies fm) k))
+
+(define (feature-model-fforce fm k)
+  (vector-ref (feature-model-fforces fm) k))
 
 (define (feature-model-group-members fm j)
   (apply +
@@ -101,6 +105,24 @@
       )
     )))
 
+(define (valid-fforce fm idx ff)
+  (&&
+    (valid-feature-id fm (fforce-feature-id ff))
+    (if (> idx 0)
+      (let ([prev-feature-id
+              (fforce-feature-id (feature-model-fforce fm (- idx 1)))])
+        (||
+          (= -1 (fforce-feature-id ff) prev-feature-id)
+          (> (fforce-feature-id ff) prev-feature-id)))
+      #t)
+    (if (= -1 (fforce-feature-id ff)) #t
+      (let ([f (feature-model-feature fm (fforce-feature-id ff))])
+        (&&
+          (= (feature-parent-id f) -1)
+          (= (feature-group-id f) -1)
+          (boolean? (fforce-value ff))
+          )))))
+
 (define (valid-feature-model fm)
   (apply &&
     (append
@@ -108,6 +130,8 @@
       (for/list ([(g j) (in-indexed (feature-model-groups fm))])
         (valid-group fm j g))
       (for/list ([d (feature-model-dependencies fm)]) (valid-dependency fm d))
+      (for/list ([(ff idx) (in-indexed (feature-model-fforces fm))])
+        (valid-fforce fm idx ff))
       )))
 
 
@@ -136,6 +160,12 @@
      [b (dependency-b d)])
     (if (not (= a -1)) (=> (vector-ref cfg a) (vector-ref cfg b)) #t)))
 
+(define (eval-fforce fm ff cfg)
+  (let
+    ([i (fforce-feature-id ff)])
+    (if (= -1 i) #t
+      (<=> (vector-ref cfg i) (fforce-value ff)))))
+
 (define (eval-feature-model fm cfg)
   (apply &&
     (append
@@ -145,6 +175,8 @@
         (eval-group fm j g cfg))
       (for/list ([d (feature-model-dependencies fm)])
         (eval-dependency fm d cfg))
+      (for/list ([ff (feature-model-fforces fm)])
+        (eval-fforce fm ff cfg))
       )))
 
 
@@ -168,18 +200,19 @@
 (define (?*dependency)
   (dependency (?*feature-id) (?*feature-id)))
 
-(define (?*feature-model num-features num-groups num-dependencies)
+(define (?*fforce)
+  (fforce (?*feature-id) (?*bool)))
+
+(define (?*feature-model num-features num-groups num-dependencies num-fforces)
   (feature-model
     (build-vector num-features (lambda (i) (?*feature)))
     (build-vector num-groups (lambda (i) (?*group)))
     (build-vector num-dependencies (lambda (i) (?*dependency)))
+    (build-vector num-fforces (lambda (i) (?*fforce)))
   ))
 
 (define (?*config num-features)
   (build-vector num-features (lambda (i) (?*bool))))
-
-(define (make-symbolic-feature-model num-features num-groups num-dependencies)
-  (?*feature-model num-features num-groups num-dependencies))
 
 
 ; Concrete construction helpers
@@ -220,14 +253,21 @@
     (resolve-feature-id nm (dependency-b d))
   ))
 
+(define (resolve-fforce nm ff)
+  (fforce
+    (resolve-feature-id nm (fforce-feature-id ff))
+    (fforce-value ff)
+  ))
+
 (define (resolve-feature-model nm fm)
   (feature-model
     (vector-map (lambda (f) (resolve-feature nm f)) (feature-model-features fm))
     (vector-map (lambda (f) (resolve-group nm f)) (feature-model-groups fm))
     (vector-map (lambda (f) (resolve-dependency nm f)) (feature-model-dependencies fm))
+    (vector-map (lambda (f) (resolve-fforce nm f)) (feature-model-fforces fm))
   ))
 
-(define (make-feature-model fs gs ds)
+(define (make-feature-model fs gs ds ffs)
   (let*
     ([nm (name-map (make-hash) (make-hash))]
      [fs  ; vector of unresolved features
@@ -238,8 +278,9 @@
        (for/vector ([(kv i) (in-indexed gs)])
          (hash-set! (name-map-groups nm) (car kv) i)
          (cdr kv))]
-     [ds (for/vector ([d ds]) d)])
-    (resolve-feature-model nm (feature-model fs gs ds))))
+     [ds (for/vector ([d ds]) d)]
+     [ffs (for/vector ([ff ffs]) ff)])
+    (resolve-feature-model nm (feature-model fs gs ds ffs))))
 
 
 ; Synthesis
@@ -329,6 +370,8 @@
     (list
       (dependency 'b1 'c2)
     )
+    (list
+    )
   ))
 
 (define secure-cpu-isa-fm
@@ -359,9 +402,11 @@
     (list
       (dependency 'rv-d 'rv-f)
     )
+    (list
+    )
   ))
 
-(define symbolic-fm (?*feature-model 15 4 1))
+(define symbolic-fm (?*feature-model 15 4 1 0))
 (define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
 (define synth-fm (oracle-guided-synthesis symbolic-fm oracle '()))
 (pretty-write (list "synthesis result" synth-fm))
