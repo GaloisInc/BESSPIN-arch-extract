@@ -5,11 +5,10 @@
 (current-bitwidth #f)
 
 
-(struct feature (parent-id group-id depth) #:transparent)
+(struct feature (parent-id group-id depth force-on force-off) #:transparent)
 (struct group (parent-id min-card max-card) #:transparent)
 (struct dependency (a b) #:transparent)
-(struct fforce (feature-id value) #:transparent)
-(struct feature-model (features groups dependencies fforces) #:transparent)
+(struct feature-model (features groups dependencies) #:transparent)
 
 (define (feature-model-feature fm i)
   (vector-ref (feature-model-features fm) i))
@@ -19,9 +18,6 @@
 
 (define (feature-model-dependency fm k)
   (vector-ref (feature-model-dependencies fm) k))
-
-(define (feature-model-fforce fm k)
-  (vector-ref (feature-model-fforces fm) k))
 
 (define (feature-model-group-members fm j)
   (apply +
@@ -69,6 +65,11 @@
         ([g (feature-model-group fm (feature-group-id f))])
         (= (feature-parent-id f) (group-parent-id g)))
       #t)
+    (! (&& (feature-force-on f) (feature-force-off f)))
+    (=> (feature-force-on f)
+        (= -1 (feature-parent-id f) (feature-group-id f)))
+    (=> (feature-force-off f)
+        (= -1 (feature-parent-id f) (feature-group-id f)))
     ))
 
 (define (valid-group fm j g)
@@ -108,24 +109,6 @@
           (not (= -1 (feature-parent-id f)))
         )))))
 
-(define (valid-fforce fm idx ff)
-  (&&
-    (valid-feature-id fm (fforce-feature-id ff))
-    (if (> idx 0)
-      (let ([prev-feature-id
-              (fforce-feature-id (feature-model-fforce fm (- idx 1)))])
-        (||
-          (= -1 (fforce-feature-id ff) prev-feature-id)
-          (> (fforce-feature-id ff) prev-feature-id)))
-      #t)
-    (if (= -1 (fforce-feature-id ff)) #t
-      (let ([f (feature-model-feature fm (fforce-feature-id ff))])
-        (&&
-          (= (feature-parent-id f) -1)
-          (= (feature-group-id f) -1)
-          (boolean? (fforce-value ff))
-          )))))
-
 (define (valid-feature-model fm)
   (apply &&
     (append
@@ -133,8 +116,6 @@
       (for/list ([(g j) (in-indexed (feature-model-groups fm))])
         (valid-group fm j g))
       (for/list ([d (feature-model-dependencies fm)]) (valid-dependency fm d))
-      (for/list ([(ff idx) (in-indexed (feature-model-fforces fm))])
-        (valid-fforce fm idx ff))
       )))
 
 
@@ -143,7 +124,11 @@
 (define (eval-feature fm i f cfg)
   (let
     ([p (feature-parent-id f)])
-    (if (>= p 0) (=> (vector-ref cfg i) (vector-ref cfg p)) #t)))
+    (&&
+      (if (>= p 0) (=> (vector-ref cfg i) (vector-ref cfg p)) #t)
+      (=> (feature-force-on f) (vector-ref cfg i))
+      (=> (feature-force-off f) (! (vector-ref cfg i)))
+    )))
 
 (define (eval-group fm j g cfg)
   (let
@@ -163,12 +148,6 @@
      [b (dependency-b d)])
     (if (not (= a -1)) (=> (vector-ref cfg a) (vector-ref cfg b)) #t)))
 
-(define (eval-fforce fm ff cfg)
-  (let
-    ([i (fforce-feature-id ff)])
-    (if (= -1 i) #t
-      (<=> (vector-ref cfg i) (fforce-value ff)))))
-
 (define (eval-feature-model fm cfg)
   (apply &&
     (append
@@ -178,8 +157,6 @@
         (eval-group fm j g cfg))
       (for/list ([d (feature-model-dependencies fm)])
         (eval-dependency fm d cfg))
-      (for/list ([ff (feature-model-fforces fm)])
-        (eval-fforce fm ff cfg))
       )))
 
 
@@ -195,7 +172,7 @@
 (define (?*group-id) (define-symbolic* gid integer?) gid)
 
 (define (?*feature)
-  (feature (?*feature-id) (?*group-id) (?*)))
+  (feature (?*feature-id) (?*group-id) (?*) (?*bool) (?*bool)))
 
 (define (?*group)
   (group (?*feature-id) (?*) (?*)))
@@ -203,15 +180,11 @@
 (define (?*dependency)
   (dependency (?*feature-id) (?*feature-id)))
 
-(define (?*fforce)
-  (fforce (?*feature-id) (?*bool)))
-
-(define (?*feature-model num-features num-groups num-dependencies num-fforces)
+(define (?*feature-model num-features num-groups num-dependencies)
   (feature-model
     (build-vector num-features (lambda (i) (?*feature)))
     (build-vector num-groups (lambda (i) (?*group)))
     (build-vector num-dependencies (lambda (i) (?*dependency)))
-    (build-vector num-fforces (lambda (i) (?*fforce)))
   ))
 
 (define (?*config num-features)
@@ -241,6 +214,8 @@
     (resolve-feature-id nm (feature-parent-id f))
     (resolve-group-id nm (feature-group-id f))
     (feature-depth f)
+    (feature-force-on f)
+    (feature-force-off f)
   ))
 
 (define (resolve-group nm g)
@@ -256,21 +231,14 @@
     (resolve-feature-id nm (dependency-b d))
   ))
 
-(define (resolve-fforce nm ff)
-  (fforce
-    (resolve-feature-id nm (fforce-feature-id ff))
-    (fforce-value ff)
-  ))
-
 (define (resolve-feature-model nm fm)
   (feature-model
     (vector-map (lambda (f) (resolve-feature nm f)) (feature-model-features fm))
     (vector-map (lambda (f) (resolve-group nm f)) (feature-model-groups fm))
     (vector-map (lambda (f) (resolve-dependency nm f)) (feature-model-dependencies fm))
-    (vector-map (lambda (f) (resolve-fforce nm f)) (feature-model-fforces fm))
   ))
 
-(define (make-feature-model fs gs ds ffs)
+(define (make-feature-model fs gs ds)
   (let*
     ([nm (name-map (make-hash) (make-hash))]
      [fs  ; vector of unresolved features
@@ -281,9 +249,8 @@
        (for/vector ([(kv i) (in-indexed gs)])
          (hash-set! (name-map-groups nm) (car kv) i)
          (cdr kv))]
-     [ds (for/vector ([d ds]) d)]
-     [ffs (for/vector ([ff ffs]) ff)])
-    (resolve-feature-model nm (feature-model fs gs ds ffs))))
+     [ds (for/vector ([d ds]) d)])
+    (resolve-feature-model nm (feature-model fs gs ds))))
 
 
 ; Synthesis
@@ -438,8 +405,7 @@
   (feature-model
     (vector-map (basic-deserializer feature) (vector-ref v 1))
     (vector-map (basic-deserializer group) (vector-ref v 2))
-    (vector-map (basic-deserializer dependency) (vector-ref v 3))
-    (vector-map (basic-deserializer fforce) (vector-ref v 4))))
+    (vector-map (basic-deserializer dependency) (vector-ref v 3))))
 
 
 ; Demo
@@ -447,12 +413,12 @@
 (define example-fm-2
   (make-feature-model
     (list
-      (cons 'a1 (feature #f #f 0))
-      (cons 'a2 (feature #f #f 0))
-      (cons 'b1 (feature 'a1 'gb 1))
-      (cons 'b2 (feature 'a1 'gb 1))
-      (cons 'c1 (feature 'a2 'gc 1))
-      (cons 'c2 (feature 'a2 'gc 1))
+      (cons 'a1 (feature #f #f 0 #f #f))
+      (cons 'a2 (feature #f #f 0 #f #f))
+      (cons 'b1 (feature 'a1 'gb 1 #f #f))
+      (cons 'b2 (feature 'a1 'gb 1 #f #f))
+      (cons 'c1 (feature 'a2 'gc 1 #f #f))
+      (cons 'c2 (feature 'a2 'gc 1 #f #f))
     )
     (list
       (cons 'gb (group 'a1 1 1))
@@ -461,29 +427,26 @@
     (list
       (dependency 'b1 'c2)
     )
-    (list
-      (fforce 'a2 #t)
-    )
   ))
 
 (define secure-cpu-isa-fm
   (make-feature-model
     (list
-      (cons 'riscv  (feature #f 'g-isa 0))
-      (cons 'intel  (feature #f 'g-isa 0))
-      (cons 'arm    (feature #f 'g-isa 0))
-      (cons 'rv32   (feature 'riscv 'g-riscv-width 1))
-      (cons 'rv64   (feature 'riscv 'g-riscv-width 1))
-      (cons 'rv128  (feature 'riscv 'g-riscv-width 1))
-      (cons 'rv-m   (feature 'riscv #f 1))
-      (cons 'rv-a   (feature 'riscv #f 1))
-      (cons 'rv-d   (feature 'riscv #f 1))
-      (cons 'rv-c   (feature 'riscv #f 1))
-      (cons 'rv-f   (feature 'riscv #f 1))
-      (cons 'ia32   (feature 'intel 'g-intel-arch 1))
-      (cons 'x86-64 (feature 'intel 'g-intel-arch 1))
-      (cons 'aarch32 (feature 'arm 'g-arm-arch 1))
-      (cons 'aarch64 (feature 'arm 'g-arm-arch 1))
+      (cons 'riscv  (feature #f 'g-isa 0 #f #f))
+      (cons 'intel  (feature #f 'g-isa 0 #f #f))
+      (cons 'arm    (feature #f 'g-isa 0 #f #f))
+      (cons 'rv32   (feature 'riscv 'g-riscv-width 1 #f #f))
+      (cons 'rv64   (feature 'riscv 'g-riscv-width 1 #f #f))
+      (cons 'rv128  (feature 'riscv 'g-riscv-width 1 #f #f))
+      (cons 'rv-m   (feature 'riscv #f 1 #f #f))
+      (cons 'rv-a   (feature 'riscv #f 1 #f #f))
+      (cons 'rv-d   (feature 'riscv #f 1 #f #f))
+      (cons 'rv-c   (feature 'riscv #f 1 #f #f))
+      (cons 'rv-f   (feature 'riscv #f 1 #f #f))
+      (cons 'ia32   (feature 'intel 'g-intel-arch 1 #f #f))
+      (cons 'x86-64 (feature 'intel 'g-intel-arch 1 #f #f))
+      (cons 'aarch32 (feature 'arm 'g-arm-arch 1 #f #f))
+      (cons 'aarch64 (feature 'arm 'g-arm-arch 1 #f #f))
     )
     (list
       (cons 'g-isa (group #f 1 1))
@@ -493,8 +456,6 @@
     )
     (list
       (dependency 'rv-d 'rv-f)
-    )
-    (list
     )
   ))
 
@@ -508,9 +469,9 @@
     (lambda (f) (read f))))
 
 (random-seed 12345)
-(define symbolic-fm (?*feature-model 15 4 1 0))
+(define symbolic-fm (?*feature-model 15 4 1))
 (define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
-;(define symbolic-fm (?*feature-model 6 2 1 0))
+;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define (oracle inp) (eval-feature-model example-fm-2 inp))
 
 (define (do-synthesize)
