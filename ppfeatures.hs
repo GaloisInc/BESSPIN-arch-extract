@@ -34,9 +34,9 @@ collectDefines es = everything (<>) (Set.empty `mkQ` go) es
 main = do
     text <- T.getContents
     let toks = tokenize text
-    print toks
+    --print toks
     let evts = parseEvents toks
-    print evts
-    print $ collectFlags evts
-    print $ collectDefines evts
-    print $ collectFlags evts Set.\\ collectDefines evts
+    --print evts
+    --print $ collectFlags evts
+    --print $ collectDefines evts
+    mapM_ T.putStrLn $ collectFlags evts Set.\\ collectDefines evts

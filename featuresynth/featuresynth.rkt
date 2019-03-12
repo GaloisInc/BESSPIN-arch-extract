@@ -15,6 +15,8 @@
 
 (define config-list-features-command "false")
 (define config-oracle-command "false")
+(define config-oracle-cache-file #f)
+(define config-init-tests-file #f)
 (define config-max-groups 0)
 (define config-max-dependencies 0)
 
@@ -31,6 +33,18 @@
     (begin
       (assert (string? x))
       (set! config-oracle-command x))
+    (void))
+
+  (if-let ([x (hash-ref c 'oracle-cache-file #f)])
+    (begin
+      (assert (string? x))
+      (set! config-oracle-cache-file x))
+    (void))
+
+  (if-let ([x (hash-ref c 'init-tests-file #f)])
+    (begin
+      (assert (string? x))
+      (set! config-init-tests-file x))
     (void))
 
   (if-let ([x (hash-ref c 'max-groups #f)])
@@ -78,10 +92,35 @@
   (lambda (config)
     (run-oracle-command oracle-command feature-names config)))
 
+(define (make-cached-oracle cache-file oracle)
+  (define cache-entries
+    (if (file-exists? cache-file)
+      (for/list ([l (file->lines cache-file)]) (read (open-input-string l)))
+      '()))
+  (define cache (make-hash cache-entries))
+  (define out-file (open-output-file cache-file #:exists 'append))
+  (lambda (config)
+    (if (hash-has-key? cache config)
+      (hash-ref cache config)
+      (let ([result (oracle config)])
+        (writeln (cons config result) out-file)
+        (flush-output out-file)
+        (hash-set! cache config result)
+        result))))
+
 (define feature-names
   (read-features-from-command config-list-features-command))
 (define oracle
-  (make-command-oracle config-oracle-command feature-names))
+  (let ([cmd-oracle (make-command-oracle config-oracle-command feature-names)])
+    (if config-oracle-cache-file
+      (make-cached-oracle config-oracle-cache-file cmd-oracle)
+      cmd-oracle)))
+(define init-tests
+  (if config-init-tests-file
+    (for/list ([l (file->lines config-init-tests-file)])
+      (let ([config (read (open-input-string l))])
+        (cons config (oracle config))))
+    '()))
 
 
 (define symbolic-fm
@@ -90,7 +129,9 @@
     config-max-groups
     config-max-dependencies))
 
-(define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle '()))
+(pretty-write (list "initial tests" init-tests))
+
+(define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle init-tests))
 (define synth-fm (car synth-fm-pair))
 (define synth-tests (cdr synth-fm-pair))
 (pretty-write synth-fm)
