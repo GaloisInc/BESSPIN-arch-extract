@@ -371,11 +371,75 @@
            (let ([output (oracle input)])
              (synthesize (cons (cons input output) tests)
                          (solver (<=> output (eval-feature-model symbolic-fm input)))))
-           concrete-fm))])
+           (cons concrete-fm tests)))])
     (solver (valid-feature-model symbolic-fm))
     (for ([t tests])
       (solver (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
     (synthesize tests (solver #t))))
+
+(define (resettable-solver solver)
+  (let ([counter 0])
+    (lambda (x)
+      (cond
+        [(eq? x 'shutdown) (solver 'shutdown)]
+        [(eq? x 'reset)
+         (begin
+           (when (> counter 0) (solver counter))
+           (set! counter 0))]
+        [(integer? x)
+         (begin
+           (set! counter (- counter x))
+           (solver x))]
+        [else
+          (begin
+            (set! counter (+ counter 1))
+            (solver x))]))))
+
+(define (resettable-solve+)
+  (resettable-solver (solve+)))
+
+(define (check-unique solver symbolic-fm concrete-fm tests filt)
+  (let
+    ([symbolic-config (?*config (feature-model-num-features symbolic-fm))])
+
+    (solver (valid-feature-model symbolic-fm))
+    (for ([(t i) (in-indexed tests)])
+      (when (filt i)
+        (solver (<=> (cdr t) (eval-feature-model symbolic-fm (car t))))))
+    (not (distinguishing-input solver symbolic-fm concrete-fm
+                               symbolic-config tests))))
+
+(define (minimize-tests symbolic-fm concrete-fm tests)
+  (let*
+    ([solver (resettable-solve+)]
+     [removed (mutable-set)]
+     [mk-filt
+       (lambda (i)
+         (lambda (j)
+           (and (not (= j i)) (not (set-member? removed j)))))])
+    (for ([i (in-range (sequence-length tests))])
+      (displayln (list "check" i))
+      (solver 'reset)
+      (when (check-unique solver symbolic-fm concrete-fm tests (mk-filt i))
+        (displayln (list "removed" i))
+        (set-add! removed i)))
+    (for/list ([(t i) (in-indexed tests)]
+               #:when (not (set-member? removed i)))
+      t)))
+
+
+; Deserialization of feature models
+
+(define (basic-deserializer ctor)
+  (lambda (v)
+    (apply ctor (cdr (vector->list v)))))
+
+(define (vector->feature-model v)
+  (feature-model
+    (vector-map (basic-deserializer feature) (vector-ref v 1))
+    (vector-map (basic-deserializer group) (vector-ref v 2))
+    (vector-map (basic-deserializer dependency) (vector-ref v 3))
+    (vector-map (basic-deserializer fforce) (vector-ref v 4))))
 
 
 ; Demo
@@ -434,10 +498,59 @@
     )
   ))
 
+(define (pretty-write-to-file v path)
+  (call-with-output-file* path
+    (lambda (f) (pretty-write v f))
+    #:exists 'truncate))
+
+(define (read-from-file path)
+  (call-with-input-file* path
+    (lambda (f) (read f))))
+
 (random-seed 12345)
 (define symbolic-fm (?*feature-model 15 4 1 0))
 (define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
 ;(define symbolic-fm (?*feature-model 6 2 1 0))
 ;(define (oracle inp) (eval-feature-model example-fm-2 inp))
-(define synth-fm (oracle-guided-synthesis symbolic-fm oracle '()))
-(pretty-write (list "synthesis result" synth-fm))
+
+(define (do-synthesize)
+  (define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle '()))
+
+  (define synth-fm (car synth-fm-pair))
+  (pretty-write (list "synthesis result" synth-fm))
+  (pretty-write-to-file synth-fm "fm.rktd")
+
+  (define synth-tests (cdr synth-fm-pair))
+  (pretty-write-to-file synth-tests "tests-raw.rktd")
+  (displayln (list "wrote" (length synth-tests) "tests to file"))
+)
+
+(define (do-synthesize-from-tests)
+  (define tests-orig (read-from-file "tests.rktd"))
+  (define tests
+    (for/list ([t tests-orig])
+      (cons (car t) (oracle (car t)))))
+  (define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle tests))
+
+  (define synth-fm (car synth-fm-pair))
+  (pretty-write (list "synthesis result" synth-fm))
+  (pretty-write-to-file synth-fm "fm.rktd")
+
+  (define synth-tests (cdr synth-fm-pair))
+  (pretty-write-to-file synth-tests "tests-raw.rktd")
+  (displayln (list "wrote" (length synth-tests) "tests to file"))
+)
+
+(define (do-minimize)
+  (define synth-fm (vector->feature-model (read-from-file "fm.rktd")))
+  (define synth-tests (read-from-file "tests-raw.rktd"))
+
+  (displayln "minimizing tests...")
+  (define min-tests (minimize-tests symbolic-fm synth-fm synth-tests))
+  (pretty-write-to-file min-tests "tests.rktd")
+  (displayln (list "reduced from" (length synth-tests) "to" (length min-tests)))
+)
+
+;(do-synthesize)
+;(do-minimize)
+(do-synthesize-from-tests)
