@@ -377,22 +377,42 @@
                                symbolic-config tests))))
 
 (define (minimize-tests symbolic-fm concrete-fm tests)
-  (let*
-    ([solver (resettable-solve+)]
-     [removed (mutable-set)]
-     [mk-filt
-       (lambda (i)
-         (lambda (j)
-           (and (not (= j i)) (not (set-member? removed j)))))])
-    (for ([i (in-range (sequence-length tests))])
-      (displayln (list "check" i))
-      (solver 'reset)
-      (when (check-unique solver symbolic-fm concrete-fm tests (mk-filt i))
-        (displayln (list "removed" i))
-        (set-add! removed i)))
-    (for/list ([(t i) (in-indexed tests)]
-               #:when (not (set-member? removed i)))
-      t)))
+  (define tests* (for/vector ([t tests]) t))
+  (define solver (resettable-solve+))
+  (define removed (mutable-set))
+
+  (define (check-without lo hi)
+    (define (filt i)
+      (not (or (and (<= lo i) (< i hi)) (set-member? removed i))))
+    (solver 'reset)
+    (check-unique solver symbolic-fm concrete-fm tests filt))
+  (define (remove-all lo hi)
+    (displayln (list "removing" (- hi lo) "tests"))
+    (for ([i (in-range lo hi)])
+      (set-add! removed i)))
+  (define (any-kept lo hi)
+    (for/fold ([acc #f]) ([i (in-range lo hi)])
+      (or acc (not (set-member? removed i)))))
+
+  (define n (sequence-length tests))
+  (for ([i (in-range (- (integer-length n) 1) -1 -1)])
+    (displayln (list "depth" i ":" (- n (set-count removed)) "tests remain"))
+    ; Divide `tests` into `step`-sized chunks, and try deleting each one.  The
+    ; next time around the outer loop, we'll try chunks of half the size.  This
+    ; strategy is much faster than a linear scan because it often can discard
+    ; large chunks (100+ tests) in the early iterations, and later solver
+    ; queries are faster when some tests have already been removed.
+    (define step (arithmetic-shift 1 i))
+    (for ([lo (in-range 0 n step)])
+      (define hi (min n (+ lo step)))
+      (when (and (< lo hi) (any-kept lo hi))
+        (displayln (list "try without" lo ".." hi))
+        (when (check-without lo hi)
+          (remove-all lo hi)))))
+
+  (for/list ([(t i) (in-indexed tests)]
+             #:when (not (set-member? removed i)))
+    t))
 
 
 ; Deserialization of feature models
