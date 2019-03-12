@@ -96,14 +96,17 @@
     (valid-feature-id fm (dependency-b d))
     (||
       (= -1 (dependency-a d) (dependency-b d))
-      (&&
-        (<= 0 (dependency-a d))
-        (<= 0 (dependency-b d))
-        (not (= (dependency-a d) (dependency-b d)))
-        (not (= (feature-parent-id (feature-model-feature fm (dependency-a d)))
-                (dependency-b d)))
-      )
-    )))
+      (let ([f (feature-model-feature fm (dependency-a d))])
+        (&&
+          (<= 0 (dependency-a d))
+          (<= 0 (dependency-b d))
+          (not (= (dependency-a d) (dependency-b d)))
+          (not (= (feature-parent-id f)
+                  (dependency-b d)))
+          ; Prefer making A a child of B, over making A a child of the root
+          ; with a dependency on B.
+          (not (= -1 (feature-parent-id f)))
+        )))))
 
 (define (valid-fforce fm idx ff)
   (&&
