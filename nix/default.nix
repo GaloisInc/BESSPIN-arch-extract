@@ -59,13 +59,17 @@ let pkgs = import <nixpkgs> {};
     verific = pkgs.callPackage ./verific.nix {};
 
 
-    genRacketConfig = pkgs.callPackage ./gen-racket-config.nix {};
+    genRacketConfig = pkgs.callPackage racket/gen-racket-config.nix {};
     callRacketPackage = p: a: pkgs.callPackage p (a // {
       inherit genRacketConfig;
     });
-    racket-rfc6455 = callRacketPackage ./racket-rfc6455.nix {};
-    racket-rosette = callRacketPackage ./racket-rosette.nix { inherit racket-rfc6455; };
-    racketWithPkgs = callRacketPackage ./racket-with-pkgs.nix {};
+    racketPkgs = rec {
+      rfc6455 = callRacketPackage racket/rfc6455.nix {};
+      rosette = callRacketPackage racket/rosette.nix { inherit rfc6455; };
+      parsack = callRacketPackage racket/parsack.nix {};
+      toml = callRacketPackage racket/toml.nix { inherit parsack; };
+    };
+    racketWithPkgs = callRacketPackage racket/racket-with-pkgs.nix {};
 
 
 in pkgs.mkShell {
@@ -78,7 +82,10 @@ in pkgs.mkShell {
         inherit (pkgs) alloy;
         inherit (pkgs) z3;
 
-        racket = racketWithPkgs [ racket-rfc6455 racket-rosette ];
+        inherit (pkgs) verilator;
+
+        racket = racketWithPkgs (with racketPkgs;
+          [ rfc6455 rosette parsack toml ]);
 
         #inherit (pkgs.openjdk8) jre;
         inherit (pkgs) openjdk8 maven;

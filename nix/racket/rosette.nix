@@ -1,4 +1,4 @@
-{ stdenv, racket, genRacketConfig, racket-rfc6455 }:
+{ stdenv, racket, genRacketConfig, rfc6455 }:
 
 stdenv.mkDerivation rec {
   pname = "rosette";
@@ -9,13 +9,13 @@ stdenv.mkDerivation rec {
     rev = "e4b56fae9492bf7287490d72772d97784154b565";
   };
 
-  buildInputs = [racket racket-rfc6455];
+  buildInputs = [racket rfc6455];
 
   phases = ["unpackPhase" "setupPhase" "installPhase"];
 
   setupPhase = ''
     mkdir ../racket-config
-    ${genRacketConfig [racket-rfc6455 "$out"]} >../racket-config/config.rktd
+    ${genRacketConfig [rfc6455 "$out"]} >../racket-config/config.rktd
   '';
 
   installPhase = ''
