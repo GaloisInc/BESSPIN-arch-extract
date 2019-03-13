@@ -12,6 +12,9 @@
   oracle-guided-synthesis minimize-tests
 )
   
+(require racket/random)
+(require rosette/solver/smt/z3)
+
 
 (define-syntax-rule (if-let ([x e]) f1 f2)
   (let ([x e])
@@ -203,6 +206,12 @@
 (define (?*config num-features)
   (build-vector num-features (lambda (i) (?*bool))))
 
+(define (clone-symbolic-feature-model fm)
+  (?*feature-model
+    (vector-length (feature-model-features fm))
+    (vector-length (feature-model-groups fm))
+    (vector-length (feature-model-dependencies fm))))
+
 
 ; Concrete construction helpers
 
@@ -285,115 +294,95 @@
   (if (unsat? M) #f (evaluate-config e M)))
 
 
-(define (count-set cfg)
-  (for/sum ([x cfg]) (if x 1 0)))
+; Sets up a solver for performing oracle-guided synthesis, and returns a
+; closure that can be called in the following ways:
+;
+; * `(f 'synthesize)`: Try to synthesize a feature model from the current set
+;   of tests.  Returns a `feature-model?` if synthesis produces a unique
+;   program, returns a new test input if synthesis produces a non-unique
+;   program, and returns `#f` if synthesis fails to produce any program.
+; * `(f 'test t)`: Add `t` to the current set of tests.  `t` should be a pair
+;   of a test input (a vector of booleans, one for each feature in
+;   `symbolic-fm`) and output (a boolean, with `#t` indicating that the input
+;   vector represents a valid configuration).
+(define (oracle-guided-synthesis+ symbolic-fm)
+  (define solver (z3))
+  (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
+  (define tests '())
 
-(define (config-distance cfg1 cfg2)
-  (for/sum ([x cfg1] [y cfg2]) (if (not (<=> x y)) 1 0)))
-
-(define (config-min-distance cfg1 cfgs2)
-  (for/fold ([acc (vector-length cfg1)]) ([cfg2 cfgs2])
-    (let ([dist (config-distance cfg1 cfg2)])
-      (if (< dist acc) dist acc))))
-
-(define (choose-input tests inp1 inp2)
-  ; Pick the one that's most different from all previous tests.
-  (if (> (config-min-distance inp1 tests) (config-min-distance inp2 tests)) inp1 inp2))
-  ; Pick the one with fewer features enabled.  This should generally choose the
-  ; one that's more likely to succeed.
-  ;(if (< (count-set inp1) (count-set inp2)) inp1 inp2))
-
-
-(define (distinguishing-input solver-func symbolic-fm concrete-fm
-                               symbolic-config tests)
-  (let*
-    ([pops 0]
-     [get-input
-       (lambda (constraint)
-         (set! pops (+ pops 1))
-         (try-evaluate-config symbolic-config (solver-func constraint)))]
-     [base-constraint
-       (not (<=> (eval-feature-model symbolic-fm symbolic-config)
-                 (eval-feature-model concrete-fm symbolic-config)))]
-     [alt-constraint
-       (lambda (concrete-config)
-         (not (equal? symbolic-config concrete-config)))])
-
+  (define (synthesize)
+    (printf "synthesizing from ~a tests (~a positive)~n"
+            (length tests) (length (filter cdr tests)))
+    (if-let ([concrete-fm (try-evaluate symbolic-fm (solver-check solver))])
+      ; Found a program - now check if it's unique
+      (distinguish concrete-fm)
+      ; Didn't find a program
+      #f))
+  (define (distinguish concrete-fm)
+    (solver-push solver)
+    (solver-assert solver
+      (list
+        (not (<=> (eval-feature-model symbolic-fm symbolic-config)
+                  (eval-feature-model concrete-fm symbolic-config)))))
+    (define M (solver-check solver))
     (begin0
-      (if-let ([inp1 (get-input base-constraint)])
-        ;(if-let ([inp2 (get-input (alt-constraint inp1))])
-        ;  (choose-input tests inp1 inp2)
-        ;  inp1)
-        inp1
-        #f)
-      (when (> pops 0) (solver-func pops)))))
+      (if-let ([concrete-config (try-evaluate-config symbolic-config M)])
+        ; Program is not unique - return a new test input
+        concrete-config
+        ; Program is unique - return it
+        concrete-fm)
+      (solver-pop solver)))
 
-(define (oracle-guided-synthesis symbolic-fm oracle tests)
-  (letrec
-    ([solver (solve+)]
-     [symbolic-config (?*config (feature-model-num-features symbolic-fm))]
-     [synthesize
-       (lambda (tests M)
-         (displayln (list "synthesizing from" (length tests) "tests"))
-         (if-let ([concrete-fm (try-evaluate symbolic-fm M)])
-           (distinguish tests concrete-fm)
-           #f))]
-     [distinguish
-       (lambda (tests concrete-fm)
-         (if-let
-           ([input
-              (distinguishing-input solver symbolic-fm concrete-fm
-                                    symbolic-config tests)])
-           (let ([output (oracle input)])
-             (synthesize (cons (cons input output) tests)
-                         (solver (<=> output (eval-feature-model symbolic-fm input)))))
-           (cons concrete-fm tests)))])
-    (solver (valid-feature-model symbolic-fm))
-    (for ([t tests])
-      (solver (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
-    (synthesize tests (solver #t))))
+  (solver-assert solver (list (valid-feature-model symbolic-fm)))
 
-(define (resettable-solver solver)
-  (let ([counter 0])
-    (lambda (x)
-      (cond
-        [(eq? x 'shutdown) (solver 'shutdown)]
-        [(eq? x 'reset)
-         (begin
-           (when (> counter 0) (solver counter))
-           (set! counter 0))]
-        [(integer? x)
-         (begin
-           (set! counter (- counter x))
-           (solver x))]
-        [else
-          (begin
-            (set! counter (+ counter 1))
-            (solver x))]))))
+  (lambda args
+    (match args
+      [(list 'test (cons inp out))
+       (solver-assert solver
+         (list (<=> out (eval-feature-model symbolic-fm inp))))
+       (set! tests (cons (cons inp out) tests))
+       (void)]
+      [(list 'synthesize) (synthesize)]
+      [(list 'get-tests) tests])))
 
-(define (resettable-solve+)
-  (resettable-solver (solve+)))
+(define (oracle-guided-synthesis symbolic-fm oracle init-tests)
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (for ([t init-tests]) (synth 'test t))
+  (define (loop)
+    (define result (synth 'synthesize))
+    (cond
+      [(feature-model? result) (cons result (synth 'get-tests))]
+      [(vector? result)
+       (synth 'test (cons result (oracle result)))
+       (loop)]
+      [(false? result) result]
+      [else (raise "unreachable")]))
+  (loop))
+
 
 (define (check-unique solver symbolic-fm concrete-fm tests filt)
   (let
     ([symbolic-config (?*config (feature-model-num-features symbolic-fm))])
 
-    (solver (valid-feature-model symbolic-fm))
-    (for ([(t i) (in-indexed tests)])
-      (when (filt i)
-        (solver (<=> (cdr t) (eval-feature-model symbolic-fm (car t))))))
-    (not (distinguishing-input solver symbolic-fm concrete-fm
-                               symbolic-config tests))))
+    (solver-clear solver)
+    (solver-assert solver (list (valid-feature-model symbolic-fm)))
+    (solver-assert solver
+      (for/list ([(t i) (in-indexed tests)] #:when (filt i))
+        (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
+    (solver-assert solver
+      (list
+        (not (<=> (eval-feature-model symbolic-fm symbolic-config)
+                  (eval-feature-model concrete-fm symbolic-config)))))
+    (unsat? (solver-check solver))))
 
 (define (minimize-tests symbolic-fm concrete-fm tests)
   (define tests* (for/vector ([t tests]) t))
-  (define solver (resettable-solve+))
+  (define solver (z3))
   (define removed (mutable-set))
 
   (define (check-without lo hi)
     (define (filt i)
       (not (or (and (<= lo i) (< i hi)) (set-member? removed i))))
-    (solver 'reset)
     (check-unique solver symbolic-fm concrete-fm tests filt))
   (define (remove-all lo hi)
     (displayln (list "removing" (- hi lo) "tests"))
