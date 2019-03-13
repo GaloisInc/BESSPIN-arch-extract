@@ -12,8 +12,9 @@
   oracle-guided-synthesis
   oracle-guided-synthesis+
   minimize-tests
+  minimize-counterexample
 )
-  
+
 (require racket/random)
 (require rosette/solver/smt/z3)
 
@@ -366,30 +367,42 @@
   (loop))
 
 
-(define (check-unique solver symbolic-fm concrete-fm tests filt)
-  (let
-    ([symbolic-config (?*config (feature-model-num-features symbolic-fm))])
+(define (check-unique solver symbolic-fm concrete-fm tests)
+  (lambda (filt)
+    (let
+      ([symbolic-config (?*config (feature-model-num-features symbolic-fm))])
 
-    (solver-clear solver)
-    (solver-assert solver (list (valid-feature-model symbolic-fm)))
-    (solver-assert solver
-      (for/list ([(t i) (in-indexed tests)] #:when (filt i))
-        (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
-    (solver-assert solver
-      (list
-        (not (<=> (eval-feature-model symbolic-fm symbolic-config)
-                  (eval-feature-model concrete-fm symbolic-config)))))
-    (unsat? (solver-check solver))))
+      (solver-clear solver)
+      (solver-assert solver (list (valid-feature-model symbolic-fm)))
+      (solver-assert solver
+        (for/list ([(t i) (in-indexed tests)] #:when (filt i))
+          (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
+      (solver-assert solver
+        (list
+          (not (<=> (eval-feature-model symbolic-fm symbolic-config)
+                    (eval-feature-model concrete-fm symbolic-config)))))
+      (unsat? (solver-check solver)))))
 
-(define (minimize-tests symbolic-fm concrete-fm tests)
+(define (check-unsynthesizable solver symbolic-fm tests)
+  (lambda (filt)
+    (let
+      ([symbolic-config (?*config (feature-model-num-features symbolic-fm))])
+
+      (solver-clear solver)
+      (solver-assert solver (list (valid-feature-model symbolic-fm)))
+      (solver-assert solver
+        (for/list ([(t i) (in-indexed tests)] #:when (filt i))
+          (<=> (cdr t) (eval-feature-model symbolic-fm (car t)))))
+      (unsat? (solver-check solver)))))
+
+(define (minimize-tests* tests check)
   (define tests* (for/vector ([t tests]) t))
-  (define solver (z3))
   (define removed (mutable-set))
 
   (define (check-without lo hi)
     (define (filt i)
       (not (or (and (<= lo i) (< i hi)) (set-member? removed i))))
-    (check-unique solver symbolic-fm concrete-fm tests filt))
+    (check filt))
   (define (remove-all lo hi)
     (displayln (list "removing" (- hi lo) "tests"))
     (for ([i (in-range lo hi)])
@@ -417,6 +430,12 @@
   (for/list ([(t i) (in-indexed tests)]
              #:when (not (set-member? removed i)))
     t))
+
+(define (minimize-tests symbolic-fm concrete-fm tests)
+  (minimize-tests* tests (check-unique (z3) symbolic-fm concrete-fm tests)))
+
+(define (minimize-counterexample symbolic-fm tests)
+  (minimize-tests* tests (check-unsynthesizable (z3) symbolic-fm tests)))
 
 
 ; Deserialization of feature models

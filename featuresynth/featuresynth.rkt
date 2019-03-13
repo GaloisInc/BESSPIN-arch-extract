@@ -162,6 +162,10 @@
       [(false? result) result]))
 
   (for ([t init-tests]) (add-test* t))
-  (loop))
+  (define result
+    (or (loop)
+        (minimize-counterexample symbolic-fm (synth 'get-tests))))
+  (pretty-write result))
 
-(pretty-write (synthesize))
+(random-seed 12345)
+(synthesize)
