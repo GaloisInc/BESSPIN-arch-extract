@@ -25,9 +25,10 @@
       (cons 'gc (group 'a2 1 1))
     )
     (list
-      (dependency 'b1 'c2)
+      (dependency 'b1 'c2 #t)
     )
   ))
+
 
 (define secure-cpu-isa-fm
   (make-feature-model
@@ -55,7 +56,7 @@
       (cons 'g-arm-arch (group 'arm 1 1))
     )
     (list
-      (dependency 'rv-d 'rv-f)
+      (dependency 'rv-d 'rv-f #t)
     )
   ))
 

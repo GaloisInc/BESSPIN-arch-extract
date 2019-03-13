@@ -25,7 +25,7 @@
 
 (struct feature (parent-id group-id depth force-on force-off) #:transparent)
 (struct group (parent-id min-card max-card) #:transparent)
-(struct dependency (a b) #:transparent)
+(struct dependency (a b val) #:transparent)
 (struct feature-model (features groups dependencies) #:transparent)
 
 (define (feature-model-feature fm i)
@@ -163,8 +163,11 @@
 (define (eval-dependency fm d cfg)
   (let
     ([a (dependency-a d)]
-     [b (dependency-b d)])
-    (if (not (= a -1)) (=> (vector-ref cfg a) (vector-ref cfg b)) #t)))
+     [b (dependency-b d)]
+     [val (dependency-val d)])
+    (if (not (= a -1))
+      (=> (vector-ref cfg a) (<=> val (vector-ref cfg b)))
+      #t)))
 
 (define (eval-feature-model fm cfg)
   (apply &&
@@ -196,7 +199,7 @@
   (group (?*feature-id) (?*) (?*)))
 
 (define (?*dependency)
-  (dependency (?*feature-id) (?*feature-id)))
+  (dependency (?*feature-id) (?*feature-id) (?*bool)))
 
 (define (?*feature-model num-features num-groups num-dependencies)
   (feature-model
@@ -253,6 +256,7 @@
   (dependency
     (resolve-feature-id nm (dependency-a d))
     (resolve-feature-id nm (dependency-b d))
+    (dependency-val d)
   ))
 
 (define (resolve-feature-model nm fm)
