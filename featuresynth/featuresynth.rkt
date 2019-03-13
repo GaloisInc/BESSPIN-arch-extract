@@ -118,10 +118,8 @@
 (define init-tests
   (if config-init-tests-file
     (for/list ([l (file->lines config-init-tests-file)])
-      (let ([config (read (open-input-string l))])
-        (cons config (oracle config))))
+      (read (open-input-string l)))
     '()))
-
 
 (define symbolic-fm
   (?*feature-model
@@ -129,9 +127,41 @@
     config-max-groups
     config-max-dependencies))
 
-(pretty-write (list "initial tests" init-tests))
 
-(define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle init-tests))
-(define synth-fm (car synth-fm-pair))
-(define synth-tests (cdr synth-fm-pair))
-(pretty-write synth-fm)
+(define (synthesize)
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define added-tests (mutable-set))
+
+  (define (add-test inp)
+    (when (not (set-member? added-tests inp))
+      (set-add! added-tests inp)
+      (define out (oracle inp))
+      (synth 'test (cons inp out))))
+
+  (define (add-test* inp)
+    (when (not (set-member? added-tests inp))
+      (set-add! added-tests inp)
+      (define out (oracle inp))
+      (synth 'test (cons inp out))
+
+      (when out
+        (printf "found positive test!~n")
+        (for ([i (in-range (vector-length inp))])
+          (define inp*
+            (for/vector ([(v j) (in-indexed inp)])
+              (if (= j i) (not v) v)))
+          (add-test inp*)))))
+
+  (define (loop)
+    (define result (synth 'synthesize))
+    (cond
+      [(vector? result)
+       (add-test* result)
+       (loop)]
+      [(feature-model? result) result]
+      [(false? result) result]))
+
+  (for ([t init-tests]) (add-test* t))
+  (loop))
+
+(pretty-write (synthesize))

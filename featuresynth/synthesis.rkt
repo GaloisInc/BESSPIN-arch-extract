@@ -9,7 +9,9 @@
   valid-feature-model eval-feature-model
   ?*feature-model ?*config
   make-feature-model vector->feature-model
-  oracle-guided-synthesis minimize-tests
+  oracle-guided-synthesis
+  oracle-guided-synthesis+
+  minimize-tests
 )
   
 (require racket/random)

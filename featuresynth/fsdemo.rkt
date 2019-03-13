@@ -74,6 +74,7 @@
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define (oracle inp) (eval-feature-model example-fm-2 inp))
 
+
 (define (do-synthesize)
   (define synth-fm-pair (oracle-guided-synthesis symbolic-fm oracle '()))
 
@@ -82,6 +83,48 @@
   (pretty-write-to-file synth-fm "fm.rktd")
 
   (define synth-tests (cdr synth-fm-pair))
+  (pretty-write-to-file synth-tests "tests-raw.rktd")
+  (displayln (list "wrote" (length synth-tests) "tests to file"))
+)
+
+(define (do-synthesize2)
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define added-tests (mutable-set))
+
+  (define (add-test inp)
+    (when (not (set-member? added-tests inp))
+      (set-add! added-tests inp)
+      (define out (oracle inp))
+      (synth 'test (cons inp out))))
+
+  (define (add-test* inp)
+    (when (not (set-member? added-tests inp))
+      (set-add! added-tests inp)
+      (define out (oracle inp))
+      (synth 'test (cons inp out))
+
+      (when out
+        (printf "found positive test!~n")
+        (for ([i (in-range (vector-length inp))])
+          (define inp*
+            (for/vector ([(v j) (in-indexed inp)])
+              (if (= j i) (not v) v)))
+          (add-test inp*)))))
+
+  (define (loop)
+    (define result (synth 'synthesize))
+    (cond
+      [(vector? result)
+       (add-test* result)
+       (loop)]
+      [(feature-model? result) result]
+      [(false? result) result]))
+
+  (define synth-fm (loop))
+  (pretty-write (list "synthesis result" synth-fm))
+  (pretty-write-to-file synth-fm "fm.rktd")
+
+  (define synth-tests (synth 'get-tests))
   (pretty-write-to-file synth-tests "tests-raw.rktd")
   (displayln (list "wrote" (length synth-tests) "tests to file"))
 )
@@ -112,6 +155,6 @@
   (displayln (list "reduced from" (length synth-tests) "to" (length min-tests)))
 )
 
-(do-synthesize)
+(do-synthesize2)
 ;(do-minimize)
 ;(do-synthesize-from-tests)
