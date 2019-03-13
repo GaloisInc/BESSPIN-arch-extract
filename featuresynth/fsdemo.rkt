@@ -59,6 +59,69 @@
       (dependency 'rv-d 'rv-f #t)
     )
   ))
+(assert (valid-feature-model secure-cpu-isa-fm))
+
+(define secure-cpu-isa-init-tests
+  (list
+    #(#t #f #f #t #f #f #f #f #f #f #f #f #f #f #f)
+    #(#f #t #f #f #f #f #f #f #f #f #f #t #f #f #f)
+    #(#f #f #t #f #f #f #f #f #f #f #f #f #f #t #f)
+  ))
+
+
+(define secure-cpu-arch-fm
+  (make-feature-model
+    (list
+      (cons 'tagging    (feature #f 'g-arch 0 #f #f))
+      (cons 'crypto     (feature #f 'g-arch 0 #f #f))
+      (cons 'dram       (feature 'tagging 'g-tagging 1 #f #f))
+      (cons 'registers  (feature 'tagging 'g-tagging 1 #f #f))
+      (cons 'icache     (feature 'tagging 'g-tagging 1 #f #f))
+      (cons 'dcache     (feature 'tagging 'g-tagging 1 #f #f))
+      (cons 'randomness (feature 'crypto #f 1 #f #f))
+      (cons 'hash       (feature 'crypto #f 1 #f #f))
+      (cons 'symmetric  (feature 'crypto #f 1 #f #f))
+      (cons 'asymmetric (feature 'crypto #f 1 #f #f))
+      (cons 'prng       (feature 'randomness 'g-randomness 2 #f #f))
+      (cons 'true-rng   (feature 'randomness 'g-randomness 2 #f #f))
+      (cons 'hash-drbg  (feature 'prng 'g-prng 3 #f #f))
+      (cons 'hmac-drbg  (feature 'prng 'g-prng 3 #f #f))
+      (cons 'ctr-drbg   (feature 'prng 'g-prng 3 #f #f))
+      (cons 'sha2       (feature 'hash 'g-hash 2 #f #f))
+      (cons 'sha3       (feature 'hash 'g-hash 2 #f #f))
+      (cons 'md5        (feature 'hash 'g-hash 2 #f #f))
+      (cons 'aes        (feature 'symmetric 'g-symmetric 2 #f #f))
+      (cons '3des       (feature 'symmetric 'g-symmetric 2 #f #f))
+      (cons 'simon      (feature 'symmetric 'g-symmetric 2 #f #f))
+      (cons 'speck      (feature 'symmetric 'g-symmetric 2 #f #f))
+      (cons 'rsa        (feature 'asymmetric 'g-asymmetric 2 #f #f))
+      (cons 'elgamal    (feature 'asymmetric 'g-asymmetric 2 #f #f))
+    )
+    (list
+      (cons 'g-arch (group #f 1 2))
+      (cons 'g-tagging (group 'tagging 1 4))
+      (cons 'g-randomness (group 'randomness 1 2))
+      (cons 'g-prng (group 'prng 1 3))
+      (cons 'g-hash (group 'hash 1 3))
+      (cons 'g-symmetric (group 'symmetric 1 4))
+      (cons 'g-asymmetric (group 'asymmetric 1 2))
+    )
+    (list
+      (dependency 'hash-drbg 'sha2 #t)
+      (dependency 'hmac-drbg 'hash #t)
+      (dependency 'ctr-drbg 'symmetric #t)
+    )
+  ))
+(assert (valid-feature-model secure-cpu-arch-fm))
+
+(define secure-cpu-arch-init-tests
+  (list
+    #(#t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t)
+    #(#t #f #t #t #t #t #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f)
+    #(#f #t #f #f #f #f #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t)
+    #(#f #t #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f #f)
+  ))
+
 
 (define (pretty-write-to-file v path)
   (call-with-output-file* path
@@ -72,6 +135,10 @@
 (random-seed 12345)
 (define symbolic-fm (?*feature-model 15 4 1))
 (define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
+(define init-tests secure-cpu-isa-init-tests)
+;(define symbolic-fm (?*feature-model 24 8 3))
+;(define (oracle inp) (eval-feature-model secure-cpu-arch-fm inp))
+;(define init-tests secure-cpu-arch-init-tests)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define (oracle inp) (eval-feature-model example-fm-2 inp))
 
@@ -120,6 +187,8 @@
        (loop)]
       [(feature-model? result) result]
       [(false? result) result]))
+
+  (for ([inp init-tests]) (add-test* inp))
 
   (define synth-fm (loop))
   (pretty-write (list "synthesis result" synth-fm))
