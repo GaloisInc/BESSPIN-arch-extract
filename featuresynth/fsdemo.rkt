@@ -5,6 +5,9 @@
 (require rosette/lib/synthax)
 (require toml)
 (require "synthesis.rkt")
+(require "build.rkt")
+(require "types.rkt")
+(require "eval.rkt")
 (current-bitwidth #f)
 
 

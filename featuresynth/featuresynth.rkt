@@ -3,6 +3,7 @@
 (require rosette/lib/match)
 (require rosette/lib/synthax)
 (require toml)
+(require "util.rkt")
 (require "synthesis.rkt")
 (current-bitwidth #f)
 
