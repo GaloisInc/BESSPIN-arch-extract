@@ -3,7 +3,14 @@
 (provide
   if-let
   pretty-write-to-file read-from-file
+  struct->vector*
+
+  in-place-channel
+  place-channel-get-chunk
+  in-place-channel-chunks
   )
+
+(require racket/place)
 
 (define-syntax-rule (if-let ([x e]) f1 f2)
   (let ([x e])
@@ -17,3 +24,33 @@
 (define (read-from-file path)
   (call-with-input-file* path
     (lambda (f) (read f))))
+
+(define (struct->vector* s)
+  (cond
+    [(struct? s)
+     (let
+       ([v (struct->vector s)])
+       (vector-map! struct->vector* v)
+       v)]
+    [(vector? s) (vector-map struct->vector* s)]
+    [(list? s) (map struct->vector* s)]
+    [(term? s) 'symbolic]
+    [else s]))
+
+
+(define (in-place-channel chan)
+  (in-producer (lambda () (place-channel-get chan))))
+
+; Retrieve all values that are currently available in `chan`.  If no values are
+; available, block until at least one value arrives.
+(define (place-channel-get-chunk chan)
+  (define evt0 (sync chan))
+  (define evts
+    (for/list ([evt (in-producer (lambda () (sync/timeout 0 chan)))]
+               #:break (not evt))
+      evt))
+  (cons evt0 evts))
+
+(define (in-place-channel-chunks chan)
+  (in-producer (lambda () (place-channel-get-chunk chan))))
+

@@ -5,11 +5,13 @@
 (require rosette/lib/synthax)
 (require toml)
 (require racket/random)
+(require racket/place)
 (require "synthesis.rkt")
 (require "build.rkt")
 (require "types.rkt")
 (require "eval.rkt")
 (require "util.rkt")
+(require "manager.rkt")
 (current-bitwidth #f)
 
 
@@ -129,15 +131,17 @@
 
 
 (random-seed 12345)
+;(define oracle-fm example-fm-2)
 ;(define symbolic-fm (?*feature-model 6 2 1))
-;(define (oracle inp) (eval-feature-model example-fm-2 inp))
 ;(define init-tests '())
+;(define oracle-fm secure-cpu-isa-fm)
 ;(define symbolic-fm (?*feature-model 15 4 1))
-;(define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
 ;(define init-tests secure-cpu-isa-init-tests)
+(define oracle-fm secure-cpu-arch-fm)
 (define symbolic-fm (?*feature-model 24 8 3))
-(define (oracle inp) (eval-feature-model secure-cpu-arch-fm inp))
 (define init-tests secure-cpu-arch-init-tests)
+
+(define (oracle inp) (eval-feature-model oracle-fm inp))
 
 
 (define (do-synthesize)
@@ -301,7 +305,27 @@
   (displayln (list "reduced from" (length synth-tests) "to" (length min-tests)))
 )
 
-(do-claims)
+(define (do-threaded)
+  (define symbolic-fm-args
+    (list
+      (feature-model-num-features symbolic-fm)
+      (feature-model-num-groups symbolic-fm)
+      (feature-model-num-dependencies symbolic-fm)))
+  (define fm
+    (run-manager
+      `(
+        (bitflip)
+        (distinguish ,@symbolic-fm-args)
+        (disprove ,@symbolic-fm-args)
+        )
+      `(eval-fm ,(struct->vector* oracle-fm))
+      4
+      init-tests
+      ))
+  (pretty-write fm))
+
+(do-threaded)
+;(do-claims)
 ;(do-synthesize2)
 ;(do-minimize)
 ;(do-synthesize-from-tests)
