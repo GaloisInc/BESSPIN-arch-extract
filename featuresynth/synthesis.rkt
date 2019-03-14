@@ -63,9 +63,7 @@
 (define (evaluate-config cfg M)
   (for/vector ([x (evaluate cfg M)])
     (if (term? x)
-      (let ([y (= 1 (random 2))])
-        (displayln (list "concretize" x "->" y))
-        y)
+      (= 1 (random 2))
       x)))
 
 (define (try-evaluate e M)
@@ -91,6 +89,7 @@
   (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
   (define tests '())
 
+  ; Try to synthesize a unique program that passes all current tests.
   (define (synthesize)
     (printf "synthesizing from ~a tests (~a positive)~n"
             (length tests) (length (filter cdr tests)))
@@ -114,6 +113,22 @@
         concrete-fm)
       (solver-pop solver)))
 
+  ; Try to synthesize a program `P` and input `I` such that (1) `P` passes all
+  ; current tests, (2) `eval(P, I)` returns true (i.e., `I` is a valid
+  ; configuration of feature model `P`), and (3) `I` disproves at least one
+  ; claim in `claims`.
+  (define (disprove claims)
+    (define valid-constraint
+      (eval-feature-model symbolic-fm symbolic-config))
+    (define disprove-constraint
+      (for/fold ([acc #f]) ([c claims])
+        (|| acc (! (eval-claim c symbolic-config)))))
+    (solver-push solver)
+    (solver-assert solver (list valid-constraint disprove-constraint))
+    (begin0
+      (try-evaluate-config symbolic-config (solver-check solver))
+      (solver-pop solver)))
+
   (solver-assert solver (list (valid-feature-model symbolic-fm)))
 
   (lambda args
@@ -124,7 +139,12 @@
        (set! tests (cons (cons inp out) tests))
        (void)]
       [(list 'synthesize) (synthesize)]
-      [(list 'get-tests) tests])))
+      [(list 'get-tests) tests]
+      [(list 'disprove claims) (disprove claims)]
+      [(list 'assert-claims claims)
+       (solver-assert solver
+         (for/list ([c claims]) (eval-claim c symbolic-config)))]
+    )))
 
 (define (oracle-guided-synthesis symbolic-fm oracle init-tests)
   (define synth (oracle-guided-synthesis+ symbolic-fm))

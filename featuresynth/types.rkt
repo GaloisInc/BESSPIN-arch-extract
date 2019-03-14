@@ -165,12 +165,14 @@
 
 (define (all-claims-dep fm)
   (for/list ([i (in-range (feature-model-num-features fm))]
+             #:when #t
              [j (in-range (feature-model-num-features fm))]
              #:when (not (= i j)))
     (claim-dep i j)))
 
 (define (all-claims-antidep fm)
   (for/list ([i (in-range (feature-model-num-features fm))]
+             #:when #t
              [j (in-range (feature-model-num-features fm))]
              #:when (not (= i j)))
     (claim-antidep i j)))

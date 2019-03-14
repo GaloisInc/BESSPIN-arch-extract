@@ -4,10 +4,12 @@
 (require rosette/lib/match)
 (require rosette/lib/synthax)
 (require toml)
+(require racket/random)
 (require "synthesis.rkt")
 (require "build.rkt")
 (require "types.rkt")
 (require "eval.rkt")
+(require "util.rkt")
 (current-bitwidth #f)
 
 
@@ -126,24 +128,16 @@
   ))
 
 
-(define (pretty-write-to-file v path)
-  (call-with-output-file* path
-    (lambda (f) (pretty-write v f))
-    #:exists 'truncate))
-
-(define (read-from-file path)
-  (call-with-input-file* path
-    (lambda (f) (read f))))
-
 (random-seed 12345)
-(define symbolic-fm (?*feature-model 15 4 1))
-(define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
-(define init-tests secure-cpu-isa-init-tests)
-;(define symbolic-fm (?*feature-model 24 8 3))
-;(define (oracle inp) (eval-feature-model secure-cpu-arch-fm inp))
-;(define init-tests secure-cpu-arch-init-tests)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define (oracle inp) (eval-feature-model example-fm-2 inp))
+;(define init-tests '())
+;(define symbolic-fm (?*feature-model 15 4 1))
+;(define (oracle inp) (eval-feature-model secure-cpu-isa-fm inp))
+;(define init-tests secure-cpu-isa-init-tests)
+(define symbolic-fm (?*feature-model 24 8 3))
+(define (oracle inp) (eval-feature-model secure-cpu-arch-fm inp))
+(define init-tests secure-cpu-arch-init-tests)
 
 
 (define (do-synthesize)
@@ -202,6 +196,85 @@
   (displayln (list "wrote" (length synth-tests) "tests to file"))
 )
 
+(define (do-claims)
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define added-tests (mutable-set))
+  (define claims (all-claims symbolic-fm))
+
+  ; Add test `inp`, but only if it hasn't been previously added.  Returns `#t`
+  ; if `inp` is a new test input and the oracle returns `#t` on it.
+  (define (add-test0 inp)
+    (if (not (set-member? added-tests inp))
+      (begin
+        (set-add! added-tests inp)
+        (define out (oracle inp))
+        (synth 'test (cons inp out))
+        (printf "add test #~a~n" (set-count added-tests))
+        (when out
+          (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
+          (printf "  positive: ~a claims remain~n" (length claims))
+          )
+        out)
+      #f))
+
+  (define (add-test inp)
+    (when (add-test0 inp)
+      (for ([i (in-range (vector-length inp))])
+        (define inp*
+          (for/vector ([(v j) (in-indexed inp)])
+            (if (= j i) (not v) v)))
+        (add-test0 inp*))))
+
+
+
+  (define (loop)
+    (define result (synth 'disprove claims))
+    (when result
+      (add-test result)
+      (loop)))
+    ;(when (not (null? claims))
+    ;  (define result (synth 'disprove claims))
+    ;  (wresult
+    ;    (begin
+    ;      (add-test result)
+    ;      (loop))
+    ;    (begin
+    ;      (printf "proved claims ~a~n" cs)
+    ;      (synth 'assert-claims cs)
+    ;      (set! claims (filter (lambda (c) (not (member c cs))) claims))
+    ;      (loop))
+    ;    )))
+
+
+  (printf "begin with ~a claims (~a features)~n"
+          (length claims) (feature-model-num-features symbolic-fm))
+  (for ([inp init-tests]) (add-test inp))
+  (loop)
+  (printf "claim loop ended after ~a tests: ~a claims remain~n"
+          (set-count added-tests) (length claims))
+  (for ([c claims])
+    (displayln c))
+
+
+  (define test-count (set-count added-tests))
+
+  (define (loop2)
+    (define result (synth 'synthesize))
+    (cond
+      [(vector? result)
+       (add-test result)
+       (loop2)]
+      [(feature-model? result) result]
+      [(false? result) result]))
+
+  (define synth-fm (loop2))
+  (printf "finished after ~a more tests (~a total)~n"
+          (- (set-count added-tests) test-count) (set-count added-tests))
+  (pretty-write synth-fm)
+
+  (pretty-write-to-file (set->list added-tests) "tests-raw.rktd")
+)
+
 (define (do-synthesize-from-tests)
   (define tests-orig (read-from-file "tests.rktd"))
   (define tests
@@ -228,6 +301,7 @@
   (displayln (list "reduced from" (length synth-tests) "to" (length min-tests)))
 )
 
-(do-synthesize2)
+(do-claims)
+;(do-synthesize2)
 ;(do-minimize)
 ;(do-synthesize-from-tests)
