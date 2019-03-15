@@ -10,6 +10,7 @@
   (struct-out claim-antidep)
   valid-feature-model
   all-claims
+  all-fixed-claims
   feature-model-feature
   feature-model-group
   feature-model-dependency
@@ -185,4 +186,8 @@
     (all-claims-antidep fm)
     ))
 
-
+(define (all-fixed-claims fm)
+  (append
+    (all-claims-fixed fm #f)
+    (all-claims-fixed fm #t)
+    ))

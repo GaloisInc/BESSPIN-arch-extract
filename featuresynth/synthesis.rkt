@@ -144,6 +144,11 @@
       [(list 'assert-claims claims)
        (solver-assert solver
          (for/list ([c claims]) (eval-claim c symbolic-config)))]
+      [(list 'fix-feature idx val)
+       (define f (feature-model-feature symbolic-fm idx))
+       (if val
+         (solver-assert solver (list (feature-force-on f)))
+         (solver-assert solver (list (feature-force-off f))))]
     )))
 
 (define (oracle-guided-synthesis symbolic-fm oracle init-tests)

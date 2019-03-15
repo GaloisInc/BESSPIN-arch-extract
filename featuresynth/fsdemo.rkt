@@ -318,6 +318,7 @@
         (bitflip)
         (distinguish ,@symbolic-fm-args)
         (disprove ,@symbolic-fm-args)
+        ;(boredom 100 ,@symbolic-fm-args)
         )
       `(eval-fm ,(struct->vector* oracle-fm))
       init-tests

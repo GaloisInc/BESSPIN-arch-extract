@@ -101,6 +101,7 @@
       (bitflip)
       (distinguish ,@symbolic-fm-args)
       (disprove ,@symbolic-fm-args)
+      (boredom 1000 ,@symbolic-fm-args)
       )
     `(multi-cached
        6

@@ -14,26 +14,26 @@
 (require "synthesis.rkt")
 
 
-(define (vote-quit chan)
-  (place-channel-put chan '(vote-quit)))
+(define (vote-quit chan [quiet #f])
+  (place-channel-put chan '(vote-quit ,quiet)))
 (define (unvote-quit chan)
   (place-channel-put chan '(unvote-quit)))
 
-(define (fail-flag chan)
+(define (fail-flag chan [quiet #f])
   (define val #f)
   (lambda (new-val)
     (if (eq? new-val 'get)
       val
       (begin
         (when (and new-val (not val))
-          (vote-quit chan))
+          (vote-quit chan quiet))
         (when (and val (not new-val))
           (unvote-quit chan))
         (set! val new-val)))))
 
 (define (strategy-bitflip chan)
   (printf "strategy-bitflip running~n")
-  (vote-quit chan)
+  (vote-quit chan #t)
   (for ([msg (in-place-channel chan)])
     (match msg
       [`(test ,inp ,out ,meta)
@@ -99,6 +99,43 @@
         [(vector? result) (place-channel-put chan `(input ,result ()))]
         [(false? result) (failed #t)]))))
 
+; Run silently until either another strategy vote-quits, or 100 positive tests
+; or 1000 negative tests go by without removing any "fixed" claims.  Once
+; triggered, broadcast all "fixed" claims to other strategies, vote-quit, and
+; exit.
+(define (strategy-boredom threshold symbolic-fm chan)
+  (printf "strategy-boredom running~n")
+  (define claims (all-fixed-claims symbolic-fm))
+  (define prev-count (length claims))
+  (define counter threshold)
+  (for ([msg (in-place-channel chan)])
+    (match msg
+      [`(test ,inp ,out ,meta)
+        (when out
+          (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
+          (when (< (length claims) prev-count)
+            (set! counter threshold)
+            (printf "strategy-boredom: ~a claims remain; reset counter~n"
+                    (length claims)))
+          (set! prev-count (length claims)))
+        (set! counter (- counter (if out 10 1)))]
+      ['(vote-quit)
+       (set! counter 0)]
+      [else (void)])
+
+    (when (<= counter 0)
+      (printf "strategy-boredom got bored!  broadcasting ~a claims~n"
+              (length claims))
+      (for ([c claims])
+        (displayln c)
+        (place-channel-put chan
+          `(fix-feature ,(claim-fixed-a c) ,(claim-fixed-val c))))
+      ; TODO may need a delay here, so we don't actually cause the manager to
+      ; quit before other strategies have a chance to unvote-quit
+      (vote-quit chan))
+    #:break (<= counter 0)
+    (void)))
+
 ; TODO strategy-quorum
 
 (define (run-strategy spec chan)
@@ -109,5 +146,7 @@
      (strategy-distinguish (?*feature-model nf ng nd) chan)]
     [(list 'disprove nf ng nd)
      (strategy-disprove (?*feature-model nf ng nd) chan)]
+    [(list 'boredom threshold nf ng nd)
+     (strategy-boredom threshold (?*feature-model nf ng nd) chan)]
 
     ))

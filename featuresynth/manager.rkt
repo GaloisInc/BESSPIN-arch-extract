@@ -56,13 +56,20 @@
         (loop)]
       [`(strategy ,i solution ,fmv)
         (vector->feature-model fmv)]
-      [`(strategy ,i vote-quit)
+      [`(strategy ,i vote-quit ,quiet)
+        (when (not quiet)
+          (for ([chan strategy-chans])
+            (place-channel-put chan '(vote-quit))))
         (set! quit-votes (+ 1 quit-votes))
         (if (< quit-votes (vector-length strategy-chans))
           (loop)
           #f)]
       [`(strategy ,i unvote-quit)
         (set! quit-votes (- quit-votes 1))]
+      [`(strategy ,i fix-feature ,idx ,val)
+        (for ([chan strategy-chans])
+          (place-channel-put chan `(fix-feature ,idx ,val)))
+        (loop)]
       [`(oracle ,test)
        (dispatch-test test)
        (loop)]
