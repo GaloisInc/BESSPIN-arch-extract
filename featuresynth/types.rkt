@@ -97,7 +97,11 @@
     (if (>= (feature-parent-id f) 0)
       (let
         ([pf (feature-model-feature fm (feature-parent-id f))])
-        (= (feature-depth f) (+ 1 (feature-depth pf))))
+        (&&
+          (= (feature-depth f) (+ 1 (feature-depth pf)))
+          (! (feature-force-on pf))
+          (! (feature-force-off pf))
+          ))
       (= 0 (feature-depth f)))
     (if (>= (feature-group-id f) 0)
       (let
@@ -134,19 +138,21 @@
   (&&
     (valid-feature-id fm (dependency-a d))
     (valid-feature-id fm (dependency-b d))
-    (||
-      (= -1 (dependency-a d) (dependency-b d))
-      (let ([f (feature-model-feature fm (dependency-a d))])
+    (if (&& (<= 0 (dependency-a d))
+            (<= 0 (dependency-b d)))
+      (let
+        ([af (feature-model-feature fm (dependency-a d))]
+         [bf (feature-model-feature fm (dependency-b d))])
         (&&
-          (<= 0 (dependency-a d))
-          (<= 0 (dependency-b d))
           (not (= (dependency-a d) (dependency-b d)))
-          (not (= (feature-parent-id f)
+          (not (= (feature-parent-id af)
                   (dependency-b d)))
-          ; Prefer making A a child of B, over making A a child of the root
-          ; with a dependency on B.
-          (not (= -1 (feature-parent-id f)))
-        )))))
+          (! (feature-force-off af))
+          (! (feature-force-on af))
+          (! (feature-force-off bf))
+          (! (feature-force-on bf))
+        ))
+      (= -1 (dependency-a d) (dependency-b d)))))
 
 (define (valid-feature-model fm)
   (apply &&
