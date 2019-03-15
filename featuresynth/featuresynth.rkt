@@ -110,6 +110,7 @@
          ,config-oracle-command
          ,feature-names))
     init-tests
+    (open-output-file "test-log.rktd" #:exists 'truncate)
     )
   )
 

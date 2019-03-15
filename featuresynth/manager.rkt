@@ -17,7 +17,8 @@
 (define run-oracle* run-oracle)
 
 
-(define (run-manager strategy-specs oracle-spec init-inputs)
+(define (run-manager strategy-specs oracle-spec init-inputs
+                     [test-record-port #f])
   (define strategy-chans
     (for/vector ([strat strategy-specs])
       (unless (place-message-allowed? strat) (raise "bad strategy"))
@@ -29,7 +30,9 @@
   (define (dispatch-test t)
     (define msg (cons 'test t))
     (for ([chan strategy-chans])
-      (place-channel-put chan msg)))
+      (place-channel-put chan msg))
+    (when test-record-port
+      (writeln t test-record-port)))
   (define (dispatch-input inp)
     (place-channel-put oracle-chan inp))
 
