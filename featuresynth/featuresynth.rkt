@@ -9,6 +9,7 @@
 (require "types.rkt")
 (require "eval.rkt")
 (require "manager.rkt")
+(require "clafer.rkt")
 (current-bitwidth #f)
 
 
@@ -67,9 +68,9 @@
 
 
 (define (read-features-from-port p)
-  (for/list ([l (in-lines p)]
-             #:when (non-empty-string? (string-trim l)))
-    (string->symbol (string-trim l))))
+  (for/vector ([l (in-lines p)]
+               #:when (non-empty-string? (string-trim l)))
+    (string-trim l)))
 
 (define (read-features-from-command cmd)
   (define-values (proc p-out p-in p-err)
@@ -93,7 +94,7 @@
 (define (synthesize)
   (define symbolic-fm-args
     (list
-      (length feature-names)
+      (vector-length feature-names)
       config-max-groups
       config-max-dependencies))
   (run-manager
@@ -115,4 +116,6 @@
   )
 
 (random-seed 12345)
-(synthesize)
+(define fm (synthesize))
+(pretty-write fm)
+(displayln (clafer->string (feature-model->clafer feature-names fm)))
