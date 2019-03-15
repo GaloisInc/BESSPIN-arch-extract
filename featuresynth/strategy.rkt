@@ -14,45 +14,90 @@
 (require "synthesis.rkt")
 
 
+(define (vote-quit chan)
+  (place-channel-put chan '(vote-quit)))
+(define (unvote-quit chan)
+  (place-channel-put chan '(unvote-quit)))
+
+(define (fail-flag chan)
+  (define val #f)
+  (lambda (new-val)
+    (if (eq? new-val 'get)
+      val
+      (begin
+        (when (and new-val (not val))
+          (vote-quit chan))
+        (when (and val (not new-val))
+          (unvote-quit chan))
+        (set! val new-val)))))
+
 (define (strategy-bitflip chan)
   (printf "strategy-bitflip running~n")
-  (for ([t (in-place-channel chan)])
-    (match-define `(,inp ,out ,meta) t)
-    (when (and out (not (assoc 'bitflip-depth meta)))
-      (for ([i (in-range (vector-length inp))])
-        (define inp*
-          (for/vector ([(v j) (in-indexed inp)])
-            (if (= i j) (not v) v)))
-        (place-channel-put chan `(,inp* ((bitflip-depth . 1))))))))
+  (vote-quit chan)
+  (for ([msg (in-place-channel chan)])
+    (match msg
+      [`(test ,inp ,out ,meta)
+        (when (and out (not (assoc 'bitflip-depth meta)))
+          (for ([i (in-range (vector-length inp))])
+            (define inp*
+              (for/vector ([(v j) (in-indexed inp)])
+                (if (= i j) (not v) v)))
+            (place-channel-put chan `(input ,inp* ((bitflip-depth . 1))))))]
+      [else (void)]
+      )))
 
 (define (strategy-distinguish symbolic-fm chan)
   (printf "strategy-distinguish running~n")
+  (define failed (fail-flag chan))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (for ([ts (in-place-channel-chunks chan)])
-    (for ([t ts])
-      (match-define `(,inp ,out ,meta) t)
-      (synth 'test `(,inp . ,out)))
-    (define result (synth 'synthesize))
-    (place-channel-put chan `(,(struct->vector* result) ()))))
+  (for ([msgs (in-place-channel-chunks chan)])
+    (for ([msg msgs])
+      (match msg
+        [`(test ,inp ,out ,meta)
+          (synth 'test `(,inp . ,out))]
+        [`(fix-feature ,idx ,val)
+          (synth 'fix-feature idx val)
+          (failed #f)]
+        [else (void)]))
+
+    (when (not (failed 'get))
+      (define result (synth 'synthesize))
+      (cond
+        [(feature-model? result)
+         (place-channel-put chan `(solution ,(struct->vector* result)))]
+        [(vector? result)
+         (place-channel-put chan `(input ,result ()))]
+        [(false? result)
+         (failed #t)]))))
 
 (define (strategy-disprove symbolic-fm chan)
   (printf "strategy-disprove running~n")
+  (define failed (fail-flag chan))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
   (define claims (all-claims symbolic-fm))
   (printf "begin with ~a claims~n" (length claims))
-  (for ([ts (in-place-channel-chunks chan)])
+  (for ([msgs (in-place-channel-chunks chan)])
+    (define test-count 0)
     (define positive-count 0)
-    (for ([t ts])
-      (match-define `(,inp ,out ,meta) t)
-      (when out
-        (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
-        (set! positive-count (add1 positive-count)))
-      (synth 'test `(,inp . ,out)))
-    (printf "~a/~a positive tests - ~a claims remain~n"
-            positive-count (length ts) (length claims))
-    (define result (synth 'disprove claims))
-    #:break (not result)
-    (place-channel-put chan `(,result ()))))
+    (for ([msg msgs])
+      (match msg
+        [`(test ,inp ,out ,meta)
+          (synth 'test `(,inp . ,out))
+          (set! test-count (+ 1 test-count))
+          (when out
+            (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
+            (set! positive-count (+ 1 positive-count)))]
+        [`(fix-feature ,idx ,val)
+          (synth 'fix-feature idx val)
+          (failed #f)]
+        [else (void)]))
+    (when (not (failed 'get))
+      (printf "~a/~a positive tests - ~a claims remain~n"
+              positive-count test-count (length claims))
+      (define result (synth 'disprove claims))
+      (cond
+        [(vector? result) (place-channel-put chan `(input ,result ()))]
+        [(false? result) (failed #t)]))))
 
 ; TODO strategy-quorum
 

@@ -27,8 +27,9 @@
   (define seen-tests (mutable-set))
 
   (define (dispatch-test t)
+    (define msg (cons 'test t))
     (for ([chan strategy-chans])
-      (place-channel-put chan t)))
+      (place-channel-put chan msg)))
   (define (dispatch-input inp)
     (place-channel-put oracle-chan inp))
 
@@ -38,31 +39,36 @@
   (define strategy-evt
     (apply choice-evt
       (for/list ([(chan i) (in-indexed strategy-chans)])
-        (handle-evt chan (lambda (x) (list i x))))))
+        (handle-evt chan (lambda (x) (cons i x))))))
   (define any-evt
     (choice-evt
       (handle-evt strategy-evt (lambda (x) (cons 'strategy x)))
       (handle-evt oracle-chan (lambda (x) (list 'oracle x)))))
 
+  (define quit-votes 0)
+
   (define (loop)
     (match (sync any-evt)
-      [`(strategy ,i (,result ,meta))
-       (cond
-         [(and (vector? result)
-               (> (vector-length result) 0)
-               (eq? 'struct:feature-model (vector-ref result 0)))
-          (vector->feature-model result)]
-         [(false? result) result]
-         [else
-          (when (not (set-member? seen-tests result))
-            (set-add! seen-tests result)
-            (dispatch-input `(,result ,meta)))
-          (loop)]
-         )]
+      [`(strategy ,i input ,inp ,meta)
+        (when (not (set-member? seen-tests inp))
+            (set-add! seen-tests inp)
+            (dispatch-input `(,inp ,meta)))
+        (loop)]
+      [`(strategy ,i solution ,fmv)
+        (vector->feature-model fmv)]
+      [`(strategy ,i vote-quit)
+        (set! quit-votes (+ 1 quit-votes))
+        (if (< quit-votes (vector-length strategy-chans))
+          (loop)
+          #f)]
+      [`(strategy ,i unvote-quit)
+        (set! quit-votes (- quit-votes 1))]
       [`(oracle ,test)
        (dispatch-test test)
        (loop)]
-      [else (raise "bad event")]
+      [evt
+        (displayln evt)
+        (raise "bad event")]
       ))
 
   (loop))
