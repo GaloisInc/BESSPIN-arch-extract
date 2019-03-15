@@ -12,6 +12,7 @@
 (require "eval.rkt")
 (require "util.rkt")
 (require "manager.rkt")
+(require "clafer.rkt")
 (current-bitwidth #f)
 
 
@@ -134,12 +135,12 @@
 ;(define oracle-fm example-fm-2)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define init-tests '())
-;(define oracle-fm secure-cpu-isa-fm)
-;(define symbolic-fm (?*feature-model 15 4 1))
-;(define init-tests secure-cpu-isa-init-tests)
-(define oracle-fm secure-cpu-arch-fm)
-(define symbolic-fm (?*feature-model 24 8 3))
-(define init-tests secure-cpu-arch-init-tests)
+(define oracle-fm secure-cpu-isa-fm)
+(define symbolic-fm (?*feature-model 15 4 1))
+(define init-tests secure-cpu-isa-init-tests)
+;(define oracle-fm secure-cpu-arch-fm)
+;(define symbolic-fm (?*feature-model 24 8 3))
+;(define init-tests secure-cpu-arch-init-tests)
 
 (define (oracle inp) (eval-feature-model oracle-fm inp))
 
@@ -319,7 +320,6 @@
         (disprove ,@symbolic-fm-args)
         )
       `(eval-fm ,(struct->vector* oracle-fm))
-      4
       init-tests
       ))
   (pretty-write fm))
