@@ -113,6 +113,23 @@
         concrete-fm)
       (solver-pop solver)))
 
+  (define (distinguish-prog concrete-fm)
+    (solver-push solver)
+    (solver-assert solver
+      (list
+        (not (<=> (eval-feature-model symbolic-fm symbolic-config)
+                  (eval-feature-model concrete-fm symbolic-config)))))
+    (define M (solver-check solver))
+    (begin0
+      (if (sat? M)
+        ; Program is not unique - return a new test input
+        (cons
+          (evaluate symbolic-fm M)
+          (evaluate-config symbolic-config M))
+        ; Program is unique - return it
+        #f)
+      (solver-pop solver)))
+
   ; Try to synthesize a program `P` and input `I` such that (1) `P` passes all
   ; current tests, (2) `eval(P, I)` returns true (i.e., `I` is a valid
   ; configuration of feature model `P`), and (3) `I` disproves at least one
@@ -139,6 +156,7 @@
        (set! tests (cons (cons inp out) tests))
        (void)]
       [(list 'synthesize) (synthesize)]
+      [(list 'distinguish fm) (distinguish-prog fm)]
       [(list 'get-tests) tests]
       [(list 'disprove claims) (disprove claims)]
       [(list 'assert-claims claims)
