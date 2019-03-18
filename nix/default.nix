@@ -1,6 +1,6 @@
 with builtins;
 
-let pkgs = import <nixpkgs> {};
+let pkgs = import ./pinned-pkgs.nix {};
 
     tinycbor = pkgs.callPackage ./tinycbor.nix {};
 
