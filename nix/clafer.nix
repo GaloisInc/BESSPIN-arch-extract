@@ -10,7 +10,7 @@ mkDerivation {
   version = "0.5.1";
   src = builtins.fetchGit {
     url = "git@gitlab-ext.galois.com:ssith/clafer.git";
-    rev = "e71963a356df81ed49c716631abc7e22017dc940";
+    rev = "ab506b7fab02c3cb3a799e2917f0dd979c4db0ae";
   };
   isLibrary = true;
   isExecutable = true;
