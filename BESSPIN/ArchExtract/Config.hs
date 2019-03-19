@@ -9,7 +9,7 @@ import qualified TOML
 
 
 data Config = Config
-    { configInput :: Input
+    { configSrcs :: Map Text Src
     , configNameMap :: NameMap
     , configConstraints :: Constraints
     , configRewrite :: Maybe Rewrite
@@ -22,7 +22,7 @@ data Config = Config
     deriving (Show)
 
 defaultConfig = Config
-    { configInput = defaultInput
+    { configSrcs = M.empty
     , configNameMap = defaultNameMap
     , configConstraints = defaultConstraints
     , configRewrite = Nothing
@@ -35,19 +35,21 @@ defaultConfig = Config
 
 defaultConfigWithClafer = defaultConfig { configClaferOutput = Just $ defaultClafer }
 
-data Input =
-    VerilogInput Verilog
+data Src =
+    VerilogSrc Verilog
     deriving (Show)
 
-defaultInput = VerilogInput defaultVerilog
-
 data Verilog = Verilog
+    -- List of (System)Verilog source files to parse.  This can include shell
+    -- globs.
+    { verilogSrcFiles :: [Text]
+    -- Path to the CBOR file where the serialized AST should be cached.  If
+    -- this is `Nothing`, the AST is re-exported each time.
+    , verilogAstFile :: Maybe Text
     -- Names of modules to blackbox.  The contents of these modules are
     -- discarded early in processing, so it's okay for them to contain
     -- unsupported Verilog constructs.
-    { verilogBlackboxModules :: [Text]
-    -- Path to the CBOR file containing the exported Verilog source.
-    , verilogSourceFile :: Text
+    , verilogBlackboxModules :: [Text]
     -- Names of nets to disconnect.  Useful for hiding clock and reset nets,
     -- which would otherwise wind up connected to nearly every part of the
     -- design.
@@ -56,8 +58,9 @@ data Verilog = Verilog
     deriving (Show)
 
 defaultVerilog = Verilog
-    { verilogBlackboxModules = []
-    , verilogSourceFile = "out.cbor"
+    { verilogSrcFiles = []
+    , verilogAstFile = Nothing
+    , verilogBlackboxModules = []
     , verilogDisconnectNets = []
     }
 
@@ -304,6 +307,23 @@ tableFold z (TOML.Table kvs) fs = foldl go z kvs
         "; expected one of " ++ show (M.keys fm)
 tableFold _ x _ = error $ "expected table, but got " ++ show x
 
+tableMap :: TOML.Value -> (Text -> TOML.Value -> a) -> [a]
+tableMap (TOML.Table kvs) f = map go kvs
+  where
+    go (k, v) = f k v
+tableMap x _ = error $ "expected table, but got " ++ show x
+
+tableDispatch :: TOML.Value -> Text -> [(Text, TOML.Value -> a)] -> a
+tableDispatch x@(TOML.Table kvs) k fs = dispFunc x
+  where
+    dispVal = case lookup k kvs of
+        Just (TOML.String s) -> s
+        Just x -> error $ "expected `type` to be a string, but got " ++ show x
+        Nothing -> error $ "missing `type` field"
+    dispFunc = case lookup dispVal fs of
+        Just f -> f
+        Nothing -> error $ "unknown type " ++ show dispVal
+
 
 config :: TOML.Value -> Config
 config x =
@@ -311,7 +331,7 @@ config x =
         error $ "expected at most one input section, but got " ++ show inputKeys
     else
         tableFold defaultConfig x
-            [ ("verilog", \c x -> c { configInput = VerilogInput $ verilog x })
+            [ ("src", \c x -> c { configSrcs = srcs x })
             , ("name-map", \c x -> c { configNameMap = nameMap x })
             , ("constraints", \c x -> c { configConstraints = constraints x })
             , ("rewrite", \c x -> c { configRewrite = Just $ rewrite x })
@@ -320,14 +340,25 @@ config x =
             , ("clafer", \c x -> c { configClaferOutput = Just $ clafer x })
             , ("smt", \c x -> c { configSMTOutput = Just $ smt x })
             , ("param-clafer", \c x -> c { configParamClaferOutput = Just $ paramClafer x })
+            , ("featuresynth", \c _ -> c)
             ]
   where
     inputKeys = filter (\k -> k == "verilog") $ tableKeys x
 
+srcs :: TOML.Value -> Map Text Src
+srcs x = M.fromList $ tableMap x $ \name x -> (name, src x)
+
+src :: TOML.Value -> Src
+src x = tableDispatch x "type"
+    [ ("verilog", \x -> VerilogSrc $ verilog x)
+    ]
+
 verilog :: TOML.Value -> Verilog
 verilog x = tableFold defaultVerilog x
-    [ ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
-    , ("source-file", \c x -> c { verilogSourceFile = str x })
+    [ ("type", \c x -> c)
+    , ("src-files", \c x -> c { verilogSrcFiles = listOf str x })
+    , ("ast-file", \c x -> c { verilogAstFile = Just $ str x })
+    , ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
     , ("disconnect-nets", \c x -> c { verilogDisconnectNets = listOf str x })
     ]
 

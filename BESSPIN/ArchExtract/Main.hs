@@ -5,6 +5,7 @@ import Control.Monad
 import qualified Data.ByteString.Lazy as BS
 import Data.Foldable
 import qualified Data.Map as M
+import Data.Maybe
 import qualified Data.Sequence as S
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -80,9 +81,12 @@ main = do
         [path] -> Config.parse <$> T.readFile path
         _ -> error "too many arguments - expected only a config file path"
 
-    (a, fileInfos) <- case Config.configInput config of
-        Config.VerilogInput vCfg -> do
-            bs <- BS.readFile $ T.unpack $ Config.verilogSourceFile vCfg
+    mainWithConfig config
+
+mainWithConfig config = do
+    (a, fileInfos) <- case M.elems $ Config.configSrcs config of
+        [Config.VerilogSrc vCfg] -> do
+            bs <- BS.readFile $ T.unpack $ fromJust $ Config.verilogAstFile vCfg
 
             (raw, modIds, fileInfos) <- case D.deserialize bs of
                     Left errs -> do

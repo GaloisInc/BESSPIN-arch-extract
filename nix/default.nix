@@ -34,6 +34,7 @@ let pkgs = import ./pinned-pkgs.nix {};
       toml-parser
       simple-smt
       parsec attoparsec
+      Glob
     ]);
 
     clafer_0_4_4 = haskellPackages.callPackage ./clafer-0.4.4.nix {};
