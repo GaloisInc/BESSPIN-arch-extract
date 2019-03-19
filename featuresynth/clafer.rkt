@@ -9,10 +9,10 @@
 (require "types.rkt")
 
 
-(struct clafer (name card children) #:transparent)
+(struct clafer (name card children optional) #:transparent)
 
 (define (group-name j)
-  (format "group-~a" j))
+  (format "grp_~a" j))
 
 (define (group-clafer-cardinality g)
   (cond
@@ -67,16 +67,31 @@
   (loop "" n)
   path-map)
 
+(define (mk-node-key<? feature-names)
+  (define (node-key-<? a b)
+    (match (list a b)
+      [`((feature ,i) (feature ,j))
+        (string<? (vector-ref feature-names i) (vector-ref feature-names j))]
+      [`((group ,i) (group ,j)) (< i j)]
+      [`((feature ,_) ,_) #t]
+      [`(,_ (feature ,_)) #f]
+      ))
+  node-key-<?)
+
 (define (node->clafers feature-names fm n)
-  (for/list ([(k sub-n) n])
+  (define pairs (sort (hash->list n) (mk-node-key<? feature-names) #:key car))
+  (for/list ([p pairs])
+    (match-define (cons k sub-n) p)
     (match k
       [`(feature ,i)
         (clafer (vector-ref feature-names i) 'default
-                (node->clafers feature-names fm sub-n))]
+                (node->clafers feature-names fm sub-n)
+                #t)]
       [`(group ,j)
         (clafer (group-name j)
                 (group-clafer-cardinality (feature-model-group fm j))
-                (node->clafers feature-names fm sub-n))])))
+                (node->clafers feature-names fm sub-n)
+                #f)])))
 
 (define (feature-model-constraints path-map fm)
   (define feature-constraints
@@ -115,14 +130,16 @@
       ['default ""]))
   (if (not (null? (clafer-children c)))
     (let
-      ([header (format "~a~a {~n" card (clafer-name c))]
+      ([header (format "~a~a~a {~n"
+                       card (clafer-name c) (if (clafer-optional c) " ?" ""))]
        [body
          (append-map
            (lambda (c)
              (map (lambda (s) (string-append "  " s)) (clafer->lines c)))
            (clafer-children c))])
       `(,header ,@body "}\n"))
-    (list (format "~a~a {}~n" card (clafer-name c)))))
+    (list (format "~a~a~a~n"
+                  card (clafer-name c) (if (clafer-optional c) " ?" "")))))
 
 (define (clafer->string c)
   (match-define (cons clafers constraints) c)
