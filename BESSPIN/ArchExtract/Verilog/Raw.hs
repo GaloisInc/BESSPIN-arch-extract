@@ -11,6 +11,13 @@ import Data.Word
 newtype NodeId = NodeId { unwrapNodeId :: Int }
     deriving (Show, Eq, Ord, Data, Typeable)
 
+data RawAst = RawAst
+    { rawAstNodeMap :: Map NodeId (Node, Span)
+    , rawAstRootNodes :: [NodeId]
+    , rawAstFileInfos :: [FileInfo]
+    }
+    deriving (Show, Data, Typeable)
+
 data Node =
     Module
     { moduleName :: Text

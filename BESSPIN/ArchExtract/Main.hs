@@ -24,7 +24,7 @@ import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Verilog.FromRaw
 import BESSPIN.ArchExtract.Verilog.Extract (extractArch)
 import qualified BESSPIN.ArchExtract.Verilog.Decode as D
-import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
+import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..), RawAst(..))
 import BESSPIN.ArchExtract.Verilog.Print
 import BESSPIN.ArchExtract.Verilog.Defines
 import BESSPIN.ArchExtract.Architecture
@@ -88,7 +88,7 @@ mainWithConfig config = do
         [Config.VerilogSrc vCfg] -> do
             bs <- BS.readFile $ T.unpack $ fromJust $ Config.verilogAstFile vCfg
 
-            (raw, modIds, fileInfos) <- case D.deserialize bs of
+            RawAst raw modIds fileInfos <- case D.deserialize bs of
                     Left errs -> do
                         putStrLn ("error decoding verilog AST:\n" ++ errs)
                         error $ "decoding error"

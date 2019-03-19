@@ -638,9 +638,9 @@ topLevel = list $ do
 
 -- Bytestring deserialization
 
-deserialize :: BS.ByteString -> Either String (Map NodeId (Node, Span), [NodeId], [FileInfo])
+deserialize :: BS.ByteString -> Either String RawAst
 deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ show cborErr
     Right (_, term) ->
         runDecodeM topLevel (S [[term]] M.empty) >>= \((is, fs), s) ->
-            return (sNodes s, is, fs)
+            return $ RawAst (sNodes s) is fs
