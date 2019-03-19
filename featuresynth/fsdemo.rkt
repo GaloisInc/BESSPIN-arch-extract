@@ -38,8 +38,8 @@
   ))
 
 
-(define secure-cpu-isa-fm
-  (make-feature-model
+(define secure-cpu-isa-fm-raw
+  (list
     (list
       (cons 'riscv  (feature #f 'g-isa 0 #f #f))
       (cons 'intel  (feature #f 'g-isa 0 #f #f))
@@ -67,7 +67,6 @@
       (dependency 'rv-d 'rv-f #t)
     )
   ))
-(assert (valid-feature-model secure-cpu-isa-fm))
 
 (define secure-cpu-isa-init-tests
   (list
@@ -77,8 +76,8 @@
   ))
 
 
-(define secure-cpu-arch-fm
-  (make-feature-model
+(define secure-cpu-arch-fm-raw
+  (list
     (list
       (cons 'tagging    (feature #f 'g-arch 0 #f #f))
       (cons 'crypto     (feature #f 'g-arch 0 #f #f))
@@ -120,7 +119,6 @@
       (dependency 'ctr-drbg 'symmetric #t)
     )
   ))
-(assert (valid-feature-model secure-cpu-arch-fm))
 
 (define secure-cpu-arch-init-tests
   (list
@@ -132,15 +130,20 @@
 
 
 (random-seed 12345)
-;(define oracle-fm example-fm-2)
+;(define oracle-fm-raw example-fm-2-raw)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define init-tests '())
-(define oracle-fm secure-cpu-isa-fm)
+(define oracle-fm-raw secure-cpu-isa-fm-raw)
 (define symbolic-fm (?*feature-model 15 4 1))
 (define init-tests secure-cpu-isa-init-tests)
-;(define oracle-fm secure-cpu-arch-fm)
+;(define oracle-fm-raw secure-cpu-arch-fm-raw)
 ;(define symbolic-fm (?*feature-model 24 8 3))
 ;(define init-tests secure-cpu-arch-init-tests)
+
+(define oracle-fm (apply make-feature-model oracle-fm-raw))
+(assert (valid-feature-model oracle-fm))
+(define feature-names
+  (for/vector ([x (first oracle-fm-raw)]) (symbol->string (car x))))
 
 (define (oracle inp) (eval-feature-model oracle-fm inp))
 
@@ -323,7 +326,14 @@
       `(eval-fm ,(struct->vector* oracle-fm))
       init-tests
       ))
-  (pretty-write fm))
+  (pretty-write fm)
+  (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
+  (displayln clafer-str)
+  (call-with-output-file*
+    "fsdemo.cfr"
+    #:exists 'truncate
+    (lambda (f) (write-string clafer-str f)))
+  )
 
 (do-threaded)
 ;(do-claims)
