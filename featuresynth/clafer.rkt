@@ -17,6 +17,7 @@
 (define (group-clafer-cardinality g)
   (cond
     [(= 1 (group-min-card g) (group-max-card g)) 'xor]
+    [(and (= 0 (group-min-card g)) (= 1 (group-max-card g))) 'mux]
     [(= 1 (group-min-card g)) 'or]
     [else 'opt]))
 
@@ -125,6 +126,7 @@
   (define card
     (match (clafer-card c)
       ['xor "xor "]
+      ['mux "mux "]
       ['or "or "]
       ['opt "opt "]
       ['default ""]))

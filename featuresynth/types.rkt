@@ -127,6 +127,11 @@
         (&&
           (= 1 (group-min-card g) (group-max-card g))
           (>= n 2))
+        ; MUX group
+        (&&
+          (= 0 (group-min-card g))
+          (= 1 (group-max-card g))
+          (>= n 2))
         ; OR group
         (&&
           (= 1 (group-min-card g))
