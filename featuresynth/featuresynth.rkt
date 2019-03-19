@@ -25,6 +25,7 @@
 (define config-init-tests-file #f)
 (define config-max-groups 0)
 (define config-max-dependencies 0)
+(define config-out-file #f)
 
 (let
   ([c (hash-ref (parse-toml (file->string config-path)) 'featuresynth hash)])
@@ -63,6 +64,12 @@
     (begin
       (assert (exact-nonnegative-integer? x))
       (set! config-max-dependencies x))
+    (void))
+
+  (if-let ([x (hash-ref c 'out-file #f)])
+    (begin
+      (assert (string? x))
+      (set! config-out-file x))
     (void))
 )
 
@@ -118,4 +125,10 @@
 (random-seed 12345)
 (define fm (synthesize))
 (pretty-write fm)
-(displayln (clafer->string (feature-model->clafer feature-names fm)))
+(define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
+(displayln clafer-str)
+(when config-out-file
+  (call-with-output-file*
+    config-out-file
+    #:exists 'truncate
+    (lambda (f) (write-string clafer-str f))))
