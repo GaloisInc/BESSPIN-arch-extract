@@ -1,5 +1,6 @@
-[verilog]
-source-file = "pp-params.cbor"
+[src.main]
+type = "verilog"
+src-files = ["examples/pp-params.sv"]
 
 [constraints]
 force-module-defaults = ["top"]

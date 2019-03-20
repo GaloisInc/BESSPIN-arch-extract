@@ -4,11 +4,16 @@
 # all of them.  See `BESSPIN/ArchExtract/Config.hs` for the full list.
 
 
-# (System)Verilog input configuration.
-[verilog]
-# Path to the CBOR file containing the SystemVerilog AST.  This file is
-# produced by running the `exporter` tool on the `tinymult.sv` source file.
-source-file = "tinymult.cbor"
+# Source file configuration.  There can be multiple `src` sections with
+# different names (`[src.foo]`, `[src.bar]`, etc.) if the design has multiple
+# components, including components written in different languages.
+[src.main]
+# This component is written in (System)Verilog.
+type = "verilog"
+# Paths to Verilog source files.  These can contain globs (`some-dir/*.sv`).
+src-files = [
+    "examples/tinymult.sv"
+]
 
 
 # Constraint generation configuration.  After extracting the architecture
