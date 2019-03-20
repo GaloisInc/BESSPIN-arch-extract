@@ -42,10 +42,33 @@
   (read-features-from-command
     (expand-command config-list-features-command
                     `#hash( (config-path . ,config-path) ))))
+
+(define feature-map
+  (for/hash ([(f i) (in-indexed feature-names)])
+    (values (string->symbol f) i)))
+
+(define (parse-test feature-syms)
+  feature-syms
+  (define feature-idxs
+    (for/set ([f feature-syms])
+      (hash-ref feature-map f
+                (lambda () (error "unknown feature in input:" f)))))
+  (build-vector (vector-length feature-names)
+                (lambda (i) (set-member? feature-idxs i))))
+
+(define (read-tests port)
+  (define (loop)
+    (define inp (read port))
+    (if (eof-object? inp)
+      '()
+      (cons (parse-test inp) (loop))))
+  (loop))
+
 (define init-tests
   (if config-init-tests-file
-    (for/list ([l (file->lines config-init-tests-file)])
-      (read (open-input-string l)))
+    (call-with-default-reading-parameterization
+      (lambda ()
+        (call-with-input-file* config-init-tests-file read-tests)))
     '()))
 
 (define (synthesize)
