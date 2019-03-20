@@ -1,0 +1,56 @@
+[src.swerv]
+type = "verilog"
+src-files = [
+    "../swerv_eh1/design/*.sv",
+    "../swerv_eh1/design/dbg/*.sv",
+    "../swerv_eh1/design/dec/*.sv",
+    "../swerv_eh1/design/dmi/*.sv",
+    "../swerv_eh1/design/exu/*.sv",
+    "../swerv_eh1/design/ifu/*.sv",
+    "../swerv_eh1/design/include/*.sv",
+    "../swerv_eh1/design/lib/*.sv",
+    "../swerv_eh1/design/lsu/*.sv",
+]
+
+# Feature-model synthesis configuration
+[featuresynth]
+
+# The synthesizer requires two helper programs.  The first is a script to list
+# all possible features of the current design.  This command is executed via
+# `/bin/sh`, and should print a list of features to standard out (one per
+# line).  The `%c` placeholder is expanded to the path to this config file.
+# This lets us use the generic `list-pp-features` subcommand of `driver`,
+# which lists preprocessor flags that appear in `ifdef`s in the source files,
+# instead of calling a custom script.  See `config.rkt` for other placeholders.
+list-features-command = "./driver %c list-pp-flags"
+
+# The second helper program is the "oracle", which determines whether a given
+# configuration is valid.  It should read a configuration from standard input,
+# where each line of the input is either "0" or "1", a space, and a feature
+# name, and it should return zero (success) or non-zero (failure) to indicate
+# whether the configuration is valid.
+oracle-command = "examples/swerv/check-config.sh"
+
+# This option creates a cache for results of oracle invocations.  This could be
+# useful when running featuresynth several times using the same oracle.
+# However, slight differences in the input or configuration will often cause
+# the different runs to make different queries to the oracle, making the cache
+# ineffective.
+#oracle-cache-file = "examples/swerv/oracle.cache"
+
+# A file containing a set of initial configurations to test at startup.  This
+# should usually contain a few known-valid configurations, since otherwise the
+# synthesizer will need to test configurations at random to find a valid one,
+# which can often take a long time.
+init-tests-file = "examples/swerv/init-tests.rktd"
+
+# The maximum number of or/xor/mux groups and the maximum number of explicit
+# dependencies to include in the generated model.  Increasing these limits will
+# increase the time required to synthesize a feature model, but setting them
+# too low can make it impossible to find a solution.
+max-groups = 3
+max-dependencies = 0
+
+# Where to write the generated clafer model, once synthesis succeeds.
+out-file = "examples/swerv/swerv.cfr"
+
