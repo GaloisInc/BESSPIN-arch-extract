@@ -3,6 +3,7 @@
   config-list-features-command
   config-oracle-command
   config-oracle-cache-file
+  config-oracle-threads
   config-init-tests-file
   config-max-groups
   config-max-dependencies
@@ -16,6 +17,7 @@
 (define config-list-features-command "false")
 (define config-oracle-command "false")
 (define config-oracle-cache-file #f)
+(define config-oracle-threads 4)
 (define config-init-tests-file #f)
 (define config-max-groups 0)
 (define config-max-dependencies 0)
@@ -41,6 +43,12 @@
     (begin
       (assert (string? x))
       (set! config-oracle-cache-file x))
+    (void))
+
+  (if-let ([x (hash-ref c 'oracle-threads #f)])
+    (begin
+      (assert (exact-positive-integer? x))
+      (set! config-oracle-threads x))
     (void))
 
   (if-let ([x (hash-ref c 'init-tests-file #f)])

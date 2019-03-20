@@ -85,7 +85,7 @@
       (boredom 1000 ,@symbolic-fm-args)
       )
     `(multi-cached
-       6
+       ,config-oracle-threads
        ,config-oracle-cache-file
        (command
          ,config-oracle-command
