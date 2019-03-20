@@ -45,7 +45,9 @@
     (if cache-file
       (let
         ([out-file (open-output-file cache-file #:exists 'append)])
-        (lambda (inp out) (writeln (cons inp out) out-file)))
+        (lambda (inp out)
+          (writeln (cons inp out) out-file)
+          (flush-output out-file)))
       (lambda (inp out) (void))))
   (define (handle-result inp out meta)
     (hash-set! cache inp out)

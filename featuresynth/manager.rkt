@@ -33,7 +33,8 @@
     (for ([chan strategy-chans])
       (place-channel-put chan msg))
     (when test-record-port
-      (writeln t test-record-port)))
+      (writeln t test-record-port)
+      (flush-output test-record-port)))
   (define (dispatch-input inp)
     (place-channel-put oracle-chan inp))
 
