@@ -1,0 +1,25 @@
+[src.leg]
+type = "verilog"
+src-files = ["../LEG/leg_pipelined/*.sv"]
+# - io_fwd_shim and testbench use simulation-only system calls.
+# - micropsfsm is just really big: >50% of clafers and >90% of graphviz running
+#   time (for 2-pass pipeline rendering) is spent on this one module.
+blackbox-modules = ["io_fwd_shim", "testbench", "micropsfsm"]
+ast-file = "leg.cbor"
+disconnect-nets = [
+    "clk", "HCLK",
+    "rst", "reset", "HRESETn", "HResetn"
+]
+
+[graphviz]
+out-dir = "leg-arch"
+draw-onesided-nets = false
+shorten-net-names = true
+draw-nets = false
+draw-logics = false
+draw-logic-ports = false
+draw-ext-ports = false
+dedup-edges = true
+
+[module-tree]
+root-module = "top"
