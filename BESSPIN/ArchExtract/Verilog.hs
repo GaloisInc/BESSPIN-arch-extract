@@ -7,7 +7,8 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import System.Directory
 import System.Exit
 import qualified System.FilePath.Glob as Glob
@@ -49,12 +50,12 @@ getRawAst cfg = do
     cborBs <- case Config.verilogAstFile cfg of
         Nothing -> withSystemTempFile "ast.cbor" $ \tempPath tempHandle -> do
             exportAst srcFiles tempPath
-            BS.readFile tempPath
+            BS.hGetContents tempHandle
         Just astPath -> do
             rebuild <- needsRebuild srcFiles (T.unpack astPath)
             when rebuild $ exportAst srcFiles (T.unpack astPath)
             BS.readFile (T.unpack astPath)
-    case D.deserialize cborBs of
+    case D.deserialize $ BSL.fromStrict cborBs of
         Left err -> do
             putStrLn "error decoding verilog AST:\n"
             putStrLn err

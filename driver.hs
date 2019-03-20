@@ -91,7 +91,7 @@ graphArchitecture gCfg arch = do
                 Just x -> x) ns
 
     let dir = T.unpack $ Config.graphvizOutDir gCfg
-    createDirectoryIfMissing False dir
+    createDirectoryIfMissing True dir
 
     forM_ mods $ \mod -> do
         g <- G.graphModule arch gCfg mod
@@ -127,7 +127,7 @@ main = do
         ("visualize", []) -> do
             gCfg <- case Config.configGraphvizOutput cfg of
                 Just x -> return x
-                Nothing -> error "arch-visualize requires a [graphviz] config section"
+                Nothing -> error "`visualize` command requires a [graphviz] config section"
             (arch, _) <- loadArchitecture cfg
             graphArchitecture gCfg arch
         ("visualize", _) -> error "usage: driver <config.toml> visualize"
