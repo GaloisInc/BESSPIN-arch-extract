@@ -17,14 +17,15 @@
 (define run-oracle* run-oracle)
 
 
-(define (run-manager strategy-specs oracle-spec init-inputs
+(define (run-manager strategy-specs oracle-spec oracle-args init-inputs
                      [test-record-port #f])
   (define strategy-chans
     (for/vector ([strat strategy-specs])
       (unless (place-message-allowed? strat) (raise "bad strategy"))
       (place/context chan (run-strategy* strat chan))))
   (unless (place-message-allowed? oracle-spec) (raise "bad oracle"))
-  (define oracle-chan (place/context chan (run-oracle* oracle-spec chan)))
+  (define oracle-chan
+    (place/context chan (run-oracle* oracle-spec oracle-args chan)))
   (define seen-tests (mutable-set))
 
   (define (dispatch-test t)

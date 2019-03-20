@@ -5,6 +5,7 @@
   )
 
 (require "build.rkt")
+(require "config.rkt")
 (require "eval.rkt")
 (require "util.rkt")
 
@@ -27,13 +28,14 @@
     (define out (eval-feature-model fm inp))
     (place-channel-put chan `(,inp ,out ,meta))))
 
-(define (oracle-command cmd feature-names chan)
+(define (oracle-command cmd feature-names args chan)
+  (define exp-cmd (expand-command cmd args))
   (for ([msg (in-place-channel chan)])
     (match-define `(,inp ,meta) msg)
-    (define out (run-oracle-command cmd feature-names inp))
+    (define out (run-oracle-command exp-cmd feature-names inp))
     (place-channel-put chan `(,inp ,out ,meta))))
 
-(define (oracle-multi-cached num-threads cache-file oracle-spec chan)
+(define (oracle-multi-cached num-threads cache-file oracle-spec args chan)
   (define cache
     (make-hash
       (if (and cache-file (file-exists? cache-file))
@@ -53,7 +55,10 @@
   (define backends
     (build-vector num-threads
       (lambda (i)
-        (place/context backend-chan (run-oracle oracle-spec backend-chan)))))
+        (define child-args
+          (hash-update args 'instance (lambda (x) (append x (list i))) '()))
+        (place/context backend-chan
+          (run-oracle oracle-spec child-args backend-chan)))))
   (define backend-idle (make-vector num-threads #t))
 
   (define backend-evt
@@ -101,12 +106,12 @@
 
   (loop))
 
-(define (run-oracle spec chan)
+(define (run-oracle spec args chan)
   (match spec
     [`(eval-fm ,fm)
      (oracle-eval-fm (vector->feature-model fm) chan)]
     [`(command ,cmd ,feature-names)
-     (oracle-command cmd feature-names chan)]
+     (oracle-command cmd feature-names args chan)]
     [`(multi-cached ,num-threads ,cache-file ,oracle-spec)
-      (oracle-multi-cached num-threads cache-file oracle-spec chan)]
+      (oracle-multi-cached num-threads cache-file oracle-spec args chan)]
     ))

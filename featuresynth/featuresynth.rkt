@@ -2,7 +2,6 @@
 (require rosette/lib/angelic)
 (require rosette/lib/match)
 (require rosette/lib/synthax)
-(require toml)
 (require racket/random)
 (require "util.rkt")
 (require "synthesis.rkt")
@@ -10,6 +9,7 @@
 (require "eval.rkt")
 (require "manager.rkt")
 (require "clafer.rkt")
+(require "config.rkt")
 (current-bitwidth #f)
 
 
@@ -19,59 +19,7 @@
       (vector-ref args 0)
       "featuresynth.toml")))
 
-(define config-list-features-command "false")
-(define config-oracle-command "false")
-(define config-oracle-cache-file #f)
-(define config-init-tests-file #f)
-(define config-max-groups 0)
-(define config-max-dependencies 0)
-(define config-out-file #f)
-
-(let
-  ([c (hash-ref (parse-toml (file->string config-path)) 'featuresynth hash)])
-
-  (if-let ([x (hash-ref c 'list-features-command #f)])
-    (begin
-      (assert (string? x))
-      (set! config-list-features-command x))
-    (void))
-
-  (if-let ([x (hash-ref c 'oracle-command #f)])
-    (begin
-      (assert (string? x))
-      (set! config-oracle-command x))
-    (void))
-
-  (if-let ([x (hash-ref c 'oracle-cache-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-oracle-cache-file x))
-    (void))
-
-  (if-let ([x (hash-ref c 'init-tests-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-init-tests-file x))
-    (void))
-
-  (if-let ([x (hash-ref c 'max-groups #f)])
-    (begin
-      (assert (exact-nonnegative-integer? x))
-      (set! config-max-groups x))
-    (void))
-
-  (if-let ([x (hash-ref c 'max-dependencies #f)])
-    (begin
-      (assert (exact-nonnegative-integer? x))
-      (set! config-max-dependencies x))
-    (void))
-
-  (if-let ([x (hash-ref c 'out-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-out-file x))
-    (void))
-)
+(read-config-file config-path)
 
 
 (define (read-features-from-port p)
@@ -91,7 +39,9 @@
     #f))
 
 (define feature-names
-  (read-features-from-command config-list-features-command))
+  (read-features-from-command
+    (expand-command config-list-features-command
+                    `#hash( (config-path . ,config-path) ))))
 (define init-tests
   (if config-init-tests-file
     (for/list ([l (file->lines config-init-tests-file)])
@@ -117,6 +67,7 @@
        (command
          ,config-oracle-command
          ,feature-names))
+    `#hash( (config-path . ,config-path) )
     init-tests
     (open-output-file "test-log.rktd" #:exists 'truncate)
     )
