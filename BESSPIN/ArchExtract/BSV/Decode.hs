@@ -44,7 +44,7 @@ getPackage x = bad' "Package" x $ Package (Id "<bad-package>" 0 0) S.empty
 
 getDefnDef :: CBOR.Term -> DecodeM Def
 getDefnDef (tag "Defn_ValueSign" -> [def]) = getDef def
-getDefnDef x = bad' "Defl" x badDef
+getDefnDef x = bad' "Defn" x badDef
 
 getDef :: CBOR.Term -> DecodeM Def
 getDef (tag "Def" -> [i, ty, List clauses]) =
@@ -71,7 +71,7 @@ getExpr (tag "Expr_Apply" -> [f, List args]) =
     EApp <$> getExpr f <*> pure [] <*> mapM getExpr args
 getExpr (tag "Expr_TyApply" -> [f, List tys]) =
     EApp <$> getExpr f <*> mapM getTy tys <*> pure []
-getExpr (tag "Expr_Rules" -> [List rs]) = ERules <$> mapM getRule rs
+getExpr (tag "Expr_Rules" -> [List rs]) = ERules <$> mapM getRawRule rs
 getExpr (tag "Expr_Lit" -> [l]) = ELit <$> getLit l
 getExpr (tag "Expr_LitT" -> [_ty, l]) = ELit <$> getLit l
 getExpr (tag "Expr_SelectT" -> [p, f]) =
@@ -84,10 +84,14 @@ getExpr (tag "Expr_StructT" -> [ty, List fs]) =
 --getExpr x = bad' "Expr" x $ EUnknown x
 getExpr x = bad' "Expr" x $ EUnknown (maybe CBOR.TNull CBOR.TString $ getTag x)
 
-getRule :: CBOR.Term -> DecodeM Rule
-getRule (tag "Rule" -> [nameExpr, body]) =
-    RRule <$> onMaybe getExpr nameExpr <*> getExpr body
-getRule x = bad' "Rule" x $ RUnknown x
+getRawRule :: CBOR.Term -> DecodeM RawRule
+getRawRule (tag "Rule" -> [nameExpr, List quals, body]) =
+    RrRule <$> onMaybe getExpr nameExpr <*> mapM getGuard quals <*> getExpr body
+getRawRule x = bad' "RawRule" x $ RrUnknown x
+
+getGuard :: CBOR.Term -> DecodeM Guard
+getGuard (tag "Qual_Gen" -> [t, p, e]) = GPat <$> getPat p <*> getTy t <*> getExpr e
+getGuard (tag "Qual_Filter" -> [e]) = GCond <$> getExpr e
 
 getLit :: CBOR.Term -> DecodeM Lit
 getLit (tag "Lit_Str" -> [_pos, Str value]) = return $ LStr value

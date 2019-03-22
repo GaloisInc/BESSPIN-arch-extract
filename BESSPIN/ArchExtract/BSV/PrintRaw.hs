@@ -55,17 +55,25 @@ instance Pretty Expr where
     pretty (EPrim p) = pretty p
     pretty (EDo stmts last) =
         "do" <+> hang 0 (vsep $ map pretty stmts ++ [pretty last])
-    pretty (EAddRules rs) = vsep [ "addRules", indent 2 $ vsep $ map go rs ]
-      where
-        go (Just name, body) = vsep [ "rule" <+> pretty name, indent 2 $ pretty body ]
-        go (Nothing, body) = vsep [ "rule", indent 2 $ pretty body ]
+    pretty (EAddRules rs) = vsep [ "addRules", indent 2 $ vsep $ map pretty rs ]
     pretty (ERegRead e) = "*" <> pretty e
     pretty (ERegWrite l r) = pretty l <+> "<=" <+> pretty r
+    pretty (EUnOp op e) = parens $ pretty op <+> pretty e
     pretty (EBinOp op l r) = parens $ pretty l <+> pretty op <+> pretty r
     pretty e = viaShow e
 
-instance Pretty Rule where
+instance Pretty RawRule where
     pretty r = viaShow r
+
+instance Pretty Rule where
+    pretty (Rule optName conds body) = vsep $
+        [header]
+        ++ map (\c -> indent 2 $ "|" <+> pretty c) conds
+        ++ [indent 2 $ pretty body]
+      where
+        header = case optName of
+            Just name -> "rule" <+> pretty name
+            Nothing -> "rule"
 
 instance Pretty Lit where
     pretty (LStr s) = pretty $ show s
@@ -77,7 +85,7 @@ instance Pretty Prim where
     pretty p = viaShow p
 
 instance Pretty Stmt where
-    pretty (SBind p e) = pretty p <+> "<-" <+> pretty e <> semi
+    pretty (SBind p t e) = pretty p <+> "::" <+> pretty t <+> "<-" <+> pretty e <> semi
     pretty (SBind' e) = pretty e <> semi
 
 instance Pretty Pat where
@@ -89,7 +97,13 @@ instance Pretty Ty where
     pretty (TCon i) = pretty i <> "#"
     pretty (TNat n) = pretty n
     pretty (TApp t1 t2) = parens $ hsep $ map pretty (t1 : t2)
+
     pretty (TArrow t1 t2) = parens $ pretty t1 <+> "->" <+> pretty t2
+    pretty TBool = "Bool"
+    pretty (TReg t) = parens $ "Reg" <+> pretty t
+    pretty (TBit t) = parens $ "Bit" <+> pretty t
+    pretty (TModule t) = parens $ "Module" <+> pretty t
+
     pretty t = viaShow t
 
 

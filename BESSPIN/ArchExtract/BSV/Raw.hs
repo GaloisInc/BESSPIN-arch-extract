@@ -38,7 +38,7 @@ data Expr =
 
     -- BSV-specific primitives
     | ELit Lit
-    | ERules [Rule]
+    | ERules [RawRule]
     | EStatic Id Id     -- parent name, field name
     | EStruct Ty [(Id, Expr)]
 
@@ -46,10 +46,11 @@ data Expr =
     | EPrim Prim
     | EDo [Stmt] Expr
     -- Raised form of `ERules`.  The `Text` is the name of the rule.
-    | EAddRules [(Maybe Text, Expr)]
+    | EAddRules [Rule]
     | ETcDict   -- Replacement for elided `_tcdict` `EVar`s
     | ERegRead Expr
     | ERegWrite Expr Expr  -- reg, value
+    | EUnOp Text Expr
     | EBinOp Text Expr Expr
 
     | EUnknown CBOR.Term
@@ -60,11 +61,25 @@ data Prim =
     | PMkRegU -- forall ty width. m ?  -- width is the total width in bits
     | PPack   -- bits -> a
     | PUnpack -- a -> bits
+    | PTruncate
+    | PIndex
     deriving (Show, Data, Typeable)
 
-data Rule =
-      RRule (Maybe Expr) Expr
-    | RUnknown CBOR.Term
+data RawRule =
+      RrRule (Maybe Expr) [Guard] Expr
+    | RrUnknown CBOR.Term
+    deriving (Show, Data, Typeable)
+
+data Rule = Rule
+    { ruleName :: Maybe Text
+    , ruleConds :: [Expr]
+    , ruleBody :: Expr
+    }
+    deriving (Show, Data, Typeable)
+
+data Guard =
+      GCond Expr
+    | GPat Pat Ty Expr
     deriving (Show, Data, Typeable)
 
 data Lit =
@@ -75,12 +90,13 @@ data Lit =
     deriving (Show, Data, Typeable)
 
 data Stmt =
-      SBind Pat Expr
+      SBind Pat Ty Expr
     | SBind' Expr
     deriving (Show, Data, Typeable)
 
 data Pat =
       PVar Id
+    | PTcDict   -- Replacement for elided `_tcdict` `PVar`s
     | PUnknown CBOR.Term
     deriving (Show, Data, Typeable)
 
@@ -91,6 +107,10 @@ data Ty =
     | TApp Ty [Ty]
 
     | TArrow Ty Ty
+    | TReg Ty
+    | TBool
+    | TBit Ty
+    | TModule Ty
 
     | TUnknown CBOR.Term
     deriving (Show, Data, Typeable)

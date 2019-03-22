@@ -31,14 +31,21 @@ raiseRaw x =
     rewrite $
     preSimplify $
     reconstructAllLets $
+    cleanDefs $
     x
 
+cleanDefs :: Data a => a -> a
+cleanDefs x = everywhere (mkT goPackage) x
+  where
+    goPackage (Package i ds) = Package i (S.filter checkDef ds)
+    checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
+
 rewrite :: Data a => a -> a
-rewrite x = everywhere (mkT goExpr) x
+rewrite x = everywhere (mkT goExpr `extT` goTy) x
   where
     -- Monad handling
-    goExpr (EApp (EVar (Id "Prelude.bind" _ _)) _tys [_dct, m, ELam [p] k]) =
-        goExpr $ EDo [SBind p m] k
+    goExpr (EApp (EVar (Id "Prelude.bind" _ _)) [_tM, tA, _tB] [_dct, m, ELam [p] k]) =
+        goExpr $ EDo [SBind p tA m] k
     goExpr (EApp (EVar (Id "Prelude.bind_" _ _)) _tys [_dct, m, k]) =
         goExpr $ EDo [SBind' m] k
     goExpr (EDo ss1 (EDo ss2 e)) =
@@ -59,34 +66,53 @@ rewrite x = everywhere (mkT goExpr) x
         goExpr $ EApp (EPrim PPack) [] [e]
     goExpr (EApp (EVar (Id "Prelude.unpack" _ _)) [_, _] [_d1, e]) =
         goExpr $ EApp (EPrim PUnpack) [] [e]
+    goExpr (EApp (EVar (Id "Prelude.truncate" _ _)) [_, _, _] [_d1, e]) =
+        goExpr $ EApp (EPrim PTruncate) [] [e]
+    goExpr (EApp (EVar (Id "Prelude.primSelectFn" _ _))
+            [_tIn, _tOut, _tIdx, _tUnk] [_d1, _d2, _pos, e, idx]) =
+        goExpr $ EApp (EPrim PIndex) [] [e, idx]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._read" _ _)) [_] [e]) =
         ERegRead e
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._write" _ _)) [_] [l, r]) =
         ERegWrite l r
 
-    -- Binary ops
+    -- Unary and binary ops
     goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = EBinOp "+" l r
     goExpr (EApp (EVar (Id "Prelude.-" _ _)) [_] [_d1, l, r]) = EBinOp "-" l r
+
     goExpr (EApp (EVar (Id "Prelude.==" _ _)) [_] [_d1, l, r]) = EBinOp "==" l r
+    goExpr (EApp (EVar (Id "Prelude./=" _ _)) [_] [_d1, l, r]) = EBinOp "/=" l r
+
     goExpr (EApp (EVar (Id "Prelude.<<" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp "<<" l r
     goExpr (EApp (EVar (Id "Prelude.>>" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp ">>" l r
 
+    goExpr (EApp (EVar (Id "Prelude.&&" _ _)) [] [l, r]) = EBinOp "&&" l r
+    goExpr (EApp (EVar (Id "Prelude.||" _ _)) [] [l, r]) = EBinOp "||" l r
+    goExpr (EApp (EVar (Id "Prelude.not" _ _)) [] [e]) = EUnOp "not" e
+
     goExpr e = e
 
-    -- Convert a `Rule` into an entry suitable for use in `EAddRules`.
-    convRule :: Rule -> Maybe (Maybe Text, Expr)
-    convRule (RRule optNameExpr body) = do
-        optNameExpr' <- matchNameExpr optNameExpr
-        body' <- matchBody body
-        return (optNameExpr', body')
-      where
-        matchNameExpr Nothing = Just Nothing
-        matchNameExpr (Just (EApp (EVar (Id "Prelude.fromString" _ _)) [_] [_dct, lit]))
-          | ELit (LStr s) <- lit = Just (Just s)
-        matchNameExpr _ = Nothing
+    goTy (TCon (Id "Prelude.Bool" _ _)) = TBool
+    goTy (TApp (TCon (Id "Prelude.Reg" _ _)) [t]) = TReg t
+    goTy (TApp (TCon (Id "Prelude.Bit" _ _)) [t]) = TBit t
+    goTy (TApp (TCon (Id "Prelude.Module" _ _)) [t]) = TModule t
+    goTy t = t
 
-        matchBody (EApp (EVar (Id "Prelude.toPrimAction" _ _)) [_] [e]) = Just e
-        matchBody _ = Nothing
+    -- Convert a `RawRule` into a `Rule` suitable for use in `EAddRules`.
+    convRule :: RawRule -> Maybe Rule
+    convRule (RrRule optNameExpr guards body) = do
+        optName' <- case optNameExpr of
+            Nothing -> return Nothing
+            Just (EApp (EVar (Id "Prelude.fromString" _ _)) [_] [_dct, lit])
+              | ELit (LStr s) <- lit -> return (Just s)
+            _ -> Nothing
+        conds' <- forM guards $ \g -> case g of
+            GCond e -> return e
+            _ -> Nothing
+        body' <- case body of
+            EApp (EVar (Id "Prelude.toPrimAction" _ _)) [_] [e] -> return e
+            _ -> Nothing
+        return $ Rule optName' conds' body'
     convRule _ = Nothing
 
 preSimplify :: Data a => a -> a
@@ -107,7 +133,7 @@ postSimplify :: Data a => a -> a
 postSimplify x = x --everywhere (mkT goExpr) x
 
 removeTcDicts :: Data a => a -> a
-removeTcDicts x = everywhere (mkT goExpr `extT` goDefs `extT` goPats) x
+removeTcDicts x = everywhere (mkT goExpr `extT` goDefs `extT` goPat) x
   where
     goExpr (EVar (Id t _ _)) | "_tcdict" `T.isPrefixOf` t = ETcDict
     goExpr (ELet (Def (Id t _ _) _ _) body) | "_tcdict" `T.isPrefixOf` t = body
@@ -116,8 +142,8 @@ removeTcDicts x = everywhere (mkT goExpr `extT` goDefs `extT` goPats) x
     goDefs (Def (Id t _ _) _ _ : rest) | "_tcdict" `T.isPrefixOf` t = rest
     goDefs ds = ds
 
-    goPats (PVar (Id t _ _) : rest) | "_tcdict" `T.isPrefixOf` t = rest
-    goPats ps = ps
+    goPat (PVar (Id t _ _)) | "_tcdict" `T.isPrefixOf` t = PTcDict
+    goPat p = p
 
 -- Analyze all lets and letrecs, and rebuild them in simplified form.
 --
