@@ -58,11 +58,16 @@ data Expr =
 
 data Prim =
       PReturn -- a -> m a
+    | PBind   -- m a -> (a -> m b) -> m b
     | PMkRegU -- forall ty width. m ?  -- width is the total width in bits
     | PPack   -- bits -> a
     | PUnpack -- a -> bits
     | PTruncate
     | PIndex
+    | PRegRead  -- reg -> value
+    | PRegWrite -- reg -> value -> Action
+    | PUnOp Text
+    | PBinOp Text
     deriving (Show, Data, Typeable)
 
 data RawRule =
@@ -95,7 +100,8 @@ data Stmt =
     deriving (Show, Data, Typeable)
 
 data Pat =
-      PVar Id
+      PWild
+    | PVar Id
     | PTcDict   -- Replacement for elided `_tcdict` `PVar`s
     | PUnknown CBOR.Term
     deriving (Show, Data, Typeable)
@@ -111,11 +117,14 @@ data Ty =
     | TBool
     | TBit Ty
     | TModule Ty
+    | TIsModule Ty Ty
 
     | TUnknown CBOR.Term
     deriving (Show, Data, Typeable)
 
 data Id = Id Text Int Int
     deriving (Show, Eq, Ord, Data, Typeable)
+
+idName (Id name _ _) = name
 
 deriving instance Data CBOR.Term

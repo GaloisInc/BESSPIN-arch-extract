@@ -7,6 +7,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import System.Directory
@@ -20,6 +21,9 @@ import BESSPIN.ArchExtract.BSV.Decode
 import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.BSV.RaiseRaw
+import BESSPIN.ArchExtract.BSV.Extract
+
+import BESSPIN.ArchExtract.Print
 
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
@@ -28,4 +32,7 @@ testAst cfg = do
         Left err -> error $ T.unpack err
         Right x -> return x
     putStrLn $ T.unpack $ printBSV $ raiseRaw rawAst
+
+    T.putStrLn $ printArchitecture $ extractDesign [raiseRaw rawAst]
+
 

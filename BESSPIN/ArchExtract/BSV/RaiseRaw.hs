@@ -96,6 +96,7 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goTy (TApp (TCon (Id "Prelude.Reg" _ _)) [t]) = TReg t
     goTy (TApp (TCon (Id "Prelude.Bit" _ _)) [t]) = TBit t
     goTy (TApp (TCon (Id "Prelude.Module" _ _)) [t]) = TModule t
+    goTy (TApp (TCon (Id "Prelude.IsModule" _ _)) [t1, t2]) = TIsModule t1 t2
     goTy t = t
 
     -- Convert a `RawRule` into a `Rule` suitable for use in `EAddRules`.
