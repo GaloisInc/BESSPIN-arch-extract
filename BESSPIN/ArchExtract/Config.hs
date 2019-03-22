@@ -36,7 +36,8 @@ defaultConfig = Config
 defaultConfigWithClafer = defaultConfig { configClaferOutput = Just $ defaultClafer }
 
 data Src =
-    VerilogSrc Verilog
+      VerilogSrc Verilog
+    | BSVSrc BSV
     deriving (Show)
 
 data Verilog = Verilog
@@ -62,6 +63,17 @@ defaultVerilog = Verilog
     , verilogAstFile = Nothing
     , verilogBlackboxModules = []
     , verilogDisconnectNets = []
+    }
+
+data BSV = BSV
+    -- Path to the CBOR file that contains the exported AST.  This tool doesn't
+    -- yet support automatically exporting from src-files.
+    { bsvAstFile :: Text
+    }
+    deriving (Show)
+
+defaultBSV = BSV
+    { bsvAstFile = "bsv.cbor"
     }
 
 data NameMap = NameMap
@@ -351,6 +363,7 @@ srcs x = M.fromList $ tableMap x $ \name x -> (name, src x)
 src :: TOML.Value -> Src
 src x = tableDispatch x "type"
     [ ("verilog", \x -> VerilogSrc $ verilog x)
+    , ("bsv", \x -> BSVSrc $ bsv x)
     ]
 
 verilog :: TOML.Value -> Verilog
@@ -360,6 +373,12 @@ verilog x = tableFold defaultVerilog x
     , ("ast-file", \c x -> c { verilogAstFile = Just $ str x })
     , ("blackbox-modules", \c x -> c { verilogBlackboxModules = listOf str x })
     , ("disconnect-nets", \c x -> c { verilogDisconnectNets = listOf str x })
+    ]
+
+bsv :: TOML.Value -> BSV
+bsv x = tableFold defaultBSV x
+    [ ("type", \c x -> c)
+    , ("ast-file", \c x -> c { bsvAstFile = str x })
     ]
 
 nameMap :: TOML.Value -> NameMap

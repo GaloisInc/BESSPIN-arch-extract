@@ -21,10 +21,10 @@ import qualified BESSPIN.ArchExtract.Config as Config
 import qualified BESSPIN.ArchExtract.Main as ArchMain
 import qualified BESSPIN.ArchExtract.Verilog as V
 import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
+import qualified BESSPIN.ArchExtract.BSV as BSV
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer as VPP
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Parser as VPP
 import qualified BESSPIN.ArchExtract.Gen.Graphviz as G
-
 
 
 readConfig path = Config.parse <$> T.readFile path
@@ -134,6 +134,10 @@ main = do
 
         ("old-arch-extract", []) -> ArchMain.mainWithConfig cfg
         ("old-arch-extract", _) -> error "usage: driver <config.toml> old-arch-extract"
+
+        ("bsv-test", _) -> case M.elems $ Config.configSrcs cfg of
+            [Config.BSVSrc bCfg] -> BSV.testAst bCfg
+            _ -> error "expected a bsv src section"
 
         (cmd, _) -> error $ "unknown command " ++ show cmd
         

@@ -1,5 +1,8 @@
+{-# LANGUAGE TemplateHaskell #-}
 module BESSPIN.ArchExtract.GraphOps where
 
+import Control.Monad
+import Control.Monad.State
 import Data.Foldable
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -11,6 +14,7 @@ import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import Lens.Micro.Platform
 
 import Debug.Trace
 
@@ -160,4 +164,80 @@ enclosed targets exclude mod = splitNodeSet $
         ([NInput, NOutput] ++ Set.toList (mergeNodeSet exclude))
 
 
+-- Strongly-connected components
 
+data SccState = SccState
+    { _sccVerts :: Seq SccVertex
+    , _sccStk :: [Int]
+    , _sccNextIdx :: Int
+    , _sccSccs :: [Set Int]
+    }
+
+data SccVertex = SccVertex
+    { _vertIndex :: Maybe Int
+    , _vertLowLink :: Int
+    , _vertOnStk :: Bool
+    }
+
+makeLenses ''SccState
+makeLenses ''SccVertex
+
+-- Label the strongly-connected components of a graph.
+labelSccs :: (Int -> [Int]) -> Int -> [Set Int]
+labelSccs succs numVerts = evalState top initState
+  where
+    initVertex = SccVertex Nothing (-1) False
+    initState = SccState (S.fromFunction numVerts $ const initVertex) [] 0 []
+
+    top :: State SccState [Set Int]
+    top = do
+        forM_ [0 .. numVerts - 1] $ \v -> do
+            visited <- use $ sccVerts . singular (ix v) . vertIndex . to isJust
+            when (not visited) $ go v
+
+        use sccSccs
+
+    go :: Int -> State SccState ()
+    go v = do
+        vIdx <- use sccNextIdx
+        sccNextIdx %= (+ 1)
+        sccStk %= (v:)
+        zoom (sccVerts . ix v) $ do
+            vertIndex .= Just vIdx
+            vertLowLink .= vIdx
+            vertOnStk .= True
+
+        forM_ (succs v) $ \w -> do
+            wIdx <- use $ sccVerts . singular (ix w) . vertIndex
+            case wIdx of
+                Nothing -> do
+                    go w
+                    vll <- use $ sccVerts . singular (ix v) . vertLowLink
+                    wll <- use $ sccVerts . singular (ix w) . vertLowLink
+                    sccVerts . ix v . vertLowLink .= min vll wll
+                Just wIdx -> do
+                    wOnStk <- use $ sccVerts . singular (ix w) . vertOnStk
+                    when wOnStk $ do
+                        vll <- use $ sccVerts . singular (ix v) . vertLowLink
+                        sccVerts . ix v . vertLowLink .= min vll wIdx
+
+
+        (vs, (_v : stk)) <- use $ sccStk . to (break (== v))
+        sccStk .= stk
+        let sccVs = v : vs
+        forM_ sccVs $ \w -> sccVerts . ix w . vertOnStk .= False
+        sccSccs %= (Set.fromList sccVs :)
+
+
+-- Topological sort
+
+topoSort :: (Int -> [Int]) -> Int -> Seq Int
+topoSort succs root = S.reverse $ evalState (go root) Set.empty
+  where
+    go :: Int -> State (Set Int) (Seq Int)
+    go cur = do
+        seen <- get
+        if Set.member cur seen then return S.empty else do
+        put $ Set.insert cur seen
+        rest <- mconcat <$> mapM go (succs cur)
+        return $ rest |> cur
