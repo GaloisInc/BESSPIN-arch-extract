@@ -77,20 +77,23 @@ withRule' x m = withThing' _esCurRule x m
 data BSVModule = BSVModule Id Ty Expr
 
 findPackageModules :: Package -> [BSVModule]
-findPackageModules p = foldMap go $ packageDefs p
+findPackageModules p = map fst $ M.elems moduleMap
   where
     -- There are two forms of modules.  For `(* synthesize *)` modules, there
     -- is a top-level definition of type `Module ifc` that contains a let
     -- binding for the actual module definition.
     go (Def _ (TModule _) [Clause [] e])
       | ELet (Def i (TModule tIfc) [Clause [] body]) _ <- e
-      = [BSVModule i tIfc body]
+      = M.singleton (idName i) (BSVModule i tIfc body, 1)
     -- For non-synthesize modules, the type is `IsModule m c -> m ifc`, and the
     -- body is the module definition directly.
     go (Def i (TIsModule (TVar iM) (TVar iC) `TArrow` TApp (TVar iM') [tIfc])
             [Clause [PTcDict] body])
-      | iM == iM' = [BSVModule i tIfc body]
-    go _ = []
+      | iM == iM' = M.singleton (idName i) (BSVModule i tIfc body, 0)
+    go _ = M.empty
+
+    moduleMap = M.unionsWith (\(a, ap) (b, bp) ->
+        if ap > bp then (a, ap) else (b, bp)) (map go $ toList $ packageDefs p)
 
 extractDesign :: [Package] -> A.Design ()
 extractDesign ps = A.Design archMods
