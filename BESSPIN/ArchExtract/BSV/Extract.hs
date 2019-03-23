@@ -137,6 +137,7 @@ data Value =
     | VReturn Value
     | VBind Value Value
     -- Module monad primitives.
+    | VNamed Text Value
     | VMkReg Ty
     | VMkModule Int [Ty] [Value]
     | VAddRules [Rule]
@@ -322,6 +323,7 @@ countArgsPrim p = case p of
     PRegWrite -> (0, 2)
     PUnOp _ -> (0, 1)
     PBinOp _ -> (0, 2)
+    PSetName _ -> (0, 1)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
@@ -337,6 +339,7 @@ appPrim PRegRead [] [VDff logicIdx] = do
 appPrim PRegWrite [] [r, v] = return $ VRegWrite r v
 appPrim (PUnOp _) [] [VNet v] = VNet <$> genCombLogic (v <| S.empty)
 appPrim (PBinOp _) [] [VNet a, VNet b] = VNet <$> genCombLogic (a <| b <| S.empty)
+appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim p tys vals =
     traceShow ("bad arguments for primitive", p, tys, vals) $ return VUnknown
 
@@ -374,16 +377,25 @@ runModule :: Value -> ExtractM Value
 runModule c = runMonad handleModule c
 
 handleModule :: Value -> ExtractM Value
-handleModule (VMkReg _ty) = do
-    let name = "??"
-    dNet <- addNet $ A.Net (name <> "$D") 0 S.empty S.empty A.TUnknown ()
-    enNet <- addNet $ A.Net (name <> "$EN") 0 S.empty S.empty A.TUnknown ()
-    qNet <- addNet $ A.Net (name <> "$Q") 0 S.empty S.empty A.TUnknown ()
-    logicIdx <- addLogic $ A.Logic
-        (A.LkDFlipFlop name 0)
-        (A.Pin dNet A.TUnknown <| A.Pin enNet A.TUnknown <| S.empty)
-        (A.Pin qNet A.TUnknown <| S.empty)
-        ()
-    return $ VDff logicIdx
-handleModule c = traceShow ("unsupported Module action", c) $ return VUnknown
+handleModule c = go Nothing c
+  where
+    go :: Maybe Text -> Value -> ExtractM Value
+    go _ (VNamed name c) = go (Just name) c
+    go optName (VMkReg _ty) = do
+        name <- case optName of
+            Just name -> return name
+            Nothing -> do
+                count <- S.length <$> use (_esCurModule . A._moduleLogics)
+                return $ "_reg" <> T.pack (show count)
+
+        dNet <- addNet $ A.Net (name <> "$D") 0 S.empty S.empty A.TUnknown ()
+        enNet <- addNet $ A.Net (name <> "$EN") 0 S.empty S.empty A.TUnknown ()
+        qNet <- addNet $ A.Net (name <> "$Q") 0 S.empty S.empty A.TUnknown ()
+        logicIdx <- addLogic $ A.Logic
+            (A.LkDFlipFlop name 0)
+            (A.Pin dNet A.TUnknown <| A.Pin enNet A.TUnknown <| S.empty)
+            (A.Pin qNet A.TUnknown <| S.empty)
+            ()
+        return $ VDff logicIdx
+    go _ c = traceShow ("unsupported Module action", c) $ return VUnknown
 

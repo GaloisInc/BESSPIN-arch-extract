@@ -68,6 +68,7 @@ data Prim =
     | PRegWrite -- reg -> value -> Action
     | PUnOp Text
     | PBinOp Text
+    | PSetName Text -- Module a -> Module a
     deriving (Show, Data, Typeable)
 
 data RawRule =

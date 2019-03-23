@@ -51,8 +51,10 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EDo ss1 (EDo ss2 e)) =
         goExpr $ EDo (ss1 ++ ss2) e
     -- Uninteresting prelude functions
-    goExpr (EApp (EVar (Id "Prelude.setStateName" _ _)) _tys [_dct, _name, val]) =
-        goExpr val
+    goExpr (EApp (EVar (Id "Prelude.setStateName" _ _)) _tys [_dct, nameExpr, val])
+      | EApp (EVar (Id "Prelude.primGetName" _ _)) [] [nameArg] <- nameExpr
+      , EVar (Id name _ _) <- nameArg
+      = goExpr $ EApp (EPrim $ PSetName name) [] [val]
     goExpr (EApp (EVar (Id "Prelude.forceIsModule" _ _)) _tys [_dct, e]) = goExpr e
     goExpr (EApp (EVar (Id "Prelude.fromInteger" _ _)) [_] [_dct, e]) = goExpr e
     -- Baked-in primitives
