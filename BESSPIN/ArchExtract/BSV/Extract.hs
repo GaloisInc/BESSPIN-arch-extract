@@ -111,7 +111,58 @@ extractModule (BSVModule (Id name _ _) _ body) = do
     withModule initMod $ do
         v <- eval M.empty body >>= runModule
         traceM (show ("module", name, "got value:", v))
+        extractMethods v
         return ()
+
+extractMethods :: Value -> ExtractM ()
+extractMethods (VStruct _ fs) = do
+    forM_ (M.toList fs) $ \(rawName, val) -> do
+        let name = T.takeWhileEnd (/= '.') rawName
+        traceM $ "extracting method " ++ show name ++ " = " ++ show val
+        extractMethod name val
+extractMethods v = traceM ("can't extract methods from " ++ show v)
+
+extractMethod :: Text -> Value -> ExtractM ()
+extractMethod name v = goInputs v
+  where
+    -- Identify input ports from the function arguments, if any.
+    goInputs v | isFunc v = do
+        inpNames <- funcArgNames v
+        traceM $ "goInputs: " ++ show v ++ ": apply to args " ++ show inpNames
+        inpNets <- mapM genInputPort $ map (\n -> name <> "." <> n) inpNames
+        v' <- appValue v [] (map VNet inpNets)
+        goAction v
+    goInputs v = goAction v
+
+    goAction v | isComputation v = do
+        traceM $ "goAction: " ++ show v ++ ": runAction"
+        v' <- runAction v
+        goOutput v
+    goAction v = goOutput v
+
+    goOutput v | trace ("goOutput: got " ++ show v) False = undefined
+    goOutput (VNet netId) = do
+        genOutputPort (name <> ".out") netId
+    goOutput VConst = return ()
+    goOutput v = traceM $ "unexpected value in method slot: " ++ show v
+
+
+funcArgNames :: Value -> ExtractM [Text]
+funcArgNames (VClosure ps _ _) =
+    return $ zipWith (\idx p -> case patName p of
+        Nothing -> "in" <> T.pack (show idx)
+        Just name -> name) [0..] ps
+funcArgNames (VPartApp v _ args) =
+    drop (length args) <$> funcArgNames v
+funcArgNames (VModuleCtor _) =
+    traceShow "funcArgNames: ModuleCtor case NYI" $ return []
+funcArgNames (VPrim _) =
+    traceShow "funcArgNames: Prim case NYI" $ return []
+funcArgNames v = error $ "not a function: " ++ show v
+
+patName :: Pat -> Maybe Text
+patName (PVar (Id name _ _)) = Just name
+patName _ = Nothing
 
 
 data Value =
@@ -127,6 +178,10 @@ data Value =
     -- `Action` monad.
     | VModInst Int
     | VDff Int
+
+    -- Structs are used to represent whole modules: a module definition in the
+    -- source turns into a monadic computation returning a struct.
+    | VStruct Text (Map Text Value)
 
     -- Function-like values.
     | VClosure [Pat] Scope Expr
@@ -184,7 +239,14 @@ eval sc (ELetRec ds e) =
 eval sc (ELit _) = return VConst
 eval sc (ERules _) = traceShow ("found unraised ERules during eval") $ return VUnknown
 eval sc (EStatic p f) = traceShow ("EStatic NYI", p, f) $ return VUnknown
-eval sc (EStruct _ _) = traceShow ("EStruct NYI") $ return VUnknown
+
+eval sc (EStruct (TCon (Id sName _ _)) fs) = do
+    fvs <- forM fs $ \(i, expr) -> do
+        val <- eval sc expr
+        return (idName i, val)
+    return $ VStruct sName $ M.fromList fvs
+eval sc (EStruct ty _) =
+    traceShow "EStruct with non-TCon type is not supported" $ return VUnknown
 
 eval sc (EPrim p) = return $ VPrim p
 eval sc (EDo ss e) = case ss of
@@ -274,6 +336,7 @@ mkPartApp f tys vals =
 
 isFunc (VClosure _ _ _) = True
 isFunc (VPartApp _ _ _) = True
+isFunc (VModuleCtor _) = True
 isFunc (VPrim _) = True
 isFunc _ = False
 
@@ -340,7 +403,11 @@ appPrim PRegRead [] [VDff logicIdx] = do
     qNetId <- use $ _esCurModule . A._moduleLogic logicIdx . A._logicOutput 0 . A._pinNet
     return $ VNet qNetId
 appPrim PRegWrite [] [r, v] = return $ VRegWrite r v
+appPrim (PUnOp _) [] [VConst] = return VConst
 appPrim (PUnOp _) [] [VNet v] = VNet <$> genCombLogic (v <| S.empty)
+appPrim (PBinOp _) [] [VConst, VConst] = return VConst
+appPrim (PBinOp _) [] [VConst, VNet b] = VNet <$> genCombLogic (b <| S.empty)
+appPrim (PBinOp _) [] [VNet a, VConst] = VNet <$> genCombLogic (a <| S.empty)
 appPrim (PBinOp _) [] [VNet a, VNet b] = VNet <$> genCombLogic (a <| b <| S.empty)
 appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim p tys vals =
@@ -357,6 +424,30 @@ genCombLogic inps = do
         ()
     return out
 
+-- Create an input port connected to a fresh net.  Returns the ID of the net.
+genInputPort :: Text -> ExtractM A.NetId
+genInputPort name = do
+    let ty = A.TUnknown
+    netId <- addNet $ A.Net name 0 S.empty S.empty ty ()
+    addThing (A.Port name netId ty) (_esCurModule . A._moduleInputs)
+    return netId
+
+-- Create an output port, connected to the provided net.
+genOutputPort :: Text -> A.NetId -> ExtractM ()
+genOutputPort name netId = do
+    let ty = A.TUnknown
+    addThing (A.Port name netId ty) (_esCurModule . A._moduleOutputs)
+    return ()
+
+
+isComputation (VReturn _) = True
+isComputation (VBind _ _) = True
+isComputation (VNamed _ _) = True
+isComputation (VMkReg _) = True
+isComputation (VMkModule _ _ _) = True
+isComputation (VAddRules _) = True
+isComputation (VRegWrite _ _) = True
+isComputation _ = False
 
 -- Run a monadic computation.  `handle` should implement the behavior of all
 -- the primitive operations of the monad.  (`VBind` and `VReturn` are handled
@@ -402,3 +493,14 @@ handleModule c = go Nothing c
         return $ VDff logicIdx
     go _ c = traceShow ("unsupported Module action", c) $ return VUnknown
 
+runAction :: Value -> ExtractM Value
+runAction c = runMonad handleAction c
+
+handleAction :: Value -> ExtractM Value
+handleAction c = go c
+  where
+    go :: Value -> ExtractM Value
+    go (VRegWrite l r) = do
+        traceM ("register write NYI: " ++ show l ++ " <= " ++ show r)
+        return VConst   -- unit
+    go c = traceShow ("unsupported Action action", c) $ return VUnknown

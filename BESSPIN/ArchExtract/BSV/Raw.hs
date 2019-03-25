@@ -12,7 +12,18 @@ import qualified Codec.CBOR.Term as CBOR
 data Package = Package
     { packageId :: Id
     , packageDefs :: Seq Def
+    , packageStructs :: Seq Struct
     }
+    deriving (Show, Data, Typeable)
+
+data Struct = Struct
+    { structId :: Id
+    , structTyParams :: [Id]
+    , structFields :: [Field]
+    }
+    deriving (Show, Data, Typeable)
+
+data Field = Field Id Ty
     deriving (Show, Data, Typeable)
 
 data Def = Def

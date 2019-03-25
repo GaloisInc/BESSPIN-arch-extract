@@ -37,7 +37,7 @@ raiseRaw x =
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i ds) = Package i (S.filter checkDef ds)
+    goPackage (Package i ds ss) = Package i (S.filter checkDef ds) ss
     checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
 
 rewrite :: Data a => a -> a

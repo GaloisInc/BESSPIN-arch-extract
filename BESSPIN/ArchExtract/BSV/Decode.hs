@@ -39,19 +39,35 @@ bad' what x dfl =
 
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, _, List defns]) =
-    Package <$> getId i <*> (S.fromList <$> mapM getDefnDef defns)
-getPackage x = bad' "Package" x $ Package (Id "<bad-package>" 0 0) S.empty
+    Package
+        <$> getId i
+        <*> (S.fromList <$> mapM getDefnDef defns)
+        <*> (S.fromList <$> mapM getDefnStruct defns)
+getPackage x = bad' "Package" x $
+    Package (badId "package") S.empty S.empty
+
+getDefnStruct :: CBOR.Term -> DecodeM Struct
+getDefnStruct (tag "Defn_Struct" -> [_sub, name, List tyParams, List fields]) =
+    Struct
+        <$> getId name
+        <*> mapM getId tyParams
+        <*> mapM getField fields
+getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [])
+
+getField :: CBOR.Term -> DecodeM Field
+getField (tag "Field" -> [name, ty]) = Field <$> getId name <*> getTy ty
 
 getDefnDef :: CBOR.Term -> DecodeM Def
 getDefnDef (tag "Defn_ValueSign" -> [def]) = getDef def
-getDefnDef x = bad' "Defn" x badDef
+getDefnDef x = bad' "Defn_Def" x badDef
 
 getDef :: CBOR.Term -> DecodeM Def
 getDef (tag "Def" -> [i, ty, List clauses]) =
     Def <$> getId i <*> getTy ty <*> mapM getClause clauses
 getDef x = bad' "Def" x badDef
 
-badDef = Def (Id "<bad-def>" 0 0) (TUnknown CBOR.TNull) []
+badId what = Id ("<bad-" <> what <> ">") 0 0
+badDef = Def (badId "def") (TUnknown CBOR.TNull) []
 
 getClause :: CBOR.Term -> DecodeM Clause
 getClause (tag "Clause" -> [List pats, body]) =
