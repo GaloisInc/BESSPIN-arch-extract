@@ -111,6 +111,25 @@ data LogicKind =
         , lkRamReadPorts :: Int
         , lkRamWritePorts :: Int
         } |
+    -- Multiplexer used to represent multiple BSV rules accessing the same
+    -- register or inst method.  This mux has `numRules * numPins` inputs and
+    -- `numPins` outputs, and passes one set of inputs to the outputs depending
+    -- on which rule is currently firing.  Implicitly, the rule mux also has an
+    -- enable input for each rule, and an enable output that indicates whether
+    -- any rule is firing at all.  (For example, the output enable would be
+    -- connected to a downstream register's enable input, so that the register
+    -- gets written only when one of the rules that writes to it is fired.)
+    --
+    -- Inputs:
+    --  - rule1.pin1 .. rule1.pinM
+    --  - ...
+    --  - ruleN.pin1 .. ruleN.pinM
+    -- Outputs:
+    --  - pin1 .. pinM
+    LkRuleMux
+        { lkRuleMuxRuleNames :: Seq Text
+        , lkRuleMuxPinNames :: Seq Text
+        } |
     LkExpr |
     LkOther
     deriving (Show, Eq, Typeable, Data)

@@ -16,6 +16,8 @@ import qualified System.FilePath.Glob as Glob
 import System.IO.Temp
 import System.Process
 
+import qualified BESSPIN.ArchExtract.Architecture as A
+import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
 import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.BSV.Decode
 import BESSPIN.ArchExtract.BSV.Raw
@@ -35,4 +37,10 @@ testAst cfg = do
 
     T.putStrLn $ printArchitecture $ extractDesign [raiseRaw rawAst]
 
-
+readAndExtract :: Config.BSV -> IO (A.Design (), [FileInfo])
+readAndExtract cfg = do
+    cborBs <- BSL.readFile $ T.unpack $ Config.bsvAstFile cfg
+    rawAst <- case deserialize cborBs of
+        Left err -> error $ T.unpack err
+        Right x -> return x
+    return (extractDesign [raiseRaw rawAst], [])

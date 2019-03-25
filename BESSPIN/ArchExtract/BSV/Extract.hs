@@ -27,11 +27,12 @@ import Data.List
 import BESSPIN.ArchExtract.Lens
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.BSV.Raw
+import BESSPIN.ArchExtract.Simplify (reconnectNets)
 
 
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
-    , esCurRule :: A.Logic ()
+    , esCurRuleName :: Text
     }
 
 makeLenses' ''ExtractState
@@ -65,13 +66,8 @@ withModule x m = snd <$> withModule' x m
 withModule' :: A.Module () -> ExtractM a -> ExtractM (a, A.Module ())
 withModule' x m = withThing' _esCurModule x m
 
-{-
-withRule  :: Rule -> ExtractM () -> ExtractM Rule
-withRule x m = snd <$> withRule' x m
-
-withRule' :: Rule -> ExtractM a -> ExtractM (a, Rule)
-withRule' x m = withThing' _esCurRule x m
--}
+withRuleName  :: Text -> ExtractM a -> ExtractM a
+withRuleName x m = fst <$> withThing' _esCurRuleName x m
 
 
 data BSVModule = BSVModule Id Ty Expr
@@ -101,18 +97,23 @@ extractDesign ps = A.Design archMods
     bsvMods = concatMap findPackageModules ps
     initState = ExtractState
         { esCurModule = error "no current module"
-        , esCurRule = error "no current rule"
+        , esCurRuleName =
+            traceShow "ran Action not in any rule" $
+            "[[error: no rule]]"
         }
     archMods = S.fromList $ evalState (mapM extractModule bsvMods) initState
 
 extractModule :: BSVModule -> ExtractM (A.Module ())
 extractModule (BSVModule (Id name _ _) _ body) = do
     let initMod = A.Module name S.empty S.empty S.empty S.empty S.empty S.empty
-    withModule initMod $ do
+    m <- withModule initMod $ do
         v <- eval M.empty body >>= runModule
         traceM (show ("module", name, "got value:", v))
         extractMethods v
         return ()
+    return $
+        reconnectNets $
+        m
 
 extractMethods :: Value -> ExtractM ()
 extractMethods (VStruct _ fs) = do
@@ -131,13 +132,13 @@ extractMethod name v = goInputs v
         traceM $ "goInputs: " ++ show v ++ ": apply to args " ++ show inpNames
         inpNets <- mapM genInputPort $ map (\n -> name <> "." <> n) inpNames
         v' <- appValue v [] (map VNet inpNets)
-        goAction v
+        goAction v'
     goInputs v = goAction v
 
     goAction v | isComputation v = do
         traceM $ "goAction: " ++ show v ++ ": runAction"
-        v' <- runAction v
-        goOutput v
+        v' <- withRuleName name $ runAction v
+        goOutput v'
     goAction v = goOutput v
 
     goOutput v | trace ("goOutput: got " ++ show v) False = undefined
@@ -177,7 +178,9 @@ data Value =
     -- Logic values.  These are used as arguments for various operations in the
     -- `Action` monad.
     | VModInst Int
-    | VDff Int
+    -- First arg is the index of the register's associated `LkRuleMux` in
+    -- `moduleLogics`.  Second arg is the ID of its output net.
+    | VDff Int A.NetId
 
     -- Structs are used to represent whole modules: a module definition in the
     -- source turns into a monadic computation returning a struct.
@@ -200,7 +203,10 @@ data Value =
     | VMkModule Int [Ty] [Value]
     | VAddRules [Rule]
     -- Action monad primitives.
-    | VRegWrite Value Value
+    -- First arg is the index of the target register's rule mux; second arg is
+    -- the value to write.  The effect of the write is to connect the value's
+    -- output net to a fresh input of the rule mux for the current rule.
+    | VRegWrite Int Value
     -- TODO: method call
 
     -- Produced by ETcDict, and matched by VTcDict.  Should be unused
@@ -371,11 +377,6 @@ bindPat p v sc = case p of
     PUnknown _ ->
         traceShow ("tried to match", v, "against unknown pattern") $ return sc
 
-appRegCtor :: [Ty] -> ExtractM Value
-appRegCtor [ty] = return $ VMkReg ty
-appRegCtor tys =
-    traceShow ("passed wrong number of types to MkReg", tys) $ return VUnknown
-
 countArgsPrim :: Prim -> (Int, Int)
 countArgsPrim p = case p of
     PReturn -> (0, 1)
@@ -399,10 +400,8 @@ appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
 appPrim PTruncate [] [v] = return v
 appPrim PIndex [] [v, i] = traceShow ("PIndex NYI") $ return VUnknown
-appPrim PRegRead [] [VDff logicIdx] = do
-    qNetId <- use $ _esCurModule . A._moduleLogic logicIdx . A._logicOutput 0 . A._pinNet
-    return $ VNet qNetId
-appPrim PRegWrite [] [r, v] = return $ VRegWrite r v
+appPrim PRegRead [] [VDff _ qNetId] = return $ VNet qNetId
+appPrim PRegWrite [] [VDff muxIdx _, v] = return $ VRegWrite muxIdx v
 appPrim (PUnOp _) [] [VConst] = return VConst
 appPrim (PUnOp _) [] [VNet v] = VNet <$> genCombLogic (v <| S.empty)
 appPrim (PBinOp _) [] [VConst, VConst] = return VConst
@@ -481,26 +480,54 @@ handleModule c = go Nothing c
             Nothing -> do
                 count <- S.length <$> use (_esCurModule . A._moduleLogics)
                 return $ "_reg" <> T.pack (show count)
+        let ty = A.TUnknown
 
-        dNet <- addNet $ A.Net (name <> "$D") 0 S.empty S.empty A.TUnknown ()
-        enNet <- addNet $ A.Net (name <> "$EN") 0 S.empty S.empty A.TUnknown ()
-        qNet <- addNet $ A.Net (name <> "$Q") 0 S.empty S.empty A.TUnknown ()
-        logicIdx <- addLogic $ A.Logic
+        dNet <- addNet $ A.Net (name <> "$D") 0 S.empty S.empty ty ()
+        qNet <- addNet $ A.Net (name <> "$Q") 0 S.empty S.empty ty ()
+        addLogic $ A.Logic
             (A.LkDFlipFlop name 0)
-            (A.Pin dNet A.TUnknown <| A.Pin enNet A.TUnknown <| S.empty)
-            (A.Pin qNet A.TUnknown <| S.empty)
+            (A.Pin dNet ty <| S.empty)
+            (A.Pin qNet ty <| S.empty)
             ()
-        return $ VDff logicIdx
+
+        muxIdx <- addLogic $ A.Logic
+            (A.LkRuleMux S.empty (name <| S.empty))
+            S.empty
+            (A.Pin dNet ty <| S.empty)
+            ()
+
+        return $ VDff muxIdx qNet
     go _ c = traceShow ("unsupported Module action", c) $ return VUnknown
 
 runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
 
+netPin :: A.NetId -> ExtractM A.Pin
+netPin netId = do
+    ty <- use $ _esCurModule . A._moduleNet netId . A._netTy
+    return $ A.Pin netId ty
+
 handleAction :: Value -> ExtractM Value
 handleAction c = go c
   where
     go :: Value -> ExtractM Value
-    go (VRegWrite l r) = do
-        traceM ("register write NYI: " ++ show l ++ " <= " ++ show r)
-        return VConst   -- unit
+    go (VRegWrite muxIdx val) = do
+        traceM $ "handle regwrite: " ++ show (muxIdx, val)
+        -- Add a new mux input for the current rule.
+        name <- use _esCurRuleName
+        netId <- case val of
+            VNet netId -> return netId
+            VConst -> genCombLogic S.empty
+            _ ->
+                trace ("bad value in VRegWrite: " ++ show val) $
+                genCombLogic S.empty
+        pin <- netPin netId
+
+        zoom (_esCurModule . A._moduleLogic muxIdx) $ do
+            A._logicKind %= \lk -> case lk of
+                A.LkRuleMux rs ps -> A.LkRuleMux (rs |> name) ps
+                _ -> error $ "VRegWrite muxIdx refers to non-mux?"
+            A._logicInputs %= (|> pin)
+
+        return VConst   -- reg write returns unit
     go c = traceShow ("unsupported Action action", c) $ return VUnknown

@@ -118,6 +118,7 @@ logicShowsPorts cfg l =
         LkRegister _ -> True
         LkDFlipFlop _ _ -> True
         LkRam _ _ _ _ _ -> True
+        LkRuleMux _ _ -> True
         _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
@@ -223,6 +224,7 @@ drawLogicNode cfg logic =
         LkRegister _ -> True
         LkDFlipFlop _ _ -> True
         LkRam _ _ _ _ _ -> True
+        LkRuleMux _ _ -> True
         _ -> False
 
 drawNetEdges cfg net =
@@ -327,6 +329,7 @@ logicLabel LkExpr = T.pack "(expr)"
 logicLabel (LkRegister name) = "(register " <> name <> ")"
 logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
 logicLabel (LkRam name _ _ _ _) = "(ram " <> name <> ")"
+logicLabel (LkRuleMux _ _) = "(rule mux)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst inst) = "(inst " <> instName inst <> ")"
 
@@ -364,6 +367,9 @@ logicPortNames d l@(Logic { logicKind = LkRam _ _ resets readPorts writePorts })
     , "RAM"
         <| S.fromList ["rd" <> T.pack (show i) | i <- [0 .. readPorts - 1]]
         )
+logicPortNames d l@(Logic { logicKind = LkRuleMux rules pins }) =
+    ( do { r <- rules; p <- pins; return $ r <> "." <> p }
+    , pins )
 logicPortNames d l =
     (S.fromList $ map (T.pack . show) [0 .. maxInput],
         S.fromList $ map (T.pack . show) [0 .. maxOutput])
@@ -384,6 +390,8 @@ logicName d l@(Logic { logicKind = LkRam name depth _ _ _ }) =
     [H.Str $ TL.fromStrict $ "(ram " <> name <> ")",
         H.Newline [],
         H.Str $ TL.fromStrict $ "x" <> printConstExpr (\_ _ -> "?") depth]
+logicName d l@(Logic { logicKind = LkRuleMux _ _ }) =
+    [H.Str $ TL.fromStrict $ "(rule mux)"]
 logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
 
 printVar :: Design a -> Module b -> [Int] -> Int -> Text
