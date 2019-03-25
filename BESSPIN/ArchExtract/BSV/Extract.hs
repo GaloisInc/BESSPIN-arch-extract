@@ -33,6 +33,7 @@ import BESSPIN.ArchExtract.Simplify (reconnectNets)
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esCurRuleName :: Text
+    , esRuleCounter :: Int
     }
 
 makeLenses' ''ExtractState
@@ -69,6 +70,12 @@ withModule' x m = withThing' _esCurModule x m
 withRuleName  :: Text -> ExtractM a -> ExtractM a
 withRuleName x m = fst <$> withThing' _esCurRuleName x m
 
+nextRuleIdx :: ExtractM Int
+nextRuleIdx = do
+    idx <- use _esRuleCounter
+    _esRuleCounter %= (+1)
+    return idx
+
 
 data BSVModule = BSVModule Id Ty Expr
 
@@ -100,6 +107,7 @@ extractDesign ps = A.Design archMods
         , esCurRuleName =
             traceShow "ran Action not in any rule" $
             "[[error: no rule]]"
+        , esRuleCounter = 0
         }
     archMods = S.fromList $ evalState (mapM extractModule bsvMods) initState
 
@@ -201,7 +209,7 @@ data Value =
     | VNamed Text Value
     | VMkReg Ty
     | VMkModule Int [Ty] [Value]
-    | VAddRules [Rule]
+    | VAddRules [RuleVal]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -213,6 +221,9 @@ data Value =
     -- otherwise.
     | VTcDict
     | VUnknown
+    deriving (Show)
+
+data RuleVal = RuleVal Text [Value] Value
     deriving (Show)
 
 type Scope = Map Text Value
@@ -264,7 +275,9 @@ eval sc (EDo ss e) = case ss of
         mv <- eval sc m
         let kv = VClosure [p] sc (EDo ss' e)
         return $ VBind mv kv
-eval sc (EAddRules rs) = return $ VAddRules rs
+eval sc (EAddRules rs) = do
+    rvs <- mapM (evalRule sc) rs
+    return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
 eval sc (ERegRead e) = do
     r <- eval sc e
@@ -282,6 +295,16 @@ eval sc (EBinOp op l r) = do
     appPrim (PBinOp op) [] [lv, rv]
 
 eval sc (EUnknown _) = return VUnknown
+
+
+evalRule sc (Rule name conds body) = do
+    idx <- nextRuleIdx
+    let name' = case name of
+            Just n -> n
+            Nothing -> "rule" <> T.pack (show idx)
+    conds' <- mapM (eval sc) conds
+    body' <- eval sc body
+    return $ RuleVal name' conds' body'
 
 
 -- Apply a value to (type and value) arguments.
@@ -497,6 +520,11 @@ handleModule c = go Nothing c
             ()
 
         return $ VDff muxIdx qNet
+    go _ (VAddRules rs) = do
+        forM_ rs $ \(RuleVal name conds body) ->
+            -- TODO: do something with conds
+            withRuleName name $ runAction body
+        return VConst   -- returns unit
     go _ c = traceShow ("unsupported Module action", c) $ return VUnknown
 
 runAction :: Value -> ExtractM Value
