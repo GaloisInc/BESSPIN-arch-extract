@@ -70,7 +70,8 @@ data Expr =
 data Prim =
       PReturn -- a -> m a
     | PBind   -- m a -> (a -> m b) -> m b
-    | PMkRegU -- forall ty width. m ?  -- width is the total width in bits
+    | PMkReg  -- forall ty width. ty -> m Reg
+    | PMkRegU -- forall ty width. m Reg  -- width is the total width in bits
     | PPack   -- bits -> a
     | PUnpack -- a -> bits
     | PTruncate
@@ -79,6 +80,7 @@ data Prim =
     | PRegWrite -- reg -> value -> Action
     | PUnOp Text
     | PBinOp Text
+    | PIf       -- forall a. Bool -> a -> a -> a
     | PSetName Text -- Module a -> Module a
     deriving (Show, Data, Typeable)
 
@@ -123,12 +125,17 @@ data Ty =
     | TCon Id
     | TNat Int
     | TApp Ty [Ty]
+    | TForall [Id] Ty
 
     | TArrow Ty Ty
     | TReg Ty
+    | TUnit
     | TBool
     | TBit Ty
     | TModule Ty
+    -- The Action monad.  In BSV this monad is actually called `ActionValue`,
+    -- and `Action` is an alias for `ActionValue ()`.
+    | TAction Ty
     | TIsModule Ty Ty
 
     | TUnknown CBOR.Term

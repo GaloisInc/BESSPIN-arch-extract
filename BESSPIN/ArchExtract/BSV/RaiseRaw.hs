@@ -60,6 +60,8 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     -- Baked-in primitives
     goExpr (EApp (EVar (Id "Prelude.return" _ _)) _tys [_dct, x]) =
         goExpr $ EApp (EPrim PReturn) [] [x]
+    goExpr (EApp (EVar (Id "Prelude.mkReg" _ _)) [elemTy, elemWidth, _, _] [_dct1, _dct2, init]) =
+        goExpr $ EApp (EPrim PMkReg) [elemTy, elemWidth] [init]
     goExpr (EApp (EVar (Id "Prelude.mkRegU" _ _)) [elemTy, elemWidth, _, _] [_dct1, _dct2]) =
         goExpr $ EApp (EPrim PMkRegU) [elemTy, elemWidth] []
     goExpr (EApp (EVar (Id "Prelude.addRules" _ _)) [_, _] [_dct, ERules rs])
@@ -73,6 +75,8 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.primSelectFn" _ _))
             [_tIn, _tOut, _tIdx, _tUnk] [_d1, _d2, _pos, e, idx]) =
         goExpr $ EApp (EPrim PIndex) [] [e, idx]
+    goExpr (EApp (EVar (Id "Prelude._if" _ _)) [ty] [c, t, e]) =
+        goExpr $ EApp (EPrim PIf) [ty] [c, t, e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._read" _ _)) [_] [e]) =
         ERegRead e
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._write" _ _)) [_] [l, r]) =
@@ -85,6 +89,10 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.==" _ _)) [_] [_d1, l, r]) = EBinOp "==" l r
     goExpr (EApp (EVar (Id "Prelude./=" _ _)) [_] [_d1, l, r]) = EBinOp "/=" l r
 
+    goExpr (EApp (EVar (Id "Prelude.&" _ _)) [_] [_d1, l, r]) = EBinOp "&" l r
+    goExpr (EApp (EVar (Id "Prelude.|" _ _)) [_] [_d1, l, r]) = EBinOp "|" l r
+    goExpr (EApp (EVar (Id "Prelude.^" _ _)) [_] [_d1, l, r]) = EBinOp "^" l r
+    goExpr (EApp (EVar (Id "Prelude.invert" _ _)) [_] [_d1, e]) = EUnOp "invert" e
     goExpr (EApp (EVar (Id "Prelude.<<" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp "<<" l r
     goExpr (EApp (EVar (Id "Prelude.>>" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp ">>" l r
 
@@ -94,6 +102,7 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
 
     goExpr e = e
 
+    goTy (TCon (Id "Prelude.Unit" _ _)) = TUnit
     goTy (TCon (Id "Prelude.Bool" _ _)) = TBool
     goTy (TApp (TCon (Id "Prelude.Reg" _ _)) [t]) = TReg t
     goTy (TApp (TCon (Id "Prelude.Bit" _ _)) [t]) = TBit t

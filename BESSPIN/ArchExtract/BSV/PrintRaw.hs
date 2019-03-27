@@ -109,8 +109,10 @@ instance Pretty Ty where
     pretty (TCon i) = pretty i <> "#"
     pretty (TNat n) = pretty n
     pretty (TApp t1 t2) = parens $ hsep $ map pretty (t1 : t2)
+    pretty (TForall vars ty) = "forall" <+> hsep (map pretty vars) <> "." <+> pretty ty
 
     pretty (TArrow t1 t2) = parens $ pretty t1 <+> "->" <+> pretty t2
+    pretty TUnit = "Unit"
     pretty TBool = "Bool"
     pretty (TReg t) = parens $ "Reg" <+> pretty t
     pretty (TBit t) = parens $ "Bit" <+> pretty t

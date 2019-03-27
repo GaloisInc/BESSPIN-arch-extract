@@ -62,8 +62,11 @@ getDefnDef (tag "Defn_ValueSign" -> [def]) = getDef def
 getDefnDef x = bad' "Defn_Def" x badDef
 
 getDef :: CBOR.Term -> DecodeM Def
-getDef (tag "Def" -> [i, ty, List clauses]) =
-    Def <$> getId i <*> getTy ty <*> mapM getClause clauses
+getDef (tag "Def" -> [i, List tyVars, ty, List clauses]) = do
+    baseTy <- getTy ty
+    tyVars' <- mapM getId tyVars
+    let ty' = if null tyVars' then baseTy else TForall tyVars' baseTy
+    Def <$> getId i <*> pure ty' <*> mapM getClause clauses
 getDef x = bad' "Def" x badDef
 
 badId what = Id ("<bad-" <> what <> ">") 0 0

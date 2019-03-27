@@ -27,6 +27,7 @@ import Data.List
 import BESSPIN.ArchExtract.Lens
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.BSV.Raw
+import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.Simplify (reconnectNets)
 
 
@@ -34,6 +35,9 @@ data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esCurRuleName :: Text
     , esRuleCounter :: Int
+    , esStructs :: Map Text Struct
+    , esDefs :: Map Text Def
+    , esModMap :: Map Text (A.ModId, Ty)
     }
 
 makeLenses' ''ExtractState
@@ -79,24 +83,105 @@ nextRuleIdx = do
 
 data BSVModule = BSVModule Id Ty Expr
 
-findPackageModules :: Package -> [BSVModule]
-findPackageModules p = map fst $ M.elems moduleMap
-  where
-    -- There are two forms of modules.  For `(* synthesize *)` modules, there
-    -- is a top-level definition of type `Module ifc` that contains a let
-    -- binding for the actual module definition.
-    go (Def _ (TModule _) [Clause [] e])
-      | ELet (Def i (TModule tIfc) [Clause [] body]) _ <- e
-      = M.singleton (idName i) (BSVModule i tIfc body, 1)
-    -- For non-synthesize modules, the type is `IsModule m c -> m ifc`, and the
-    -- body is the module definition directly.
-    go (Def i (TIsModule (TVar iM) (TVar iC) `TArrow` TApp (TVar iM') [tIfc])
-            [Clause [PTcDict] body])
-      | iM == iM' = M.singleton (idName i) (BSVModule i tIfc body, 0)
-    go _ = M.empty
+-- Split a function type into a list of type variables, a list of argument
+-- types, and a return type.
+splitFnTy :: Ty -> ([Id], [Ty], Ty)
+splitFnTy (TForall tyVars ty') =
+    let (vars', args', ret') = splitFnTy ty' in
+    (tyVars ++ vars', args', ret')
+splitFnTy (TArrow argTy ty') =
+    let (vars', args', ret') = splitFnTy ty' in
+    (vars', argTy : args', ret')
+splitFnTy ty = ([], [], ty)
 
-    moduleMap = M.unionsWith (\(a, ap) (b, bp) ->
-        if ap > bp then (a, ap) else (b, bp)) (map go $ toList $ packageDefs p)
+buildFnTy :: [Id] -> [Ty] -> Ty -> Ty
+buildFnTy [] [] retTy = retTy
+buildFnTy [] (argTy : argTys) retTy = TArrow argTy $ buildFnTy [] argTys retTy
+buildFnTy tyVars argTys retTy = TForall tyVars $ buildFnTy [] argTys retTy
+
+splitLambda :: Expr -> ([Pat], Expr)
+splitLambda (ELam ps e') =
+    let (pats', body') = splitLambda e' in
+    (ps ++ pats', body')
+splitLambda e = ([], e)
+
+buildLambda :: [Pat] -> Expr -> Expr
+buildLambda [] e = e
+buildLambda ps e = ELam ps e
+
+-- # Module processing
+--
+-- Modules come in two forms.
+--
+-- For modules with the `(* synthesize *)` attribute, `bsc` produces a pair of
+-- definitions:
+--
+--      mkFoo :: forall m c. IsModule m c -> Params... -> m IFC
+--      mkFoo <dict> = mkFoo @m @c <dict>
+--
+--      mkFoo- :: Params... -> Module IFC-
+--      mkFoo- = \params ->
+--          let mkFoo :: Params... -> Module IFC
+--              mkFoo = \params... -> <module body>
+--          in liftM ... mkFoo
+--
+-- For modules without `(* synthesize *)`, `bsc` produces only a single
+-- definition:
+--
+--      mkFoo :: forall m c. IsModule m c -> Params... -> m IFC
+--      mkFoo <dict> = \params... -> <module body>
+--
+-- For consistency, we standardize on the second form, except we replace the
+-- return type `m IFC` with `Module IFC`.  For synthesized modules,
+-- instantiations of the module call the `mkFoo` definition, not `mkFoo-`, so
+-- the arguments passed at the call site are consistent with the second form.
+
+-- Check if a `Def` is the dummy `mkFoo = mkFoo` definition generated for
+-- synthesized modules.
+isDummyDef (Def (Id name _ _) _ [Clause [PTcDict] e])
+  | EApp (EVar (Id name' _ _)) [_, _] [ETcDict] <- e
+  = name == T.takeWhileEnd (/= '.') name'
+isDummyDef _ = False
+
+convertModule :: Def -> Maybe BSVModule
+convertModule d | isDummyDef d = Nothing
+-- Synthesized module case.  This case is looking at the `mkFoo-` definition,
+-- which needs adjustments to its type and value to get into the standard form.
+convertModule (Def _ ty cs)
+  | [Clause [] body] <- cs
+  , (args, ELet (Def i ty' [Clause [] body']) _) <- splitLambda body
+  , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
+  = Just $ BSVModule i
+    (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
+    body'
+  where
+    iM = Id "_m__" 0 0
+    iC = Id "_c__" 0 0
+    dictTy = TIsModule (TVar iM) (TVar iC)
+-- Non-synthesized module case.  The only adjustment required is changing the
+-- return type.
+convertModule (Def i ty cs)
+  | [Clause [PTcDict] body] <- cs
+  , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
+  , (TIsModule (TVar iM') (TVar _iC) : _) <- argTys
+  , iM == iM'
+  = Just $ BSVModule i
+    (buildFnTy tyVars argTys (TModule ifcTy))
+    body
+convertModule _ = Nothing
+
+isModDict iM (TIsModule (TVar iM') (TVar _)) = iM == iM'
+isModDict _ _ = False
+
+addPackageName :: Id -> BSVModule -> BSVModule
+addPackageName (Id pkgName _ _) (BSVModule (Id name l c) t e) =
+    BSVModule (Id (pkgName <> "." <> name) l c) t e
+
+findPackageModules :: Package -> [BSVModule]
+findPackageModules p = 
+    map (addPackageName $ packageId p) $
+    mapMaybe convertModule $
+    toList $ packageDefs p
 
 extractDesign :: [Package] -> A.Design ()
 extractDesign ps = A.Design archMods
@@ -108,16 +193,46 @@ extractDesign ps = A.Design archMods
             traceShow "ran Action not in any rule" $
             "[[error: no rule]]"
         , esRuleCounter = 0
+        , esStructs = structs
+        , esDefs = defs
+        , esModMap =
+            traceShow ("known modules", M.keys modMap) $ modMap
         }
     archMods = S.fromList $ evalState (mapM extractModule bsvMods) initState
 
+    structs = M.unions $ do
+        p <- ps
+        s <- toList $ packageStructs p
+        return $ M.singleton (idName $ structId s) s
+
+    defs = M.unions $ do
+        p <- ps
+        d <- toList $ packageDefs p
+        return $ M.singleton (idName $ defId d) d
+
+    modMap = M.fromList $
+        zipWith (\(BSVModule (Id name _ _) ty _) idx -> (name, (idx, ty)))
+            bsvMods [0..]
+
 extractModule :: BSVModule -> ExtractM (A.Module ())
-extractModule (BSVModule (Id name _ _) _ body) = do
+extractModule (BSVModule (Id name _ _) ty body) = do
+    traceM (" --- extracting module " ++ show name ++ " ---")
+    traceM (T.unpack $ printAny ty)
+    traceM (T.unpack $ printAny body)
+    traceM "---"
     let initMod = A.Module name S.empty S.empty S.empty S.empty S.empty S.empty
     m <- withModule initMod $ do
-        v <- eval M.empty body >>= runModule
-        traceM (show ("module", name, "got value:", v))
-        extractMethods v
+        v <- eval M.empty body
+
+        (numTys, numVals) <- countArgs v
+        when (numTys > 0) $ traceM $
+            show name ++ ": can't provide type arguments to module body"
+        let argVals = replicate numVals VConst
+
+        v' <- if numVals > 0 then appValue v [] argVals else return v
+        m <- runModule v'
+        traceM (show ("module", name, "got value:", m))
+        extractMethods m
         return ()
     return $
         reconnectNets $
@@ -125,10 +240,14 @@ extractModule (BSVModule (Id name _ _) _ body) = do
 
 extractMethods :: Value -> ExtractM ()
 extractMethods (VStruct _ fs) = do
-    forM_ (M.toList fs) $ \(rawName, val) -> do
-        let name = T.takeWhileEnd (/= '.') rawName
-        traceM $ "extracting method " ++ show name ++ " = " ++ show val
-        extractMethod name val
+    forM_ (M.toList fs) $ \(rawName, val) -> case val of
+        -- If an interface contains a subinterface, the module structs will be
+        -- nested.
+        VStruct _ _ -> extractMethods val
+        _ -> do
+            let name = T.takeWhileEnd (/= '.') rawName
+            traceM $ "extracting method " ++ show name ++ " = " ++ show val
+            extractMethod name val
 extractMethods v = traceM ("can't extract methods from " ++ show v)
 
 extractMethod :: Text -> Value -> ExtractM ()
@@ -149,7 +268,7 @@ extractMethod name v = goInputs v
         goOutput v'
     goAction v = goOutput v
 
-    goOutput v | trace ("goOutput: got " ++ show v) False = undefined
+    goOutput v | traceShow ("goOutput: got", v, "for", name) False = undefined
     goOutput (VNet netId) = do
         genOutputPort (name <> ".out") netId
     goOutput VConst = return ()
@@ -163,7 +282,7 @@ funcArgNames (VClosure ps _ _) =
         Just name -> name) [0..] ps
 funcArgNames (VPartApp v _ args) =
     drop (length args) <$> funcArgNames v
-funcArgNames (VModuleCtor _) =
+funcArgNames (VModuleCtor _ _ _) =
     traceShow "funcArgNames: ModuleCtor case NYI" $ return []
 funcArgNames (VPrim _) =
     traceShow "funcArgNames: Prim case NYI" $ return []
@@ -192,13 +311,16 @@ data Value =
 
     -- Structs are used to represent whole modules: a module definition in the
     -- source turns into a monadic computation returning a struct.
-    | VStruct Text (Map Text Value)
+    | VStruct Ty (Map Text Value)
+    -- Struct field accessor function
+    | VFieldAcc Text Text
 
     -- Function-like values.
     | VClosure [Pat] Scope Expr
     -- Partial application.
     | VPartApp Value [Ty] [Value]
-    | VModuleCtor Int
+    | VModuleCtor A.ModId Int Int
+    | VModuleMethod Text Text
     | VPrim Prim
 
     -- Monadic computations.  These are processed by `runModule` and
@@ -208,7 +330,7 @@ data Value =
     -- Module monad primitives.
     | VNamed Text Value
     | VMkReg Ty
-    | VMkModule Int [Ty] [Value]
+    | VMkModule A.ModId [Ty] [Value]
     | VAddRules [RuleVal]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
@@ -228,6 +350,9 @@ data RuleVal = RuleVal Text [Value] Value
 
 type Scope = Map Text Value
 
+badEval msg = badEval' msg VUnknown
+badEval' msg value = traceShow ("evaluation failure:", msg) value
+
 
 -- Evaluate `e` in `sc`.  This lives in the `ExtractM` monad because some
 -- evaluation steps produce nets, logics, etc. in the current module.  This
@@ -236,7 +361,19 @@ eval :: Scope -> Expr -> ExtractM Value
 eval _ e | traceShow ("evaluate", e) False = undefined
 eval sc (EVar i@(Id name _ _))
   | Just v <- M.lookup name sc = return v
-  | otherwise = traceShow ("unknown variable", i) $ return VUnknown
+  | otherwise = do
+    optMod <- use $ _esModMap . at name
+    optDef <- use $ _esDefs . at name
+
+    case (optMod, optDef) of
+        (Just (modId, ty), _) -> do
+            let (tyVars, argTys, retTy) = splitFnTy ty
+            return $ VModuleCtor modId (length tyVars) (length argTys)
+        (Nothing, Just (Def _ _ [Clause [] e])) -> eval M.empty e
+        (Nothing, Just (Def _ _ [Clause ps e])) -> eval M.empty $ ELam ps e
+        (Nothing, Just (Def _ _ _)) -> return $
+            badEval ("reference to multi-clause def (NYI)", name)
+        (Nothing, Nothing) -> return $ badEval ("unknown variable", name)
 eval sc (ELam ps body) = return $ VClosure ps sc body
 eval sc (EApp f tys args) = do
     fv <- eval sc f
@@ -249,21 +386,22 @@ eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e) =
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
 -- would be to implement, but it doesn't seem to be used very often.
 eval sc (ELetRec ds e) =
-    traceShow ("letrec is not yet supported", [name | Def (Id name _ _) _ _ <- ds]) $
-    let sc' = M.fromList [(name, VUnknown) | Def (Id name _ _) _ _ <- ds] in
+    let go name = (name, badEval ("letrec binding (NYI)", name)) in
+    let sc' = M.fromList $ map (go . idName . defId) ds in
     eval sc' e
 
 eval sc (ELit _) = return VConst
-eval sc (ERules _) = traceShow ("found unraised ERules during eval") $ return VUnknown
-eval sc (EStatic p f) = traceShow ("EStatic NYI", p, f) $ return VUnknown
+-- ERules should be converted to EAddRules by RaiseRaw
+eval sc (ERules _) = return $ badEval ("ERules unsupported")
+eval sc (EStatic p f) = return $ badEval ("EStatic NYI", p, f)
 
-eval sc (EStruct (TCon (Id sName _ _)) fs) = do
+eval sc (EStruct TUnit []) = return VConst
+eval sc (EStruct (TCon _) []) = return VConst
+eval sc (EStruct ty fs) = do
     fvs <- forM fs $ \(i, expr) -> do
         val <- eval sc expr
         return (idName i, val)
-    return $ VStruct sName $ M.fromList fvs
-eval sc (EStruct ty _) =
-    traceShow "EStruct with non-TCon type is not supported" $ return VUnknown
+    return $ VStruct ty $ M.fromList fvs
 
 eval sc (EPrim p) = return $ VPrim p
 eval sc (EDo ss e) = case ss of
@@ -293,8 +431,7 @@ eval sc (EBinOp op l r) = do
     lv <- eval sc l
     rv <- eval sc r
     appPrim (PBinOp op) [] [lv, rv]
-
-eval sc (EUnknown _) = return VUnknown
+eval sc (EUnknown cbor) = return $ badEval ("EUnknown", cbor)
 
 
 evalRule sc (Rule name conds body) = do
@@ -308,11 +445,12 @@ evalRule sc (Rule name conds body) = do
 
 
 -- Apply a value to (type and value) arguments.
+appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
 appValue f tys vals | traceShow ("apply", f, tys, vals) False = undefined
-appValue f tys [] | not $ isFunc f =
-    traceShow ("can't apply", f, "to type arguments", tys) $ return f
-appValue f tys vals | not $ isFunc f =
-    traceShow ("can't apply", f, "to arguments", tys, vals) $ return VUnknown
+appValue f tys [] | not $ isFunc f = return $
+    badEval' ("value doesn't accept type arguments", f, tys) f
+appValue f tys vals | not $ isFunc f = return $
+    badEval ("value doesn't accept arguments", f, tys, vals)
 appValue f tys vals = do
     (numTys, numVals) <- countArgs f
     -- Partial application is handled by the individual `appFoo` functions.
@@ -333,12 +471,14 @@ appValue f tys vals = do
         -- This last one is an error case.  We have not enough types and too
         -- many args, or vice versa.
         (False, True)
-          | not $ null moreVals ->
-            traceShow ("can't apply", f, "to arguments") $ return VUnknown
+          | not $ null moreVals -> return $
+            badEval ("applied value to too few types and too many arguments",
+                f, tys, vals)
           | otherwise ->
             -- Discard the excess type arguments and hope for the best.
-            traceShow ("too many type arguments for", f) $
-                appValue (mkPartApp f exactTys exactVals) [] moreVals
+            badEval' ("applied value to too many types and too few arguments",
+                f, tys, vals)
+                <$> appValue (mkPartApp f exactTys exactVals) [] moreVals
 
 -- Like `appValue`, but the caller must provide exactly the right number of
 -- `tys` and `vals`.
@@ -346,17 +486,10 @@ appExact f tys vals = case f of
     VClosure ps sc' body -> appClosure ps vals sc' body
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
-    -- TODO: VModuleCtor modId -> ...
+    VModuleCtor modId _ _ -> return $ VMkModule modId tys vals
     -- Non-function values request no arguments, so we aren't really applying
     -- anything here.
     _ -> return f
-
-    -- For applying a non-function value to types, return the value
-    -- unchanged.  This is a workaround for our lack of support for partial
-    -- application of type arguments.
---    _ | null argvs -> traceShow ("can't apply", fv, "to types") $ return fv
-    -- Applying a non-function to values is a more serious error.
---    _ -> traceShow ("can't apply", fv, "to arguments") $ return VUnknown
 
 mkPartApp (VPartApp f tys vals) tys' vals' =
     VPartApp f (tys ++ tys') (vals ++ vals')
@@ -365,7 +498,7 @@ mkPartApp f tys vals =
 
 isFunc (VClosure _ _ _) = True
 isFunc (VPartApp _ _ _) = True
-isFunc (VModuleCtor _) = True
+isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
 isFunc _ = False
 
@@ -377,7 +510,7 @@ countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
     return (numTys - length tys, numVals - length vals)
 countArgs (VPrim p) = return $ countArgsPrim p
--- TODO: countArgs (VModuleCtor modId) = ...
+countArgs (VModuleCtor _ numTys numVals) = return (numTys, numVals)
 countArgs _ = return (0, 0)
 
 appClosure :: [Pat] -> [Value] -> Scope -> Expr -> ExtractM Value
@@ -404,6 +537,7 @@ countArgsPrim :: Prim -> (Int, Int)
 countArgsPrim p = case p of
     PReturn -> (0, 1)
     PBind -> (0, 2)
+    PMkReg -> (2, 1)
     PMkRegU -> (2, 0)
     PPack -> (0, 1)
     PUnpack -> (0, 1)
@@ -414,26 +548,41 @@ countArgsPrim p = case p of
     PUnOp _ -> (0, 1)
     PBinOp _ -> (0, 2)
     PSetName _ -> (0, 1)
+    PIf -> (1, 3)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
 appPrim PBind [] [m, k] = return $ VBind m k
+appPrim PMkReg [ty, _width] [_init] = return $ VMkReg ty
 appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
 appPrim PTruncate [] [v] = return v
-appPrim PIndex [] [v, i] = traceShow ("PIndex NYI") $ return VUnknown
+appPrim PIndex [] [v, i] = return $ badEval ("PIndex NYI", v, i)
 appPrim PRegRead [] [VDff _ qNetId] = return $ VNet qNetId
 appPrim PRegWrite [] [VDff muxIdx _, v] = return $ VRegWrite muxIdx v
-appPrim (PUnOp _) [] [VConst] = return VConst
-appPrim (PUnOp _) [] [VNet v] = VNet <$> genCombLogic (v <| S.empty)
-appPrim (PBinOp _) [] [VConst, VConst] = return VConst
-appPrim (PBinOp _) [] [VConst, VNet b] = VNet <$> genCombLogic (b <| S.empty)
-appPrim (PBinOp _) [] [VNet a, VConst] = VNet <$> genCombLogic (a <| S.empty)
-appPrim (PBinOp _) [] [VNet a, VNet b] = VNet <$> genCombLogic (a <| b <| S.empty)
+appPrim (PUnOp _) [] vs | Just inps <- collectNets vs =
+    if S.null inps then return VConst else VNet <$> genCombLogic inps
+appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
+    if S.null inps then return VConst else VNet <$> genCombLogic inps
+-- `if` in monadic code is NYI.  Non-monadic `if` generates a mux.
+appPrim PIf [ty] vs
+  | not $ isComputationType ty, Just inps <- collectNets vs =
+    if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim (PSetName name) [] [c] = return $ VNamed name c
-appPrim p tys vals =
-    traceShow ("bad arguments for primitive", p, tys, vals) $ return VUnknown
+appPrim p tys vals = return $
+    badEval ("bad arguments for primitive", p, tys, vals)
+
+-- Process a list of values.  On `VNet`, produces the `NetId`.  On `VConst`,
+-- produces nothing.  If any other value is present in the input, `collectNets`
+-- returns `Nothing`.
+collectNets :: [Value] -> Maybe (Seq A.NetId)
+collectNets vs = go vs
+  where
+    go [] = Just S.empty
+    go (VNet netId : vs) = (netId <|) <$> go vs
+    go (VConst : vs) = go vs
+    go (_ : vs) = Nothing
 
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
@@ -471,6 +620,9 @@ isComputation (VAddRules _) = True
 isComputation (VRegWrite _ _) = True
 isComputation _ = False
 
+isComputationType (TModule _) = True
+isComputationType _ = False
+
 -- Run a monadic computation.  `handle` should implement the behavior of all
 -- the primitive operations of the monad.  (`VBind` and `VReturn` are handled
 -- internally.)
@@ -496,6 +648,7 @@ handleModule :: Value -> ExtractM Value
 handleModule c = go Nothing c
   where
     go :: Maybe Text -> Value -> ExtractM Value
+    go name comp | traceShow ("running (Module)", comp, name) False = undefined
     go _ (VNamed name c) = go (Just name) c
     go optName (VMkReg _ty) = do
         name <- case optName of
@@ -520,12 +673,29 @@ handleModule c = go Nothing c
             ()
 
         return $ VDff muxIdx qNet
+    go optName (VMkModule modId tys vals) = do
+        name <- case optName of
+            Just name -> return name
+            Nothing -> do
+                count <- S.length <$> use (_esCurModule . A._moduleLogics)
+                return $ "_mod" <> T.pack (show count)
+
+        idx <- addLogic $ A.Logic
+            -- TODO: handle params
+            (A.LkInst $ A.Inst modId name S.empty)
+            -- TODO: get method signatures from interface struct definition
+            S.empty
+            S.empty
+            ()
+        
+        -- TODO: generate a rule mux for each method
+        return $ VModInst idx
     go _ (VAddRules rs) = do
         forM_ rs $ \(RuleVal name conds body) ->
             -- TODO: do something with conds
             withRuleName name $ runAction body
         return VConst   -- returns unit
-    go _ c = traceShow ("unsupported Module action", c) $ return VUnknown
+    go _ c = return $ badEval ("unsupported Module computation", c)
 
 runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
@@ -558,4 +728,4 @@ handleAction c = go c
             A._logicInputs %= (|> pin)
 
         return VConst   -- reg write returns unit
-    go c = traceShow ("unsupported Action action", c) $ return VUnknown
+    go c = return $ badEval ("unsupported Action computation", c)
