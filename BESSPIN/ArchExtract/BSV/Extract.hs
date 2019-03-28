@@ -116,7 +116,7 @@ data BSVModule = BSVModule Id Ty Expr
 -- synthesized modules.
 isDummyDef (Def (Id name _ _) _ [Clause [PTcDict] e])
   | EApp (EVar (Id name' _ _)) [_, _] [ETcDict] <- e
-  = name == T.takeWhileEnd (/= '.') name'
+  = name == lastWord name'
 isDummyDef _ = False
 
 convertModule :: Def -> Maybe BSVModule
@@ -175,19 +175,6 @@ extractDesign :: [Package] -> A.Design ()
 extractDesign ps = A.Design archMods
   where
     bsvMods = concatMap findPackageModules ps
-    initState = ExtractState
-        { esCurModule = error "no current module"
-        , esCurRuleName =
-            traceShow "ran Action not in any rule" $
-            "[[error: no rule]]"
-        , esRuleCounter = 0
-        , esStructs = structs
-        , esDefs = defs
-        , esModMap =
-            traceShow ("known modules", M.keys modMap) $ modMap
-        , esIfcSpecs = ifcSpecs
-        }
-    archMods = S.fromList $ evalState (mapM extractModule bsvMods) initState
 
     structs = M.unions $ do
         p <- ps
@@ -211,8 +198,23 @@ extractDesign ps = A.Design archMods
         zipWith (\(BSVModule (Id name _ _) ty _) idx ->
             (name, (idx, ty, modIfc name ty))) bsvMods [0..]
 
-extractModule :: BSVModule -> ExtractM (A.Module ())
-extractModule (BSVModule (Id name _ _) ty body) = do
+    initState = ExtractState
+        { esCurModule = error "no current module"
+        , esCurRuleName =
+            traceShow "ran Action not in any rule" $
+            "[[error: no rule]]"
+        , esRuleCounter = 0
+        , esStructs = structs
+        , esDefs = defs
+        , esModMap =
+            traceShow ("known modules", M.keys modMap) $ modMap
+        , esIfcSpecs = ifcSpecs
+        }
+    archMods = S.fromList $ evalState (mapM go bsvMods) initState
+    go m@(BSVModule (Id name _ _) ty _) = extractModule m (modIfc name ty)
+
+extractModule :: BSVModule -> IfcSpec -> ExtractM (A.Module ())
+extractModule (BSVModule (Id name _ _) ty body) ifc = do
     traceM (" --- extracting module " ++ show name ++ " ---")
     traceM (T.unpack $ printAny ty)
     traceM (T.unpack $ printAny body)
@@ -229,8 +231,7 @@ extractModule (BSVModule (Id name _ _) ty body) = do
         v' <- if numVals > 0 then appValue v [] argVals else return v
         m <- runModule v'
         traceM (show ("module", name, "got value:", m))
-        extractMethods m
-        return ()
+        buildIfcPorts "" ifc m
     return $
         reconnectNets $
         m
@@ -242,7 +243,7 @@ extractMethods (VStruct _ fs) = do
         -- nested.
         VStruct _ _ -> extractMethods val
         _ -> do
-            let name = T.takeWhileEnd (/= '.') rawName
+            let name = lastWord rawName
             traceM $ "extracting method " ++ show name ++ " = " ++ show val
             extractMethod name val
 extractMethods v = traceM ("can't extract methods from " ++ show v)
@@ -279,11 +280,9 @@ funcArgNames (VClosure ps _ _) =
         Just name -> name) [0..] ps
 funcArgNames (VPartApp v _ args) =
     drop (length args) <$> funcArgNames v
-funcArgNames (VModuleCtor _ _ _) =
-    traceShow "funcArgNames: ModuleCtor case NYI" $ return []
-funcArgNames (VPrim _) =
-    traceShow "funcArgNames: Prim case NYI" $ return []
-funcArgNames v = error $ "not a function: " ++ show v
+funcArgNames v = do
+    (_, numVals) <- countArgs v
+    return ["_arg" <> T.pack (show i) | i <- [0 .. numVals - 1]]
 
 patName :: Pat -> Maybe Text
 patName (PVar (Id name _ _)) = Just name
@@ -412,14 +411,14 @@ eval sc (EStatic (Id p _ _) (Id f _ _)) = do
     let numTys = case s of
             Nothing -> traceShow ("saw accessor for unknown struct", p) 0
             Just s -> length $ structTyParams s
-    return $ VFieldAcc (T.takeWhileEnd (/= '.') f) numTys
+    return $ VFieldAcc (lastWord f) numTys
 
 eval sc (EStruct TUnit []) = return VConst
 eval sc (EStruct (TCon _) []) = return VConst
 eval sc (EStruct ty fs) = do
     fvs <- forM fs $ \(i, expr) -> do
         val <- eval sc expr
-        return (idName i, val)
+        return (lastWord $ idName i, val)
     return $ VStruct ty $ M.fromList fvs
 
 eval sc (EPrim p) = return $ VPrim p
@@ -506,7 +505,7 @@ appExact f tys vals = case f of
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
-    VFieldAcc name _ -> case vals of
+    VFieldAcc name _ -> traceShow ("access", name, vals) $ case vals of
         [VStruct _ fs]
           | Just v <- M.lookup name fs -> return v
           | otherwise -> return $ badEval ("unknown struct field", name, fs)
@@ -515,10 +514,8 @@ appExact f tys vals = case f of
     VMethod _ _ _ -> return $ VCompute f tys vals
     VCombMethod _ inNets outNet -> do
         argNets <- mapM asNet vals
-        forM_ (zip argNets (toList inNets)) $ \(a,b) -> do
-            a' <- netPin a
-            b' <- netPin b
-            addLogic $ A.Logic A.LkNetAlias (S.singleton a') (S.singleton b') ()
+        forM_ (zip argNets (toList inNets)) $ \(a,b) ->
+            void $ mkNetAlias' a b >>= addLogic
         return $ VNet outNet
     -- Non-function values request no arguments, so we aren't really applying
     -- anything here.
@@ -760,18 +757,17 @@ buildModule name modId ifc = do
 -- `VCombMethod`) objects representing the interface.
 buildIfcLogic :: Text -> Int -> IfcSpec -> ExtractM Value
 buildIfcLogic prefix instId ifc = do
-    -- parts :: [(Value, Seq Pin, Seq Pin)]
     kvs <- forM (ifcEntries ifc) $ \(name, entry) -> do
-        v <- buildIfcItem (prefix <> name) instId (ieItem entry)
+        v <- buildIfcItemLogic (prefix <> name) instId (ieItem entry)
         return (name, v)
 
     -- TODO: get the interface name so we can use `TIfc` here
     return $ VStruct TUnit (M.fromList kvs)
 
-buildIfcItem :: Text -> Int -> IfcItem -> ExtractM Value
-buildIfcItem qualName instId (IiSubIfc ifc) =
+buildIfcItemLogic :: Text -> Int -> IfcItem -> ExtractM Value
+buildIfcItemLogic qualName instId (IiSubIfc ifc) =
     buildIfcLogic (qualName <> ".") instId ifc
-buildIfcItem qualName instId (IiMethod m) = do
+buildIfcItemLogic qualName instId (IiMethod m) = do
     inNets <- forM (imArgNames m) $ \argName ->
         addNet $ A.mkNet (qualName <> "." <> argName) 0 A.TUnknown
     outNets <- forM [0 .. methodOutPorts m - 1] $ \_ ->
@@ -798,9 +794,21 @@ runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
 
 netPin :: A.NetId -> ExtractM A.Pin
-netPin netId = do
-    ty <- use $ _esCurModule . A._moduleNet netId . A._netTy
+netPin netId = zoom (_esCurModule . A._moduleNet netId) $ do
+    ty <- use A._netTy
     return $ A.Pin netId ty
+
+netPort :: A.NetId -> ExtractM A.Port
+netPort netId = zoom (_esCurModule . A._moduleNet netId) $ do
+    name <- use A._netName
+    ty <- use A._netTy
+    return $ A.Port name netId ty
+
+mkNetAlias' :: A.NetId -> A.NetId -> ExtractM (A.Logic ())
+mkNetAlias' a b = do
+    a' <- netPin a
+    b' <- netPin b
+    return $ A.mkNetAlias a' b'
 
 handleAction :: Value -> ExtractM Value
 handleAction c = go c
@@ -825,3 +833,61 @@ handleAction c = go c
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
     go c = return $ badEval ("unsupported Action computation", c)
+
+
+
+-- Generate input/output ports for each method in `ifc`, and connect them up to
+-- the implementations in `impl`.  Generated port names are prefixed with
+-- `prefix`.
+buildIfcPorts :: Text -> IfcSpec -> Value -> ExtractM ()
+buildIfcPorts prefix ifc impl = do
+    let vals = case impl of
+            VStruct _ x -> x
+            _ -> badEval' ("interface impl is not a struct", impl, ifc) M.empty
+    forM_ (ifcEntries ifc) $ \(name, entry) -> do
+        let v = case M.lookup name vals of
+                Just x -> x
+                Nothing -> badEval ("interface impl is missing an entry", name, vals, ifc)
+        buildIfcItemPorts (prefix <> name) (ieItem entry) v
+
+buildIfcItemPorts :: Text -> IfcItem -> Value -> ExtractM ()
+buildIfcItemPorts qualName (IiSubIfc ifc) impl =
+    buildIfcPorts (qualName <> ".") ifc impl
+buildIfcItemPorts qualName (IiMethod m) impl = do
+    inNets <- forM (imArgNames m) $ \argName ->
+        addNet $ A.mkNet (qualName <> "." <> argName) 0 A.TUnknown
+    outNets <- forM [0 .. methodOutPorts m - 1] $ \_ ->
+        addNet $ A.mkNet (qualName <> ".return") 0 A.TUnknown
+
+    inPorts <- S.fromList <$> mapM netPort inNets
+    outPorts <- S.fromList <$> mapM netPort outNets
+    _esCurModule . A._moduleInputs %= (<> inPorts)
+    _esCurModule . A._moduleOutputs %= (<> outPorts)
+
+    case imKind m of
+        MkComb -> do
+            val <- if hasArgs then appValue impl [] (map VNet inNets)
+                else return impl
+            case val of
+                VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
+                VConst -> return ()
+                _ -> badEval' ("combinational method returned non-logic value", val) $
+                    return ()
+
+        MkAction hasResult -> do
+            comp <- if hasArgs then appValue impl [] (map VNet inNets)
+                else return impl
+            val <- withRuleName qualName $ runAction comp
+            when hasResult $ case val of
+                VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
+                VConst -> return ()
+                _ -> badEval' ("action method returned non-logic value", val) $
+                    return ()
+  where
+    hasArgs = not $ null $ imArgNames m
+
+
+
+-- Get the last dot-separated word from `t`.
+lastWord :: Text -> Text
+lastWord t = T.takeWhileEnd (/= '.') t

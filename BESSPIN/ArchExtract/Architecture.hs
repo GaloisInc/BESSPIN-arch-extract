@@ -417,6 +417,9 @@ zipAnnWith f x y = scatterAnn (zipWith f (gatherAnn x) (gatherAnn y)) x
 mkNet :: Text -> Int -> Ty -> Net ()
 mkNet name prio ty = Net name prio S.empty S.empty ty ()
 
+mkNetAlias :: Pin -> Pin -> Logic ()
+mkNetAlias a b = Logic LkNetAlias (S.singleton a) (S.singleton b) ()
+
 
 -- Lenses
 
