@@ -124,9 +124,6 @@ setParamDefault i e = do
 nextLogicIdx :: ExtractM Int
 nextLogicIdx = S.length <$> use (_esModule . _moduleLogics)
 
-mkNet :: Text -> Int -> A.Ty -> A.Net ()
-mkNet name prio ty = Net name prio S.empty S.empty ty ()
-
 
 lookupNet :: NetOrigin -> ExtractM (Maybe (NetId, A.Ty))
 lookupNet no = use $ _esDeclNets . at no

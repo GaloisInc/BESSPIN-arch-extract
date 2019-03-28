@@ -28,6 +28,7 @@ import BESSPIN.ArchExtract.Lens
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
+import BESSPIN.ArchExtract.BSV.Interface
 import BESSPIN.ArchExtract.Simplify (reconnectNets)
 
 
@@ -37,7 +38,8 @@ data ExtractState = ExtractState
     , esRuleCounter :: Int
     , esStructs :: Map Text Struct
     , esDefs :: Map Text Def
-    , esModMap :: Map Text (A.ModId, Ty)
+    , esModMap :: Map Text (A.ModId, Ty, IfcSpec)
+    , esIfcSpecs :: Map Text IfcSpec
     }
 
 makeLenses' ''ExtractState
@@ -83,32 +85,6 @@ nextRuleIdx = do
 
 data BSVModule = BSVModule Id Ty Expr
 
--- Split a function type into a list of type variables, a list of argument
--- types, and a return type.
-splitFnTy :: Ty -> ([Id], [Ty], Ty)
-splitFnTy (TForall tyVars ty') =
-    let (vars', args', ret') = splitFnTy ty' in
-    (tyVars ++ vars', args', ret')
-splitFnTy (TArrow argTy ty') =
-    let (vars', args', ret') = splitFnTy ty' in
-    (vars', argTy : args', ret')
-splitFnTy ty = ([], [], ty)
-
-buildFnTy :: [Id] -> [Ty] -> Ty -> Ty
-buildFnTy [] [] retTy = retTy
-buildFnTy [] (argTy : argTys) retTy = TArrow argTy $ buildFnTy [] argTys retTy
-buildFnTy tyVars argTys retTy = TForall tyVars $ buildFnTy [] argTys retTy
-
-splitLambda :: Expr -> ([Pat], Expr)
-splitLambda (ELam ps e') =
-    let (pats', body') = splitLambda e' in
-    (ps ++ pats', body')
-splitLambda e = ([], e)
-
-buildLambda :: [Pat] -> Expr -> Expr
-buildLambda [] e = e
-buildLambda ps e = ELam ps e
-
 -- # Module processing
 --
 -- Modules come in two forms.
@@ -149,7 +125,7 @@ convertModule d | isDummyDef d = Nothing
 -- which needs adjustments to its type and value to get into the standard form.
 convertModule (Def _ ty cs)
   | [Clause [] body] <- cs
-  , (args, ELet (Def i ty' [Clause [] body']) _) <- splitLambda body
+  , (_, ELet (Def i ty' [Clause [] body']) _) <- splitLambda body
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
   = Just $ BSVModule i
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
@@ -173,6 +149,11 @@ convertModule _ = Nothing
 isModDict iM (TIsModule (TVar iM') (TVar _)) = iM == iM'
 isModDict _ _ = False
 
+structAddPackageName :: Id -> Struct -> Struct
+structAddPackageName (Id pkgName _ _) s =
+    let Id name l c = structId s in
+    s { structId = Id (pkgName <> "." <> name) l c }
+
 addPackageName :: Id -> BSVModule -> BSVModule
 addPackageName (Id pkgName _ _) (BSVModule (Id name l c) t e) =
     BSVModule (Id (pkgName <> "." <> name) l c) t e
@@ -182,6 +163,13 @@ findPackageModules p =
     map (addPackageName $ packageId p) $
     mapMaybe convertModule $
     toList $ packageDefs p
+
+returnedIfcName :: Ty -> Maybe Text
+returnedIfcName ty
+  | (_, _, ret) <- splitFnTy ty
+  , TModule (TIfc (Id name _ _)) <- ret
+  = Just name
+  | otherwise = Nothing
 
 extractDesign :: [Package] -> A.Design ()
 extractDesign ps = A.Design archMods
@@ -197,22 +185,31 @@ extractDesign ps = A.Design archMods
         , esDefs = defs
         , esModMap =
             traceShow ("known modules", M.keys modMap) $ modMap
+        , esIfcSpecs = ifcSpecs
         }
     archMods = S.fromList $ evalState (mapM extractModule bsvMods) initState
 
     structs = M.unions $ do
         p <- ps
         s <- toList $ packageStructs p
-        return $ M.singleton (idName $ structId s) s
+        let s' = structAddPackageName (packageId p) s
+        return $ M.singleton (idName $ structId s') s'
 
     defs = M.unions $ do
         p <- ps
         d <- toList $ packageDefs p
         return $ M.singleton (idName $ defId d) d
 
+    ifcSpecs = translateIfcStructs structs
+
+    modIfc name ty = case returnedIfcName ty >>= flip M.lookup ifcSpecs of
+        Nothing ->
+            traceShow ("couldn't find interface for module", name) dummyIfc
+        Just ifc -> ifc
+
     modMap = M.fromList $
-        zipWith (\(BSVModule (Id name _ _) ty _) idx -> (name, (idx, ty)))
-            bsvMods [0..]
+        zipWith (\(BSVModule (Id name _ _) ty _) idx ->
+            (name, (idx, ty, modIfc name ty))) bsvMods [0..]
 
 extractModule :: BSVModule -> ExtractM (A.Module ())
 extractModule (BSVModule (Id name _ _) ty body) = do
@@ -270,7 +267,7 @@ extractMethod name v = goInputs v
 
     goOutput v | traceShow ("goOutput: got", v, "for", name) False = undefined
     goOutput (VNet netId) = do
-        genOutputPort (name <> ".out") netId
+        genOutputPort (name <> ".return") netId
     goOutput VConst = return ()
     goOutput v = traceM $ "unexpected value in method slot: " ++ show v
 
@@ -302,35 +299,52 @@ data Value =
     -- anywhere in place of a `VNet`.
     | VConst
 
-    -- Logic values.  These are used as arguments for various operations in the
-    -- `Action` monad.
-    | VModInst Int
+    -- Function-like values.
+    | VClosure [Pat] Scope Expr
+    -- Partial application.  Much easier to have one unified way of handling
+    -- partial applications, instead of making every single callable type
+    -- handle it separately.
+    | VPartApp Value [Ty] [Value]
+    | VPrim Prim
+
     -- First arg is the index of the register's associated `LkRuleMux` in
     -- `moduleLogics`.  Second arg is the ID of its output net.
     | VDff Int A.NetId
 
+    | VModuleCtor A.ModId (Int, Int) IfcSpec
+    | VMethod
+        (Int, Int)      -- number of type and value arguments
+        Int             -- logic ID of the rule mux for the method's inputs
+        (Maybe A.NetId) -- the output net, if any
+    -- Combinational method.  Similar to `VMethod`, except combinational
+    -- methods don't have rule muxes on their inputs.  Args: LkInst index,
+    -- index of the first input port, index of the output port.
+    | VCombMethod
+        (Int, Int)      -- number of type and value arguments
+        (Seq A.NetId)   -- input nets
+        A.NetId         -- output net
+
     -- Structs are used to represent whole modules: a module definition in the
     -- source turns into a monadic computation returning a struct.
     | VStruct Ty (Map Text Value)
-    -- Struct field accessor function
-    | VFieldAcc Text Text
-
-    -- Function-like values.
-    | VClosure [Pat] Scope Expr
-    -- Partial application.
-    | VPartApp Value [Ty] [Value]
-    | VModuleCtor A.ModId Int Int
-    | VModuleMethod Text Text
-    | VPrim Prim
+    -- Struct field accessor function.  We store only the field name
+    -- (unqualified), to match the keys in `VStruct`.  The Int is the number of
+    -- type arguments the accessor expects.
+    | VFieldAcc Text Int
 
     -- Monadic computations.  These are processed by `runModule` and
     -- `runAction`.
     | VReturn Value
     | VBind Value Value
-    -- Module monad primitives.
+    -- Generic wrapper for monadic computations, represented as a function
+    -- (whose final return type is `m a`) applied to type and value arguments.
+    -- This lets us avoid having separate representations of, say, module
+    -- constructors and the computations that they produce.
+    | VCompute Value [Ty] [Value]
+    -- Module monad primitives.  These are for special cases that don't fit
+    -- into `VCompute`.
     | VNamed Text Value
     | VMkReg Ty
-    | VMkModule A.ModId [Ty] [Value]
     | VAddRules [RuleVal]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
@@ -366,9 +380,9 @@ eval sc (EVar i@(Id name _ _))
     optDef <- use $ _esDefs . at name
 
     case (optMod, optDef) of
-        (Just (modId, ty), _) -> do
+        (Just (modId, ty, ifc), _) -> do
             let (tyVars, argTys, retTy) = splitFnTy ty
-            return $ VModuleCtor modId (length tyVars) (length argTys)
+            return $ VModuleCtor modId (length tyVars, length argTys) ifc
         (Nothing, Just (Def _ _ [Clause [] e])) -> eval M.empty e
         (Nothing, Just (Def _ _ [Clause ps e])) -> eval M.empty $ ELam ps e
         (Nothing, Just (Def _ _ _)) -> return $
@@ -393,7 +407,12 @@ eval sc (ELetRec ds e) =
 eval sc (ELit _) = return VConst
 -- ERules should be converted to EAddRules by RaiseRaw
 eval sc (ERules _) = return $ badEval ("ERules unsupported")
-eval sc (EStatic p f) = return $ badEval ("EStatic NYI", p, f)
+eval sc (EStatic (Id p _ _) (Id f _ _)) = do
+    s <- use $ _esStructs . at p
+    let numTys = case s of
+            Nothing -> traceShow ("saw accessor for unknown struct", p) 0
+            Just s -> length $ structTyParams s
+    return $ VFieldAcc (T.takeWhileEnd (/= '.') f) numTys
 
 eval sc (EStruct TUnit []) = return VConst
 eval sc (EStruct (TCon _) []) = return VConst
@@ -486,7 +505,21 @@ appExact f tys vals = case f of
     VClosure ps sc' body -> appClosure ps vals sc' body
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
-    VModuleCtor modId _ _ -> return $ VMkModule modId tys vals
+    VModuleCtor _ _ _ -> return $ VCompute f tys vals
+    VFieldAcc name _ -> case vals of
+        [VStruct _ fs]
+          | Just v <- M.lookup name fs -> return v
+          | otherwise -> return $ badEval ("unknown struct field", name, fs)
+        _ -> return $
+            badEval ("expected exactly one struct argument", f, vals)
+    VMethod _ _ _ -> return $ VCompute f tys vals
+    VCombMethod _ inNets outNet -> do
+        argNets <- mapM asNet vals
+        forM_ (zip argNets (toList inNets)) $ \(a,b) -> do
+            a' <- netPin a
+            b' <- netPin b
+            addLogic $ A.Logic A.LkNetAlias (S.singleton a') (S.singleton b') ()
+        return $ VNet outNet
     -- Non-function values request no arguments, so we aren't really applying
     -- anything here.
     _ -> return f
@@ -500,6 +533,9 @@ isFunc (VClosure _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
+isFunc (VFieldAcc _ _) = True
+isFunc (VMethod _ _ _) = True
+isFunc (VCombMethod _ _ _) = True
 isFunc _ = False
 
 -- Count the number of type and value arguments that `v` expects to receive.
@@ -510,7 +546,10 @@ countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
     return (numTys - length tys, numVals - length vals)
 countArgs (VPrim p) = return $ countArgsPrim p
-countArgs (VModuleCtor _ numTys numVals) = return (numTys, numVals)
+countArgs (VModuleCtor _ numArgs _) = return numArgs
+countArgs (VFieldAcc _ numTys) = return (numTys, 1)
+countArgs (VMethod numArgs _ _) = return numArgs
+countArgs (VCombMethod numArgs _ _) = return numArgs
 countArgs _ = return (0, 0)
 
 appClosure :: [Pat] -> [Value] -> Scope -> Expr -> ExtractM Value
@@ -584,6 +623,11 @@ collectNets vs = go vs
     go (VConst : vs) = go vs
     go (_ : vs) = Nothing
 
+asNet :: Value -> ExtractM A.NetId
+asNet (VNet n) = return n
+asNet VConst = addNet $ A.mkNet "const" (-1) A.TUnknown
+asNet v = badEval' ("expected a net or const", v) $ asNet VConst
+
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
 genCombLogic :: Seq A.NetId -> ExtractM A.NetId
@@ -594,6 +638,18 @@ genCombLogic inps = do
         (S.singleton $ A.Pin out A.TUnknown)
         ()
     return out
+
+-- Add a new rule access to `muxIdx`, with `nets` as its input nets.  The rule
+-- name is taken from `esCurRuleName`.
+accessRuleMux :: Int -> [A.NetId] -> ExtractM ()
+accessRuleMux muxIdx nets = do
+    ruleName <- use _esCurRuleName
+    pins <- S.fromList <$> mapM netPin nets
+    zoom (_esCurModule . A._moduleLogic muxIdx) $ do
+        A._logicInputs %= (<> pins)
+        A._logicKind %= \lk -> case lk of
+            A.LkRuleMux rs ps -> A.LkRuleMux (rs |> ruleName) ps
+            _ -> error $ "expected RuleMux"
 
 -- Create an input port connected to a fresh net.  Returns the ID of the net.
 genInputPort :: Text -> ExtractM A.NetId
@@ -613,9 +669,9 @@ genOutputPort name netId = do
 
 isComputation (VReturn _) = True
 isComputation (VBind _ _) = True
+isComputation (VCompute _ _ _) = True
 isComputation (VNamed _ _) = True
 isComputation (VMkReg _) = True
-isComputation (VMkModule _ _ _) = True
 isComputation (VAddRules _) = True
 isComputation (VRegWrite _ _) = True
 isComputation _ = False
@@ -673,29 +729,70 @@ handleModule c = go Nothing c
             ()
 
         return $ VDff muxIdx qNet
-    go optName (VMkModule modId tys vals) = do
+    go optName (VCompute (VModuleCtor modId _ ifc) tys vals) = do
         name <- case optName of
             Just name -> return name
             Nothing -> do
                 count <- S.length <$> use (_esCurModule . A._moduleLogics)
                 return $ "_mod" <> T.pack (show count)
 
-        idx <- addLogic $ A.Logic
-            -- TODO: handle params
-            (A.LkInst $ A.Inst modId name S.empty)
-            -- TODO: get method signatures from interface struct definition
-            S.empty
-            S.empty
-            ()
-        
-        -- TODO: generate a rule mux for each method
-        return $ VModInst idx
+        buildModule name modId ifc
     go _ (VAddRules rs) = do
         forM_ rs $ \(RuleVal name conds body) ->
             -- TODO: do something with conds
             withRuleName name $ runAction body
         return VConst   -- returns unit
     go _ c = return $ badEval ("unsupported Module computation", c)
+
+buildModule :: Text -> A.ModId -> IfcSpec -> ExtractM Value
+buildModule name modId ifc = do
+    -- Create the module itself, with no pins.  The pins are added
+    -- incrementally inside `buildIfcLogic`.
+    instId <- addLogic $ A.Logic
+        (A.LkInst $ A.Inst modId name S.empty)
+        S.empty S.empty ()
+
+    buildIfcLogic (name <> ".") instId ifc
+
+-- Generate the logic, nets, etc. for each method in `ifc`, including nested
+-- methods.  Generated names are prefixed with `prefix` (useful for qualifying
+-- the interface's method names).  Returns a `VStruct` of `VMethod` (or
+-- `VCombMethod`) objects representing the interface.
+buildIfcLogic :: Text -> Int -> IfcSpec -> ExtractM Value
+buildIfcLogic prefix instId ifc = do
+    -- parts :: [(Value, Seq Pin, Seq Pin)]
+    kvs <- forM (ifcEntries ifc) $ \(name, entry) -> do
+        v <- buildIfcItem (prefix <> name) instId (ieItem entry)
+        return (name, v)
+
+    -- TODO: get the interface name so we can use `TIfc` here
+    return $ VStruct TUnit (M.fromList kvs)
+
+buildIfcItem :: Text -> Int -> IfcItem -> ExtractM Value
+buildIfcItem qualName instId (IiSubIfc ifc) =
+    buildIfcLogic (qualName <> ".") instId ifc
+buildIfcItem qualName instId (IiMethod m) = do
+    inNets <- forM (imArgNames m) $ \argName ->
+        addNet $ A.mkNet (qualName <> "." <> argName) 0 A.TUnknown
+    outNets <- forM [0 .. methodOutPorts m - 1] $ \_ ->
+        addNet $ A.mkNet (qualName <> ".return") 0 A.TUnknown
+
+    inPins <- S.fromList <$> mapM netPin inNets
+    outPins <- S.fromList <$> mapM netPin outNets
+    zoom (_esCurModule . A._moduleLogic instId) $ do
+        A._logicInputs %= (<> inPins)
+        A._logicOutputs %= (<> outPins)
+
+    case imKind m of
+        MkComb -> return $
+            VCombMethod (imArgCounts m) (S.fromList inNets) (head outNets)
+        MkAction hasResult -> do
+            muxIdx <- addLogic $ A.Logic
+                (A.LkRuleMux S.empty (S.fromList $ imArgNames m))
+                S.empty inPins ()
+            return $ VMethod (imArgCounts m)
+                muxIdx
+                (if hasResult then Just $ head outNets else Nothing)
 
 runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
@@ -719,13 +816,12 @@ handleAction c = go c
             _ ->
                 trace ("bad value in VRegWrite: " ++ show val) $
                 genCombLogic S.empty
-        pin <- netPin netId
 
-        zoom (_esCurModule . A._moduleLogic muxIdx) $ do
-            A._logicKind %= \lk -> case lk of
-                A.LkRuleMux rs ps -> A.LkRuleMux (rs |> name) ps
-                _ -> error $ "VRegWrite muxIdx refers to non-mux?"
-            A._logicInputs %= (|> pin)
+        accessRuleMux muxIdx [netId]
 
         return VConst   -- reg write returns unit
+    go (VCompute (VMethod _ muxIdx optOutNet) _ vals) = do
+        argNets <- mapM asNet vals
+        accessRuleMux muxIdx argNets
+        return $ maybe VConst VNet optOutNet
     go c = return $ badEval ("unsupported Action computation", c)

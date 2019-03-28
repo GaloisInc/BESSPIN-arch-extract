@@ -20,10 +20,13 @@ data Struct = Struct
     { structId :: Id
     , structTyParams :: [Id]
     , structFields :: [Field]
+    , structIsIfc :: Bool
     }
     deriving (Show, Data, Typeable)
 
-data Field = Field Id Ty
+-- A field that contains a function may have a list of default arg names
+-- associated with it.
+data Field = Field Id Ty (Maybe [Id])
     deriving (Show, Data, Typeable)
 
 data Def = Def
@@ -123,6 +126,7 @@ data Pat =
 data Ty =
       TVar Id
     | TCon Id
+    | TIfc Id
     | TNat Int
     | TApp Ty [Ty]
     | TForall [Id] Ty
@@ -147,3 +151,30 @@ data Id = Id Text Int Int
 idName (Id name _ _) = name
 
 deriving instance Data CBOR.Term
+
+
+-- Split a function type into a list of type variables, a list of argument
+-- types, and a return type.
+splitFnTy :: Ty -> ([Id], [Ty], Ty)
+splitFnTy (TForall tyVars ty') =
+    let (vars', args', ret') = splitFnTy ty' in
+    (tyVars ++ vars', args', ret')
+splitFnTy (TArrow argTy ty') =
+    let (vars', args', ret') = splitFnTy ty' in
+    (vars', argTy : args', ret')
+splitFnTy ty = ([], [], ty)
+
+buildFnTy :: [Id] -> [Ty] -> Ty -> Ty
+buildFnTy [] [] retTy = retTy
+buildFnTy [] (argTy : argTys) retTy = TArrow argTy $ buildFnTy [] argTys retTy
+buildFnTy tyVars argTys retTy = TForall tyVars $ buildFnTy [] argTys retTy
+
+splitLambda :: Expr -> ([Pat], Expr)
+splitLambda (ELam ps e') =
+    let (pats', body') = splitLambda e' in
+    (ps ++ pats', body')
+splitLambda e = ([], e)
+
+buildLambda :: [Pat] -> Expr -> Expr
+buildLambda [] e = e
+buildLambda ps e = ELam ps e

@@ -414,6 +414,9 @@ zipAnnWith :: Annotated t => (a -> b -> c) -> t a -> t b -> t c
 zipAnnWith f x y = scatterAnn (zipWith f (gatherAnn x) (gatherAnn y)) x
 
 
+mkNet :: Text -> Int -> Ty -> Net ()
+mkNet name prio ty = Net name prio S.empty S.empty ty ()
+
 
 -- Lenses
 

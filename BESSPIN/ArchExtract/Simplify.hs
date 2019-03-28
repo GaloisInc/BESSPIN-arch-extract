@@ -128,7 +128,7 @@ disconnect f mod = reconnectNets $ mod' { moduleNets = nets' }
         if f conn side netId net then
             return netId
         else
-            mkNet name prioDcNet (netTy net)
+            mkNet' name prioDcNet (netTy net)
 
     dcName netId base = T.pack "dc$" <> base <> T.singleton '$' <>
         T.pack (show $ unwrapNetId netId)
@@ -142,9 +142,9 @@ prioDcNet = -1
 
 type NetM a b = State (Seq (Net a)) b
 
-mkNet :: Monoid a => Text -> Int -> Ty -> NetM a NetId
-mkNet name prio ty = state $ \nets ->
-    (NetId $ S.length nets, nets |> Net name prio S.empty S.empty ty mempty)
+mkNet' :: Monoid a => Text -> Int -> Ty -> NetM a NetId
+mkNet' name prio ty = state $ \nets ->
+    (NetId $ S.length nets, nets |> (mkNet name prio ty) { netAnn = mempty })
 
 
 -- Remove each `LkNetAlias` `Logic` from `mod` by replacing one of its aliased

@@ -14,15 +14,16 @@ instance Pretty Package where
         vsep $ punctuate line $ toList $ fmap pretty defs <> fmap pretty structs
 
 instance Pretty Struct where
-    pretty (Struct i tyParams fields) =
+    pretty (Struct i tyParams fields isIfc) =
         vsep
-            [ "struct" <+> pretty i <> brackets (hsep $ map pretty tyParams) <+> lbrace
+            [ (if isIfc then "interface" else "struct") <+> pretty i
+                <> brackets (hsep $ map pretty tyParams) <+> lbrace
             , indent 4 $ vsep $ map pretty fields
             , rbrace
             ]
 
 instance Pretty Field where
-    pretty (Field name ty) = pretty name <+> colon <> colon <+> pretty ty
+    pretty (Field name ty _) = pretty name <+> colon <> colon <+> pretty ty
 
 instance Pretty Def where
     pretty (Def id ty clauses) =
@@ -107,6 +108,7 @@ instance Pretty Pat where
 instance Pretty Ty where
     pretty (TVar i) = pretty i
     pretty (TCon i) = pretty i <> "#"
+    pretty (TIfc i) = pretty i <> "%"
     pretty (TNat n) = pretty n
     pretty (TApp t1 t2) = parens $ hsep $ map pretty (t1 : t2)
     pretty (TForall vars ty) = "forall" <+> hsep (map pretty vars) <> "." <+> pretty ty

@@ -104,9 +104,10 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
 
     goTy (TCon (Id "Prelude.Unit" _ _)) = TUnit
     goTy (TCon (Id "Prelude.Bool" _ _)) = TBool
-    goTy (TApp (TCon (Id "Prelude.Reg" _ _)) [t]) = TReg t
+    goTy (TApp (TIfc (Id "Prelude.Reg" _ _)) [t]) = TReg t
     goTy (TApp (TCon (Id "Prelude.Bit" _ _)) [t]) = TBit t
     goTy (TApp (TCon (Id "Prelude.Module" _ _)) [t]) = TModule t
+    goTy (TApp (TCon (Id "Prelude.ActionValue" _ _)) [t]) = TAction t
     goTy (TApp (TCon (Id "Prelude.IsModule" _ _)) [t1, t2]) = TIsModule t1 t2
     goTy t = t
 

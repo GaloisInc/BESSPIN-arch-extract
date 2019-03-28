@@ -8,6 +8,7 @@ import qualified Data.ByteString.Lazy as BSL
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
+import Data.Monoid
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Text (Text)
@@ -47,15 +48,32 @@ getPackage x = bad' "Package" x $
     Package (badId "package") S.empty S.empty
 
 getDefnStruct :: CBOR.Term -> DecodeM Struct
-getDefnStruct (tag "Defn_Struct" -> [_sub, name, List tyParams, List fields]) =
+getDefnStruct (tag "Defn_Struct" -> [sub, name, List tyParams, List fields]) =
     Struct
         <$> getId name
         <*> mapM getId tyParams
         <*> mapM getField fields
-getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [])
+        <*> getStructIsIfc sub
+getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [] False)
+
+getStructIsIfc :: CBOR.Term -> DecodeM Bool
+getStructIsIfc (tag0 "StructKind_Ifc" -> True) = return True
+getStructIsIfc _ = return False
 
 getField :: CBOR.Term -> DecodeM Field
-getField (tag "Field" -> [name, ty]) = Field <$> getId name <*> getTy ty
+getField (tag "Field" -> [name, pragmas, ty]) =
+    Field <$> getId name <*> getTy ty <*> maybeGetArgNames pragmas
+
+maybeGetArgNames :: CBOR.Term -> DecodeM (Maybe [Id])
+maybeGetArgNames CBOR.TNull = return Nothing
+maybeGetArgNames (List pragmas) = do
+    results <- mapM maybeGetArgNamesFromPragma pragmas
+    return $ getFirst $ mconcat $ map First results
+
+maybeGetArgNamesFromPragma :: CBOR.Term -> DecodeM (Maybe [Id])
+maybeGetArgNamesFromPragma (tag "IfcPragma_ArgNames" -> [List is]) =
+    Just <$> mapM getId is
+maybeGetArgNamesFromPragma _ = return Nothing
 
 getDefnDef :: CBOR.Term -> DecodeM Def
 getDefnDef (tag "Defn_ValueSign" -> [def]) = getDef def
@@ -123,7 +141,12 @@ getPat x = bad' "Pat" x $ PUnknown x
 
 getTy :: CBOR.Term -> DecodeM Ty
 getTy (tag "Type_Var" -> [i, _]) = TVar <$> getId i
-getTy (tag "Type_Con" -> [i, _sort]) = TCon <$> getId i
+getTy (tag "Type_Con" -> [i, sort])
+  | (tag "TySort_Struct" -> [kind, _]) <- sort
+  , (tag0 "StructKind_Ifc" -> True) <- kind
+  = TIfc <$> getId i
+  | otherwise
+  = TCon <$> getId i
 getTy (tag "Type_Num" -> [Int val]) = TNat <$> pure val
 getTy (tag "Type_Ap" -> [t1, t2]) = TApp <$> getTy t1 <*> ((:[]) <$> getTy t2)
 getTy x = bad' "Ty" x $ TUnknown x
