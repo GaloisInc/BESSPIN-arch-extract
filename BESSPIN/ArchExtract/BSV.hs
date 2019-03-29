@@ -33,9 +33,13 @@ testAst cfg = do
     rawAst <- case deserialize cborBs of
         Left err -> error $ T.unpack err
         Right x -> return x
-    putStrLn $ T.unpack $ printBSV $ raiseRaw rawAst
 
-    T.putStrLn $ printArchitecture $ extractDesign [raiseRaw rawAst]
+    forM_ rawAst $ \pkg -> do
+        putStrLn $ "\n\n --- package " ++ T.unpack (idName $ packageId pkg) ++ " ---"
+        putStrLn $ T.unpack $ printBSV $ raiseRaw pkg
+        putStrLn $ " --- end package " ++ T.unpack (idName $ packageId pkg) ++ " ---\n"
+
+    T.putStrLn $ printArchitecture $ extractDesign (raiseRaw rawAst)
 
 readAndExtract :: Config.BSV -> IO (A.Design (), [FileInfo])
 readAndExtract cfg = do
@@ -43,4 +47,4 @@ readAndExtract cfg = do
     rawAst <- case deserialize cborBs of
         Left err -> error $ T.unpack err
         Right x -> return x
-    return (extractDesign [raiseRaw rawAst], [])
+    return (extractDesign (raiseRaw rawAst), [])

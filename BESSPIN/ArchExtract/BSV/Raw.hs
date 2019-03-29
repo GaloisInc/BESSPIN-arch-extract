@@ -178,3 +178,11 @@ splitLambda e = ([], e)
 buildLambda :: [Pat] -> Expr -> Expr
 buildLambda [] e = e
 buildLambda ps e = ELam ps e
+
+-- Split an application type into the base type constructor and a list of
+-- arguments.
+splitAppTy :: Ty -> (Ty, [Ty])
+splitAppTy t = go [] t
+  where
+    go args (TApp a b) = go (b ++ args) a
+    go args t = (t, args)

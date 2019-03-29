@@ -88,6 +88,10 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
 
     goExpr (EApp (EVar (Id "Prelude.==" _ _)) [_] [_d1, l, r]) = EBinOp "==" l r
     goExpr (EApp (EVar (Id "Prelude./=" _ _)) [_] [_d1, l, r]) = EBinOp "/=" l r
+    goExpr (EApp (EVar (Id "Prelude.<" _ _)) [_] [_d1, l, r]) = EBinOp "<" l r
+    goExpr (EApp (EVar (Id "Prelude.<=" _ _)) [_] [_d1, l, r]) = EBinOp "<=" l r
+    goExpr (EApp (EVar (Id "Prelude.>" _ _)) [_] [_d1, l, r]) = EBinOp ">" l r
+    goExpr (EApp (EVar (Id "Prelude.>=" _ _)) [_] [_d1, l, r]) = EBinOp ">=" l r
 
     goExpr (EApp (EVar (Id "Prelude.&" _ _)) [_] [_d1, l, r]) = EBinOp "&" l r
     goExpr (EApp (EVar (Id "Prelude.|" _ _)) [_] [_d1, l, r]) = EBinOp "|" l r
@@ -182,16 +186,16 @@ reconstructLet dsList body =
     ds = S.fromList dsList
 
     -- The Def where each Id is defined
-    idDef :: Map Id Int
-    idDef = S.foldMapWithIndex (\idx d -> M.singleton (defId d) idx) ds
+    idDef :: Map Text Int
+    idDef = S.foldMapWithIndex (\idx d -> M.singleton (idName $ defId d) idx) ds
 
-    idsToDefs :: Set Id -> Set Int
+    idsToDefs :: Set Text -> Set Int
     idsToDefs is = Set.map (\i -> idDef M.! i) $
         Set.filter (\i -> M.member i idDef) is
 
-    collectIds :: Data a => a -> Set Id
+    collectIds :: Data a => a -> Set Text
     collectIds x = everything (<>) (Set.empty `mkQ` go) x
-      where go i@(Id _ _ _) = Set.singleton i
+      where go (Id name _ _) = Set.singleton name
 
     -- For each def, the indices of other defs referenced from this one.
     defEdges :: Seq (Set Int)

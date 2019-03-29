@@ -137,10 +137,10 @@ convertModule (Def _ ty cs)
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
 convertModule (Def i ty cs)
-  | [Clause [PTcDict] body] <- cs
+  | [Clause dcts body] <- cs
+  , all (\p -> case p of PTcDict -> True; _ -> False) dcts
   , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
-  , (TIsModule (TVar iM') (TVar _iC) : _) <- argTys
-  , iM == iM'
+  , any (isModDict iM) argTys
   = Just $ BSVModule i
     (buildFnTy tyVars argTys (TModule ifcTy))
     body
@@ -167,7 +167,9 @@ findPackageModules p =
 returnedIfcName :: Ty -> Maybe Text
 returnedIfcName ty
   | (_, _, ret) <- splitFnTy ty
-  , TModule (TIfc (Id name _ _)) <- ret
+  , traceShow ("rifcname", ret) True
+  , TModule tIfc <- ret
+  , (TIfc (Id name _ _), _) <- splitAppTy tIfc
   = Just name
   | otherwise = Nothing
 
@@ -191,7 +193,7 @@ extractDesign ps = A.Design archMods
 
     modIfc name ty = case returnedIfcName ty >>= flip M.lookup ifcSpecs of
         Nothing ->
-            traceShow ("couldn't find interface for module", name) dummyIfc
+            badEval' ("couldn't find interface for module", name, ty) dummyIfc
         Just ifc -> ifc
 
     modMap = M.fromList $
@@ -201,13 +203,14 @@ extractDesign ps = A.Design archMods
     initState = ExtractState
         { esCurModule = error "no current module"
         , esCurRuleName =
-            traceShow "ran Action not in any rule" $
+            badEval' "ran Action not in any rule" $
             "[[error: no rule]]"
         , esRuleCounter = 0
         , esStructs = structs
         , esDefs = defs
         , esModMap =
-            traceShow ("known modules", M.keys modMap) $ modMap
+            trace ("known modules\n" ++ unlines (map (("  " ++) . show) $ M.toList modMap)) $
+            modMap
         , esIfcSpecs = ifcSpecs
         }
     archMods = S.fromList $ evalState (mapM go bsvMods) initState
@@ -224,69 +227,17 @@ extractModule (BSVModule (Id name _ _) ty body) ifc = do
         v <- eval M.empty body
 
         (numTys, numVals) <- countArgs v
-        when (numTys > 0) $ traceM $
-            show name ++ ": can't provide type arguments to module body"
+        when (numTys > 0) $ badEval'
+            ("can't provide type arguments to module body", name, v)
+            return ()
         let argVals = replicate numVals VConst
 
         v' <- if numVals > 0 then appValue v [] argVals else return v
         m <- runModule v'
-        traceM (show ("module", name, "got value:", m))
         buildIfcPorts "" ifc m
     return $
         reconnectNets $
         m
-
-extractMethods :: Value -> ExtractM ()
-extractMethods (VStruct _ fs) = do
-    forM_ (M.toList fs) $ \(rawName, val) -> case val of
-        -- If an interface contains a subinterface, the module structs will be
-        -- nested.
-        VStruct _ _ -> extractMethods val
-        _ -> do
-            let name = lastWord rawName
-            traceM $ "extracting method " ++ show name ++ " = " ++ show val
-            extractMethod name val
-extractMethods v = traceM ("can't extract methods from " ++ show v)
-
-extractMethod :: Text -> Value -> ExtractM ()
-extractMethod name v = goInputs v
-  where
-    -- Identify input ports from the function arguments, if any.
-    goInputs v | isFunc v = do
-        inpNames <- funcArgNames v
-        traceM $ "goInputs: " ++ show v ++ ": apply to args " ++ show inpNames
-        inpNets <- mapM genInputPort $ map (\n -> name <> "." <> n) inpNames
-        v' <- appValue v [] (map VNet inpNets)
-        goAction v'
-    goInputs v = goAction v
-
-    goAction v | isComputation v = do
-        traceM $ "goAction: " ++ show v ++ ": runAction"
-        v' <- withRuleName name $ runAction v
-        goOutput v'
-    goAction v = goOutput v
-
-    goOutput v | traceShow ("goOutput: got", v, "for", name) False = undefined
-    goOutput (VNet netId) = do
-        genOutputPort (name <> ".return") netId
-    goOutput VConst = return ()
-    goOutput v = traceM $ "unexpected value in method slot: " ++ show v
-
-
-funcArgNames :: Value -> ExtractM [Text]
-funcArgNames (VClosure ps _ _) =
-    return $ zipWith (\idx p -> case patName p of
-        Nothing -> "in" <> T.pack (show idx)
-        Just name -> name) [0..] ps
-funcArgNames (VPartApp v _ args) =
-    drop (length args) <$> funcArgNames v
-funcArgNames v = do
-    (_, numVals) <- countArgs v
-    return ["_arg" <> T.pack (show i) | i <- [0 .. numVals - 1]]
-
-patName :: Pat -> Maybe Text
-patName (PVar (Id name _ _)) = Just name
-patName _ = Nothing
 
 
 data Value =
@@ -364,14 +315,17 @@ data RuleVal = RuleVal Text [Value] Value
 type Scope = Map Text Value
 
 badEval msg = badEval' msg VUnknown
-badEval' msg value = traceShow ("evaluation failure:", msg) value
+badEval' msg value = trace msg' value
+  where
+    (keep, rest) = splitAt 1000 $ show msg
+    msg' = "evaluation failure: " ++ keep
+        ++ (if not $ null rest then " ... (message truncated)" else "")
 
 
 -- Evaluate `e` in `sc`.  This lives in the `ExtractM` monad because some
 -- evaluation steps produce nets, logics, etc. in the current module.  This
 -- includes some `Expr`s that look pure in the source language, like `a & b`.
 eval :: Scope -> Expr -> ExtractM Value
-eval _ e | traceShow ("evaluate", e) False = undefined
 eval sc (EVar i@(Id name _ _))
   | Just v <- M.lookup name sc = return v
   | otherwise = do
@@ -409,7 +363,7 @@ eval sc (ERules _) = return $ badEval ("ERules unsupported")
 eval sc (EStatic (Id p _ _) (Id f _ _)) = do
     s <- use $ _esStructs . at p
     let numTys = case s of
-            Nothing -> traceShow ("saw accessor for unknown struct", p) 0
+            Nothing -> badEval' ("saw accessor for unknown struct", p) 0
             Just s -> length $ structTyParams s
     return $ VFieldAcc (lastWord f) numTys
 
@@ -464,7 +418,6 @@ evalRule sc (Rule name conds body) = do
 
 -- Apply a value to (type and value) arguments.
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
-appValue f tys vals | traceShow ("apply", f, tys, vals) False = undefined
 appValue f tys [] | not $ isFunc f = return $
     badEval' ("value doesn't accept type arguments", f, tys) f
 appValue f tys vals | not $ isFunc f = return $
@@ -505,7 +458,7 @@ appExact f tys vals = case f of
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
-    VFieldAcc name _ -> traceShow ("access", name, vals) $ case vals of
+    VFieldAcc name _ -> case vals of
         [VStruct _ fs]
           | Just v <- M.lookup name fs -> return v
           | otherwise -> return $ badEval ("unknown struct field", name, fs)
@@ -565,9 +518,9 @@ bindPat p v sc = case p of
     PVar (Id name _ _) -> return $ M.insert name v sc
     PTcDict -> case v of
         VTcDict -> return sc
-        _ -> traceShow ("passed non-VTcDict", v, "to PTcDict argument", p) $ return sc
+        _ -> badEval' ("passed non-VTcDict", v, "to PTcDict argument", p) $ return sc
     PUnknown _ ->
-        traceShow ("tried to match", v, "against unknown pattern") $ return sc
+        badEval' ("tried to match", v, "against unknown pattern") $ return sc
 
 countArgsPrim :: Prim -> (Int, Int)
 countArgsPrim p = case p of
@@ -701,7 +654,6 @@ handleModule :: Value -> ExtractM Value
 handleModule c = go Nothing c
   where
     go :: Maybe Text -> Value -> ExtractM Value
-    go name comp | traceShow ("running (Module)", comp, name) False = undefined
     go _ (VNamed name c) = go (Just name) c
     go optName (VMkReg _ty) = do
         name <- case optName of
@@ -815,15 +767,14 @@ handleAction c = go c
   where
     go :: Value -> ExtractM Value
     go (VRegWrite muxIdx val) = do
-        traceM $ "handle regwrite: " ++ show (muxIdx, val)
         -- Add a new mux input for the current rule.
         name <- use _esCurRuleName
         netId <- case val of
             VNet netId -> return netId
             VConst -> genCombLogic S.empty
             _ ->
-                trace ("bad value in VRegWrite: " ++ show val) $
-                genCombLogic S.empty
+                badEval' ("bad value in VRegWrite: " ++ show val) $
+                    genCombLogic S.empty
 
         accessRuleMux muxIdx [netId]
 

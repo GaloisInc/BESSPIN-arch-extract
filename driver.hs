@@ -1,4 +1,6 @@
+{-# LANGUAGE OverloadedStrings #-}
 import Control.Monad
+import qualified Data.ByteString.Lazy as BSL
 import Data.Foldable
 import Data.Generics
 import Data.List
@@ -11,6 +13,10 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+--import qualified Codec.CBOR.Decoding as CBOR
+import qualified Codec.CBOR.Read as CBOR
+import qualified Codec.CBOR.Term as CBOR
+import qualified Codec.CBOR.Write as CBOR
 import System.Directory
 import System.Environment
 import System.Exit
@@ -139,6 +145,27 @@ main = do
         ("bsv-test", _) -> case M.elems $ Config.configSrcs cfg of
             [Config.BSVSrc bCfg] -> BSV.testAst bCfg
             _ -> error "expected a bsv src section"
+
+        -- Merge multiple BSV CBOR AST files into one.
+        ("bsv-merge-cbor", files) -> do
+            ps <- liftM concat $ forM files $ \file -> do
+                putStrLn $ "reading " ++ file
+                bs <- BSL.readFile file
+                let t = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
+                        Left e -> error $ file ++ ": " ++ show e
+                        Right (_, t) -> t
+                let (tag, items) = case t of
+                        CBOR.TList (tag : items) -> (tag, items)
+                        CBOR.TListI (tag : items) -> (tag, items)
+                        _ -> error $ file ++ ": expected CBOR list"
+                case tag of
+                    CBOR.TString "Packages" -> return items
+                    _ -> return [t]
+
+            let merged = CBOR.TList [CBOR.TString "Packages", CBOR.TList ps]
+            let bs = CBOR.toLazyByteString $ CBOR.encodeTerm merged
+            BSL.writeFile "out.cbor" bs
+            putStrLn $ "wrote merged ASTs to out.cbor"
 
         (cmd, _) -> error $ "unknown command " ++ show cmd
         

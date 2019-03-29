@@ -38,6 +38,11 @@ bad' what x dfl =
     Right dfl
 
 
+getPackages :: CBOR.Term -> DecodeM [Package]
+getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
+getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
+getPackages x = bad' "Packages" x $ []
+
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, _, List defns]) =
     Package
@@ -63,6 +68,7 @@ getStructIsIfc _ = return False
 getField :: CBOR.Term -> DecodeM Field
 getField (tag "Field" -> [name, pragmas, ty]) =
     Field <$> getId name <*> getTy ty <*> maybeGetArgNames pragmas
+getField x = bad' "Field" x $ Field (badId "field") badTy Nothing
 
 maybeGetArgNames :: CBOR.Term -> DecodeM (Maybe [Id])
 maybeGetArgNames CBOR.TNull = return Nothing
@@ -88,7 +94,8 @@ getDef (tag "Def" -> [i, List tyVars, ty, List clauses]) = do
 getDef x = bad' "Def" x badDef
 
 badId what = Id ("<bad-" <> what <> ">") 0 0
-badDef = Def (badId "def") (TUnknown CBOR.TNull) []
+badTy = TUnknown CBOR.TNull
+badDef = Def (badId "def") badTy []
 
 getClause :: CBOR.Term -> DecodeM Clause
 getClause (tag "Clause" -> [List pats, body]) =
@@ -210,7 +217,7 @@ getTag x = case x of
     _ -> Nothing
 
 
-deserialize :: BSL.ByteString -> Either Text Package
+deserialize :: BSL.ByteString -> Either Text [Package]
 deserialize bs = case CBOR.deserialiseFromBytes CBOR.decodeTerm bs of
     Left cborErr -> Left $ T.pack $ show cborErr
-    Right (_, term) -> getPackage term
+    Right (_, term) -> getPackages term
