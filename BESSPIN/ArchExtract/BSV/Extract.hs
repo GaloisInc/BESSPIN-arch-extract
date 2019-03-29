@@ -389,20 +389,6 @@ eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
     return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
-eval sc (ERegRead e) = do
-    r <- eval sc e
-    appPrim PRegRead [] [r]
-eval sc (ERegWrite re ve) = do
-    r <- eval sc re
-    v <- eval sc ve
-    appPrim PRegWrite [] [r, v]
-eval sc (EUnOp op e) = do
-    v <- eval sc e
-    appPrim (PUnOp op) [] [v]
-eval sc (EBinOp op l r) = do
-    lv <- eval sc l
-    rv <- eval sc r
-    appPrim (PBinOp op) [] [lv, rv]
 eval sc (EUnknown cbor) = return $ badEval ("EUnknown", cbor)
 
 

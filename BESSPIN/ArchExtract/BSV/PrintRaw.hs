@@ -69,10 +69,6 @@ instance Pretty Expr where
     pretty (EDo stmts last) =
         "do" <+> hang 0 (vsep $ map pretty stmts ++ [pretty last])
     pretty (EAddRules rs) = vsep [ "addRules", indent 2 $ vsep $ map pretty rs ]
-    pretty (ERegRead e) = "*" <> pretty e
-    pretty (ERegWrite l r) = pretty l <+> "<=" <+> pretty r
-    pretty (EUnOp op e) = parens $ pretty op <+> pretty e
-    pretty (EBinOp op l r) = parens $ pretty l <+> pretty op <+> pretty r
     pretty e = viaShow e
 
 instance Pretty RawRule where

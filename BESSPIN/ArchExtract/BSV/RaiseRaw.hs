@@ -54,55 +54,55 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.setStateName" _ _)) _tys [_dct, nameExpr, val])
       | EApp (EVar (Id "Prelude.primGetName" _ _)) [] [nameArg] <- nameExpr
       , EVar (Id name _ _) <- nameArg
-      = goExpr $ EApp (EPrim $ PSetName name) [] [val]
+      = EApp (EPrim $ PSetName name) [] [val]
     goExpr (EApp (EVar (Id "Prelude.forceIsModule" _ _)) _tys [_dct, e]) = goExpr e
     goExpr (EApp (EVar (Id "Prelude.fromInteger" _ _)) [_] [_dct, e]) = goExpr e
     -- Baked-in primitives
     goExpr (EApp (EVar (Id "Prelude.return" _ _)) _tys [_dct, x]) =
-        goExpr $ EApp (EPrim PReturn) [] [x]
+        EApp (EPrim PReturn) [] [x]
     goExpr (EApp (EVar (Id "Prelude.mkReg" _ _)) [elemTy, elemWidth, _, _] [_dct1, _dct2, init]) =
-        goExpr $ EApp (EPrim PMkReg) [elemTy, elemWidth] [init]
+        EApp (EPrim PMkReg) [elemTy, elemWidth] [init]
     goExpr (EApp (EVar (Id "Prelude.mkRegU" _ _)) [elemTy, elemWidth, _, _] [_dct1, _dct2]) =
-        goExpr $ EApp (EPrim PMkRegU) [elemTy, elemWidth] []
+        EApp (EPrim PMkRegU) [elemTy, elemWidth] []
     goExpr (EApp (EVar (Id "Prelude.addRules" _ _)) [_, _] [_dct, ERules rs])
-      | Just rs' <- mapM convRule rs = goExpr $ EAddRules rs'
+      | Just rs' <- mapM convRule rs = EAddRules rs'
     goExpr (EApp (EVar (Id "Prelude.pack" _ _)) [_, _] [_d1, e]) =
-        goExpr $ EApp (EPrim PPack) [] [e]
+        EApp (EPrim PPack) [] [e]
     goExpr (EApp (EVar (Id "Prelude.unpack" _ _)) [_, _] [_d1, e]) =
-        goExpr $ EApp (EPrim PUnpack) [] [e]
+        EApp (EPrim PUnpack) [] [e]
     goExpr (EApp (EVar (Id "Prelude.truncate" _ _)) [_, _, _] [_d1, e]) =
-        goExpr $ EApp (EPrim PTruncate) [] [e]
+        EApp (EPrim PTruncate) [] [e]
     goExpr (EApp (EVar (Id "Prelude.primSelectFn" _ _))
             [_tIn, _tOut, _tIdx, _tUnk] [_d1, _d2, _pos, e, idx]) =
-        goExpr $ EApp (EPrim PIndex) [] [e, idx]
+        EApp (EPrim PIndex) [] [e, idx]
     goExpr (EApp (EVar (Id "Prelude._if" _ _)) [ty] [c, t, e]) =
-        goExpr $ EApp (EPrim PIf) [ty] [c, t, e]
+        EApp (EPrim PIf) [ty] [c, t, e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._read" _ _)) [_] [e]) =
-        ERegRead e
+        EApp (EPrim PRegRead) [] [e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._write" _ _)) [_] [l, r]) =
-        ERegWrite l r
+        EApp (EPrim PRegWrite) [] [l, r]
 
     -- Unary and binary ops
-    goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = EBinOp "+" l r
-    goExpr (EApp (EVar (Id "Prelude.-" _ _)) [_] [_d1, l, r]) = EBinOp "-" l r
+    goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = binOp "+" l r
+    goExpr (EApp (EVar (Id "Prelude.-" _ _)) [_] [_d1, l, r]) = binOp "-" l r
 
-    goExpr (EApp (EVar (Id "Prelude.==" _ _)) [_] [_d1, l, r]) = EBinOp "==" l r
-    goExpr (EApp (EVar (Id "Prelude./=" _ _)) [_] [_d1, l, r]) = EBinOp "/=" l r
-    goExpr (EApp (EVar (Id "Prelude.<" _ _)) [_] [_d1, l, r]) = EBinOp "<" l r
-    goExpr (EApp (EVar (Id "Prelude.<=" _ _)) [_] [_d1, l, r]) = EBinOp "<=" l r
-    goExpr (EApp (EVar (Id "Prelude.>" _ _)) [_] [_d1, l, r]) = EBinOp ">" l r
-    goExpr (EApp (EVar (Id "Prelude.>=" _ _)) [_] [_d1, l, r]) = EBinOp ">=" l r
+    goExpr (EApp (EVar (Id "Prelude.==" _ _)) [_] [_d1, l, r]) = binOp "==" l r
+    goExpr (EApp (EVar (Id "Prelude./=" _ _)) [_] [_d1, l, r]) = binOp "/=" l r
+    goExpr (EApp (EVar (Id "Prelude.<" _ _)) [_] [_d1, l, r]) = binOp "<" l r
+    goExpr (EApp (EVar (Id "Prelude.<=" _ _)) [_] [_d1, l, r]) = binOp "<=" l r
+    goExpr (EApp (EVar (Id "Prelude.>" _ _)) [_] [_d1, l, r]) = binOp ">" l r
+    goExpr (EApp (EVar (Id "Prelude.>=" _ _)) [_] [_d1, l, r]) = binOp ">=" l r
 
-    goExpr (EApp (EVar (Id "Prelude.&" _ _)) [_] [_d1, l, r]) = EBinOp "&" l r
-    goExpr (EApp (EVar (Id "Prelude.|" _ _)) [_] [_d1, l, r]) = EBinOp "|" l r
-    goExpr (EApp (EVar (Id "Prelude.^" _ _)) [_] [_d1, l, r]) = EBinOp "^" l r
-    goExpr (EApp (EVar (Id "Prelude.invert" _ _)) [_] [_d1, e]) = EUnOp "invert" e
-    goExpr (EApp (EVar (Id "Prelude.<<" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp "<<" l r
-    goExpr (EApp (EVar (Id "Prelude.>>" _ _)) [_, _, _] [_d1, _d2, l, r]) = EBinOp ">>" l r
+    goExpr (EApp (EVar (Id "Prelude.&" _ _)) [_] [_d1, l, r]) = binOp "&" l r
+    goExpr (EApp (EVar (Id "Prelude.|" _ _)) [_] [_d1, l, r]) = binOp "|" l r
+    goExpr (EApp (EVar (Id "Prelude.^" _ _)) [_] [_d1, l, r]) = binOp "^" l r
+    goExpr (EApp (EVar (Id "Prelude.invert" _ _)) [_] [_d1, e]) = unOp "invert" e
+    goExpr (EApp (EVar (Id "Prelude.<<" _ _)) [_, _, _] [_d1, _d2, l, r]) = binOp "<<" l r
+    goExpr (EApp (EVar (Id "Prelude.>>" _ _)) [_, _, _] [_d1, _d2, l, r]) = binOp ">>" l r
 
-    goExpr (EApp (EVar (Id "Prelude.&&" _ _)) [] [l, r]) = EBinOp "&&" l r
-    goExpr (EApp (EVar (Id "Prelude.||" _ _)) [] [l, r]) = EBinOp "||" l r
-    goExpr (EApp (EVar (Id "Prelude.not" _ _)) [] [e]) = EUnOp "not" e
+    goExpr (EApp (EVar (Id "Prelude.&&" _ _)) [] [l, r]) = binOp "&&" l r
+    goExpr (EApp (EVar (Id "Prelude.||" _ _)) [] [l, r]) = binOp "||" l r
+    goExpr (EApp (EVar (Id "Prelude.not" _ _)) [] [e]) = unOp "not" e
 
     goExpr e = e
 
@@ -131,6 +131,9 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
             _ -> Nothing
         return $ Rule optName' conds' body'
     convRule _ = Nothing
+
+    unOp op a = EApp (EPrim $ PUnOp op) [] [a]
+    binOp op a b = EApp (EPrim $ PBinOp op) [] [a, b]
 
 preSimplify :: Data a => a -> a
 preSimplify x = everywhere (mkT goExpr `extT` goTy) x

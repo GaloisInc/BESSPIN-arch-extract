@@ -62,10 +62,6 @@ data Expr =
     -- Raised form of `ERules`.  The `Text` is the name of the rule.
     | EAddRules [Rule]
     | ETcDict   -- Replacement for elided `_tcdict` `EVar`s
-    | ERegRead Expr
-    | ERegWrite Expr Expr  -- reg, value
-    | EUnOp Text Expr
-    | EBinOp Text Expr Expr
 
     | EUnknown CBOR.Term
     deriving (Show, Data, Typeable)
