@@ -41,6 +41,8 @@ data ExtractState = ExtractState
     , esDefs :: Map Text Def
     , esModMap :: Map Text (A.ModId, Ty, IfcSpec)
     , esIfcSpecs :: Map Text IfcSpec
+    -- Error messages from `badEval`
+    , esErrors :: Seq Text
     }
 
 makeLenses' ''ExtractState
@@ -205,7 +207,7 @@ extractDesign cfg ps = A.Design archMods
 
     modIfc name ty = case returnedIfcName ty >>= flip M.lookup ifcSpecs of
         Nothing ->
-            badEval' ("couldn't find interface for module", name, ty) dummyIfc
+            badCall' ("couldn't find interface for module", name, ty) dummyIfc
         Just ifc -> ifc
 
     modMap = M.fromList $
@@ -215,7 +217,7 @@ extractDesign cfg ps = A.Design archMods
     initState = ExtractState
         { esCurModule = error "no current module"
         , esCurRuleName =
-            badEval' "ran Action not in any rule" $
+            badCall' "ran Action not in any rule" $
             "[[error: no rule]]"
         , esRuleCounter = 0
         , esStructs = structs
@@ -226,6 +228,7 @@ extractDesign cfg ps = A.Design archMods
         , esIfcSpecs =
             trace ("known ifcs\n" ++ unlines (map (("  " ++) . show) $ M.toList ifcSpecs)) $
             ifcSpecs
+        , esErrors = S.empty
         }
     archMods = S.fromList $ evalState (mapM go bsvMods) initState
     go m@(BSVModule (Id name _ _) ty _ _) = extractModule m (modIfc name ty)
@@ -243,9 +246,8 @@ extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
             v <- eval M.empty body
 
             (numTys, numVals) <- countArgs v
-            when (numTys > 0) $ badEval'
-                ("can't provide type arguments to module body", name, v)
-                return ()
+            when (numTys > 0) $ void $
+                badEval ("can't provide type arguments to module body", name, v)
             let argVals = replicate numVals VConst
 
             v' <- if numVals > 0 then appValue v [] argVals else return v
@@ -332,12 +334,26 @@ data RuleVal = RuleVal Text [Value] Value
 
 type Scope = Map Text Value
 
+badEval :: Show a => a -> ExtractM Value
 badEval msg = badEval' msg VUnknown
-badEval' msg value = trace msg' value
+
+badEval' :: Show a => a -> r -> ExtractM r
+badEval' msg value = do
+    _esErrors %= (|> T.pack msg')
+    traceShow ("evaluation failure: " ++ msg') $ return value
   where
     (keep, rest) = splitAt 1000 $ show msg
-    msg' = "evaluation failure: " ++ keep
-        ++ (if not $ null rest then " ... (message truncated)" else "")
+    msg' = keep ++ (if not $ null rest then " ... (message truncated)" else "")
+
+badEval_ :: Show a => a -> ExtractM ()
+badEval_ msg = badEval' msg ()
+
+badCall' :: Show a => a -> r -> r
+badCall' msg value = trace msg' value
+  where
+    (keep, rest) = splitAt 1000 $ show msg
+    msg' = "evaluation failure: " ++
+        keep ++ (if not $ null rest then " ... (message truncated)" else "")
 
 
 -- Evaluate `e` in `sc`.  This lives in the `ExtractM` monad because some
@@ -356,9 +372,9 @@ eval sc (EVar i@(Id name _ _))
             return $ VModuleCtor modId (length tyVars, length argTys) ifc
         (Nothing, Just (Def _ _ [Clause [] e])) -> eval M.empty e
         (Nothing, Just (Def _ _ [Clause ps e])) -> eval M.empty $ ELam ps e
-        (Nothing, Just (Def _ _ _)) -> return $
+        (Nothing, Just (Def _ _ _)) ->
             badEval ("reference to multi-clause def (NYI)", name)
-        (Nothing, Nothing) -> return $ badEval ("unknown variable", name)
+        (Nothing, Nothing) -> badEval ("unknown variable", name)
 eval sc (ELam ps body) = return $ VClosure ps sc body
 eval sc (EApp f tys args) = do
     fv <- eval sc f
@@ -371,24 +387,26 @@ eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e) = do
     eval (M.insert name v sc) e
 eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e) =
     eval (M.insert name (VClosure ps sc body) sc) e
-eval sc (ELet (Def (Id name _ _) _ cs) e) =
-    let v = badEval "multi-clause let binding NYI" in
+eval sc (ELet (Def (Id name _ _) _ cs) e) = do
+    v <- badEval ("multi-clause let binding NYI", name)
     eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
 -- would be to implement, but it doesn't seem to be used very often.
-eval sc (ELetRec ds e) =
-    let go name = (name, badEval ("letrec binding (NYI)", name)) in
-    let bnds = M.fromList $ map (go . idName . defId) ds in
+eval sc (ELetRec ds e) = do
+    bnds <- liftM M.fromList $ forM ds $ \d -> do
+        let name = idName $ defId d
+        v <- badEval ("letrec binding NYI", name)
+        return (name, v)
     eval (bnds <> sc) e
 
 eval sc (ELit _) = return VConst
 -- ERules should be converted to EAddRules by RaiseRaw
-eval sc (ERules _) = return $ badEval ("ERules unsupported")
+eval sc (ERules _) = badEval ("ERules unsupported")
 eval sc (EStatic (Id p _ _) (Id f _ _)) = do
     s <- use $ _esStructs . at p
-    let numTys = case s of
-            Nothing -> badEval' ("saw accessor for unknown struct", p) 0
-            Just s -> length $ structTyParams s
+    numTys <- case s of
+        Nothing -> badEval' ("saw accessor for unknown struct", p) 0
+        Just s -> return $ length $ structTyParams s
     return $ VFieldAcc (lastWord f) numTys
 
 eval sc (EStruct TUnit []) = return VConst
@@ -414,7 +432,7 @@ eval sc (EAddRules rs) = do
     return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
 eval sc (EConst _) = return VConst
-eval sc (EUnknown cbor) = return $ badEval ("EUnknown", cbor)
+eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
 
 evalRule sc (Rule name conds body) = do
@@ -429,9 +447,9 @@ evalRule sc (Rule name conds body) = do
 
 -- Apply a value to (type and value) arguments.
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
-appValue f tys [] | not $ isFunc f = return $
+appValue f tys [] | not $ isFunc f =
     badEval' ("value doesn't accept type arguments", f, tys) f
-appValue f tys vals | not $ isFunc f = return $
+appValue f tys vals | not $ isFunc f =
     badEval ("value doesn't accept arguments", f, tys, vals)
 appValue f tys vals = do
     (numTys, numVals) <- countArgs f
@@ -453,14 +471,14 @@ appValue f tys vals = do
         -- This last one is an error case.  We have not enough types and too
         -- many args, or vice versa.
         (False, True)
-          | not $ null moreVals -> return $
+          | not $ null moreVals ->
             badEval ("applied value to too few types and too many arguments",
                 f, tys, vals)
-          | otherwise ->
+          | otherwise -> do
             -- Discard the excess type arguments and hope for the best.
-            badEval' ("applied value to too many types and too few arguments",
+            badEval_ ("applied value to too many types and too few arguments",
                 f, tys, vals)
-                <$> appValue (mkPartApp f exactTys exactVals) [] moreVals
+            appValue (mkPartApp f exactTys exactVals) [] moreVals
 
 -- Like `appValue`, but the caller must provide exactly the right number of
 -- `tys` and `vals`.
@@ -472,9 +490,8 @@ appExact f tys vals = case f of
     VFieldAcc name _ -> case vals of
         [VStruct _ fs]
           | Just v <- M.lookup name fs -> return v
-          | otherwise -> return $ badEval ("unknown struct field", name, fs)
-        _ -> return $
-            badEval ("expected exactly one struct argument", f, vals)
+          | otherwise -> badEval ("unknown struct field", name, fs)
+        _ -> badEval ("expected exactly one struct argument", f, vals)
     VMethod _ _ _ -> return $ VCompute f tys vals
     VCombMethod _ inNets outNet -> do
         argNets <- mapM asNet vals
@@ -529,9 +546,9 @@ bindPat p v sc = case p of
     PVar (Id name _ _) -> return $ M.insert name v sc
     PTcDict -> case v of
         VTcDict -> return sc
-        _ -> badEval' ("passed non-VTcDict", v, "to PTcDict argument", p) $ return sc
+        _ -> badEval' ("passed non-VTcDict", v, "to PTcDict argument", p) sc
     PUnknown _ ->
-        badEval' ("tried to match", v, "against unknown pattern") $ return sc
+        badEval' ("tried to match", v, "against unknown pattern") sc
 
 countArgsPrim :: Prim -> (Int, Int)
 countArgsPrim p = case p of
@@ -574,7 +591,7 @@ appPrim PIf [ty] vs
   | not $ isComputationType ty, Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim (PSetName name) [] [c] = return $ VNamed name c
-appPrim p tys vals = return $
+appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 
 -- Process a list of values.  On `VNet`, produces the `NetId`.  On `VConst`,
@@ -591,7 +608,9 @@ collectNets vs = go vs
 asNet :: Value -> ExtractM A.NetId
 asNet (VNet n) = return n
 asNet VConst = addNet $ A.mkNet "const" (-1) A.TUnknown
-asNet v = badEval' ("expected a net or const", v) $ asNet VConst
+asNet v = do
+    badEval_ ("expected a net or const", v)
+    asNet VConst
 
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
@@ -706,7 +725,7 @@ handleModule c = go Nothing c
             -- TODO: do something with conds
             withRuleName name $ runAction body
         return VConst   -- returns unit
-    go _ c = return $ badEval ("unsupported Module computation", c)
+    go _ c = badEval ("unsupported Module computation", c)
 
 buildModule :: Text -> A.ModId -> IfcSpec -> ExtractM Value
 buildModule name modId ifc = do
@@ -790,9 +809,9 @@ handleAction c = go c
         netId <- case val of
             VNet netId -> return netId
             VConst -> genCombLogic S.empty
-            _ ->
-                badEval' ("bad value in VRegWrite: " ++ show val) $
-                    genCombLogic S.empty
+            _ -> do
+                badEval_ ("bad value in VRegWrite: " ++ show val)
+                genCombLogic S.empty
 
         accessRuleMux muxIdx [netId]
 
@@ -801,7 +820,7 @@ handleAction c = go c
         argNets <- mapM asNet vals
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
-    go c = return $ badEval ("unsupported Action computation", c)
+    go c = badEval ("unsupported Action computation", c)
 
 
 
@@ -810,13 +829,13 @@ handleAction c = go c
 -- `prefix`.
 buildIfcPorts :: Text -> IfcSpec -> Value -> ExtractM ()
 buildIfcPorts prefix ifc impl = do
-    let vals = case impl of
-            VStruct _ x -> x
-            _ -> badEval' ("interface impl is not a struct", impl, ifc) M.empty
+    vals <- case impl of
+        VStruct _ x -> return x
+        _ -> badEval' ("interface impl is not a struct", impl, ifc) M.empty
     forM_ (ifcEntries ifc) $ \(name, entry) -> do
-        let v = case M.lookup name vals of
-                Just x -> x
-                Nothing -> badEval ("interface impl is missing an entry", name, vals, ifc)
+        v <- case M.lookup name vals of
+            Just x -> return x
+            Nothing -> badEval ("interface impl is missing an entry", name, vals, ifc)
         buildIfcItemPorts (prefix <> name) (ieItem entry) v
 
 buildIfcItemPorts :: Text -> IfcItem -> Value -> ExtractM ()
@@ -840,8 +859,7 @@ buildIfcItemPorts qualName (IiMethod m) impl = do
             case val of
                 VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
                 VConst -> return ()
-                _ -> badEval' ("combinational method returned non-logic value", val) $
-                    return ()
+                _ -> badEval_ ("combinational method returned non-logic value", val)
 
         MkAction hasResult -> do
             comp <- if hasArgs then appValue impl [] (map VNet inNets)
@@ -850,8 +868,7 @@ buildIfcItemPorts qualName (IiMethod m) impl = do
             when hasResult $ case val of
                 VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
                 VConst -> return ()
-                _ -> badEval' ("action method returned non-logic value", val) $
-                    return ()
+                _ -> badEval_ ("action method returned non-logic value", val)
   where
     hasArgs = not $ null $ imArgNames m
 
