@@ -167,6 +167,21 @@
        (if val
          (solver-assert solver (list (feature-force-on f)))
          (solver-assert solver (list (feature-force-off f))))]
+      [(list 'unsat-core tests)
+       (solver-push solver)
+       (define M (solver-check solver))
+       (when (not (sat? M)) (raise "ran unsat-core in already unsatisfiable state"))
+       ; Assert predicates and build a table mapping symbolic exprs to tests
+       (define test-map
+         (for/hasheq ([t tests])
+           (match-define `(,inp ,out ,meta) t)
+           (define expr (<=> out (eval-feature-model symbolic-fm inp)))
+           (solver-assert solver (list expr))
+           (values expr t)))
+       (define U (solver-debug solver))
+       (when (not (unsat? U)) (raise "tests did not produce an unsat result"))
+       (for/list ([expr (core U)])
+         (hash-ref test-map expr expr))]
     )))
 
 (define (oracle-guided-synthesis symbolic-fm oracle init-tests)

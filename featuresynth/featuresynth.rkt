@@ -83,7 +83,7 @@
   (if (and config-resume-tests-file (file-exists? config-resume-tests-file))
     (call-with-default-reading-parameterization
       (lambda ()
-        (call-with-input-file* "resume-tests.rktd" read-resume-tests)))
+        (call-with-input-file* config-resume-tests-file read-resume-tests)))
     '()))
 
 (define (synthesize)
@@ -111,6 +111,16 @@
     (open-output-file "test-log.rktd" #:exists 'truncate)
     )
   )
+
+;(define symbolic-fm
+;  (?*feature-model
+;    (vector-length feature-names)
+;    config-max-groups
+;    config-max-dependencies))
+;(define synth (oracle-guided-synthesis+ symbolic-fm))
+;(printf "loading ~a tests~n" (length resume-tests))
+;(define U (synth 'unsat-core resume-tests))
+;(for ([t U]) (displayln t))
 
 (random-seed 12345)
 (define fm (synthesize))
