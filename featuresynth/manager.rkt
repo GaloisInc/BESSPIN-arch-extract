@@ -17,7 +17,7 @@
 (define run-oracle* run-oracle)
 
 
-(define (run-manager strategy-specs oracle-spec oracle-args init-inputs
+(define (run-manager strategy-specs oracle-spec oracle-args init-inputs init-tests
                      [test-record-port #f])
   (define strategy-chans
     (for/vector ([strat strategy-specs])
@@ -41,6 +41,10 @@
   (for ([inp init-inputs])
     (dispatch-input `(,inp ())))
 
+  (for ([t init-tests])
+    (set-add! seen-tests (first t))
+    (dispatch-test t))
+
   (define strategy-evt
     (apply choice-evt
       (for/list ([(chan i) (in-indexed strategy-chans)])
@@ -62,6 +66,8 @@
       [`(strategy ,i solution ,fmv)
         (vector->feature-model fmv)]
       [`(strategy ,i vote-quit ,quiet)
+        (printf "VOTE-QUIT: strategy ~a (~a)~n"
+                i (list-ref strategy-specs i))
         (when (not quiet)
           (for ([chan strategy-chans])
             (place-channel-put chan '(vote-quit))))
@@ -70,7 +76,10 @@
           (loop)
           #f)]
       [`(strategy ,i unvote-quit)
-        (set! quit-votes (- quit-votes 1))]
+        (printf "UNVOTE-QUIT: strategy ~a (~a)~n"
+                i (list-ref strategy-specs i))
+        (set! quit-votes (- quit-votes 1))
+        (loop)]
       [`(strategy ,i fix-feature ,idx ,val)
         (for ([chan strategy-chans])
           (place-channel-put chan `(fix-feature ,idx ,val)))

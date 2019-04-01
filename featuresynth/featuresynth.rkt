@@ -71,6 +71,21 @@
         (call-with-input-file* config-init-tests-file read-tests)))
     '()))
 
+(define (read-resume-tests port)
+  (define (loop)
+    (define inp (read port))
+    (if (eof-object? inp)
+      '()
+      (cons inp (loop))))
+  (loop))
+
+(define resume-tests
+  (if (and config-resume-tests-file (file-exists? config-resume-tests-file))
+    (call-with-default-reading-parameterization
+      (lambda ()
+        (call-with-input-file* "resume-tests.rktd" read-resume-tests)))
+    '()))
+
 (define (synthesize)
   (define symbolic-fm-args
     (list
@@ -82,7 +97,7 @@
       (bitflip)
       (distinguish ,@symbolic-fm-args)
       (disprove ,@symbolic-fm-args)
-      (boredom 1000 ,@symbolic-fm-args)
+      (boredom ,config-boredom-threshold ,@symbolic-fm-args)
       )
     `(multi-cached
        ,config-oracle-threads
@@ -92,6 +107,7 @@
          ,feature-names))
     `#hash( (config-path . ,config-path) )
     init-tests
+    resume-tests
     (open-output-file "test-log.rktd" #:exists 'truncate)
     )
   )

@@ -5,8 +5,10 @@
   config-oracle-cache-file
   config-oracle-threads
   config-init-tests-file
+  config-resume-tests-file
   config-max-groups
   config-max-dependencies
+  config-boredom-threshold
   config-out-file
   read-config-file
   expand-command
@@ -18,9 +20,14 @@
 (define config-oracle-command "false")
 (define config-oracle-cache-file #f)
 (define config-oracle-threads 4)
+; TODO: names are a bit misleading - init-tests-file contains test *inputs*,
+; while resume-tests-file contains entire tests (`(input output meta)` lists,
+; like in test-log.rktd)
 (define config-init-tests-file #f)
+(define config-resume-tests-file #f)
 (define config-max-groups 0)
 (define config-max-dependencies 0)
+(define config-boredom-threshold 1000)
 (define config-out-file #f)
 
 (define (read-config-file path)
@@ -57,6 +64,12 @@
       (set! config-init-tests-file x))
     (void))
 
+  (if-let ([x (hash-ref c 'resume-tests-file #f)])
+    (begin
+      (assert (string? x))
+      (set! config-resume-tests-file x))
+    (void))
+
   (if-let ([x (hash-ref c 'max-groups #f)])
     (begin
       (assert (exact-nonnegative-integer? x))
@@ -67,6 +80,12 @@
     (begin
       (assert (exact-nonnegative-integer? x))
       (set! config-max-dependencies x))
+    (void))
+
+  (if-let ([x (hash-ref c 'boredom-threshold #f)])
+    (begin
+      (assert (exact-nonnegative-integer? x))
+      (set! config-boredom-threshold x))
     (void))
 
   (if-let ([x (hash-ref c 'out-file #f)])
