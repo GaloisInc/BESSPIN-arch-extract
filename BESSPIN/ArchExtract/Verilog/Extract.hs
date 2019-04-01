@@ -187,6 +187,8 @@ extractArch cfg vDes =
 
 initMod name = A.Module
     { A.moduleName = name
+    -- TODO: use MkExtern for blackboxed modules
+    , A.moduleKind = A.MkNormal
     , A.moduleParams = S.empty
     , A.moduleInputs = S.empty
     , A.moduleOutputs = S.empty

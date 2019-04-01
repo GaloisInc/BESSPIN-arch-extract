@@ -100,12 +100,14 @@ graphArchitecture gCfg arch = do
     let dir = T.unpack $ Config.graphvizOutDir gCfg
     createDirectoryIfMissing True dir
 
-    forM_ mods $ \mod -> do
+    let outputMods = S.filter (\m -> moduleKind m /= MkExtern) mods
+
+    forM_ outputMods $ \mod -> do
         g <- G.graphModule arch gCfg mod
         writeFile (dir ++ "/" ++ T.unpack (moduleName mod) ++ ".dot") $
             G.printGraphviz g
 
-    putStrLn $ "wrote " ++ show (length mods) ++ " graphviz files to " ++ dir ++ "/"
+    putStrLn $ "wrote " ++ show (length outputMods) ++ " graphviz files to " ++ dir ++ "/"
 
 main = do
     args <- getArgs
@@ -145,6 +147,12 @@ main = do
         ("bsv-test", _) -> case M.elems $ Config.configSrcs cfg of
             [Config.BSVSrc bCfg] -> BSV.testAst bCfg
             _ -> error "expected a bsv src section"
+
+        ("bsv-list-package-names", []) -> case M.elems $ Config.configSrcs cfg of
+            [Config.BSVSrc bCfg] -> BSV.listPackageNames bCfg >>= mapM_ T.putStrLn
+            _ -> error "expected a bsv src section"
+        ("bsv-list-package-names", _) ->
+            error "usage: driver <config.toml> bsv-list-package-names"
 
         -- Merge multiple BSV CBOR AST files into one.
         ("bsv-merge-cbor", files) -> do

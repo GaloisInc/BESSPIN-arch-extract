@@ -26,8 +26,8 @@ instance Pretty (Design a) where
     pretty (Design mods) = vsep $ punctuate line $ numbered "module" mods
 
 instance Pretty (Module a) where
-    pretty (Module name params inputs outputs logics nets constraints) =
-        labeled (pretty name) $ vsep $
+    pretty (Module name kind params inputs outputs logics nets constraints) =
+        labeled (pretty name <+> parens (viaShow kind)) $ vsep $
             numbered "param" params <>
             numbered "input" inputs <>
             numbered "output" outputs <>

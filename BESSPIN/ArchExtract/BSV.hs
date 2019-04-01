@@ -29,22 +29,28 @@ import BESSPIN.ArchExtract.Print
 
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
-    cborBs <- BSL.readFile $ T.unpack $ Config.bsvAstFile cfg
-    rawAst <- case deserialize cborBs of
-        Left err -> error $ T.unpack err
-        Right x -> return x
+    pkgs <- loadPackages cfg
 
-    forM_ rawAst $ \pkg -> do
+    forM_ pkgs $ \pkg -> do
         putStrLn $ "\n\n --- package " ++ T.unpack (idName $ packageId pkg) ++ " ---"
-        putStrLn $ T.unpack $ printBSV $ raiseRaw pkg
+        putStrLn $ T.unpack $ printBSV pkg
         putStrLn $ " --- end package " ++ T.unpack (idName $ packageId pkg) ++ " ---\n"
 
-    T.putStrLn $ printArchitecture $ extractDesign (raiseRaw rawAst)
+    T.putStrLn $ printArchitecture $ extractDesign cfg pkgs
+
+loadPackages :: Config.BSV -> IO [Package]
+loadPackages cfg = do
+    cborBs <- BSL.readFile $ T.unpack $ Config.bsvAstFile cfg
+    case deserialize cborBs of
+        Left err -> error $ T.unpack err
+        Right x -> return $ raiseRaw x
 
 readAndExtract :: Config.BSV -> IO (A.Design (), [FileInfo])
 readAndExtract cfg = do
-    cborBs <- BSL.readFile $ T.unpack $ Config.bsvAstFile cfg
-    rawAst <- case deserialize cborBs of
-        Left err -> error $ T.unpack err
-        Right x -> return x
-    return (extractDesign (raiseRaw rawAst), [])
+    pkgs <- loadPackages cfg
+    return (extractDesign cfg pkgs, [])
+
+listPackageNames :: Config.BSV -> IO [Text]
+listPackageNames cfg = do
+    pkgs <- loadPackages cfg
+    return $ map (idName . packageId) pkgs

@@ -62,6 +62,7 @@ data Expr =
     -- Raised form of `ERules`.  The `Text` is the name of the rule.
     | EAddRules [Rule]
     | ETcDict   -- Replacement for elided `_tcdict` `EVar`s
+    | EConst Text   -- always evaluates to a constant
 
     | EUnknown CBOR.Term
     deriving (Show, Data, Typeable)
@@ -74,7 +75,8 @@ data Prim =
     | PPack   -- bits -> a
     | PUnpack -- a -> bits
     | PTruncate
-    | PIndex
+    | PIndex    -- args: array, index
+    | PSlice    -- args: array, high index, low index
     | PRegRead  -- reg -> value
     | PRegWrite -- reg -> value -> Action
     | PUnOp Text

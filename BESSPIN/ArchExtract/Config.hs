@@ -3,6 +3,8 @@ module BESSPIN.ArchExtract.Config where
 
 import Data.Map (Map)
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified TOML
@@ -69,11 +71,17 @@ data BSV = BSV
     -- Path to the CBOR file that contains the exported AST.  This tool doesn't
     -- yet support automatically exporting from src-files.
     { bsvAstFile :: Text
+    -- Names of packages that are considered "library packages".  These
+    -- packages are processed as normal, except that modules found in library
+    -- packages will have only ports (no internal structures) and will be
+    -- marked as `MkExtern`
+    , bsvLibraryPackages :: Set Text
     }
     deriving (Show)
 
 defaultBSV = BSV
     { bsvAstFile = "bsv.cbor"
+    , bsvLibraryPackages = Set.empty
     }
 
 data NameMap = NameMap
@@ -291,6 +299,8 @@ defaultParamClafer = ParamClafer
 listOf f (TOML.List xs) = map f xs
 listOf _ x = error $ "expected list, but got " ++ show x
 
+setOf f x = Set.fromList $ listOf f x
+
 tableOf f (TOML.Table kvs) = map (\(k,v) -> (k, f v)) kvs
 tableOf _ x = error $ "expected table, but got " ++ show x
 
@@ -379,6 +389,7 @@ bsv :: TOML.Value -> BSV
 bsv x = tableFold defaultBSV x
     [ ("type", \c x -> c)
     , ("ast-file", \c x -> c { bsvAstFile = str x })
+    , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
     ]
 
 nameMap :: TOML.Value -> NameMap

@@ -59,6 +59,12 @@ getDefnStruct (tag "Defn_Struct" -> [sub, name, List tyParams, List fields]) =
         <*> mapM getId tyParams
         <*> mapM getField fields
         <*> getStructIsIfc sub
+getDefnStruct (tag "Defn_Class" -> [name, List tyParams, List fields]) =
+    Struct
+        <$> getId name
+        <*> mapM getId tyParams
+        <*> mapM getField fields
+        <*> pure False
 getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [] False)
 
 getStructIsIfc :: CBOR.Term -> DecodeM Bool

@@ -26,6 +26,6 @@ ppfeatures:
 	ghc -j1 --make -O3 ppfeatures.hs
 
 driver:
-	ghc -j1 --make -O3 driver.hs
+	ghc -j1 --make -O3 -Wincomplete-patterns driver.hs
 
 .PHONY: all clean importer ppfeatures driver

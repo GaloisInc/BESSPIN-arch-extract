@@ -86,7 +86,7 @@ aggregateModule modId boundaryNets excludeNets d =
     instName = T.pack "agg" -- TODO
 
     newMod = reconnectNets $
-        Module modName S.empty inPorts outPorts leftLogicItems (moduleNets mod) S.empty
+        Module modName MkNormal S.empty inPorts outPorts leftLogicItems (moduleNets mod) S.empty
     newInst = Logic (LkInst $ Inst newModId instName S.empty) inPins outPins mempty
 
 partitionWithIndex :: (Int -> a -> Bool) -> Seq a -> (Seq a, Seq a)

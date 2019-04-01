@@ -38,6 +38,7 @@ data Design ann = Design
 
 data Module ann = Module
     { moduleName :: Text
+    , moduleKind :: ModuleKind
     , moduleParams :: Seq Param
     , moduleInputs :: Seq Port
     , moduleOutputs :: Seq Port
@@ -46,6 +47,15 @@ data Module ann = Module
     , moduleConstraints :: Seq Constraint
     }
     deriving (Show, Typeable, Data)
+
+data ModuleKind =
+      MkNormal
+    -- Indicates that the module only exists to describe the interface of an
+    -- external module so that other modules can instantiate it.  The module
+    -- should have no logics, and only a net for each port.  Backends should
+    -- omit these modules or mark them in some way.
+    | MkExtern
+    deriving (Show, Eq, Typeable, Data)
 
 
 data Param = Param
@@ -366,11 +376,12 @@ instance Annotated Design where
     scatterAnn' (Design mods) = Design <$> mapM scatterAnn' mods
 
 instance Annotated Module where
-    gatherAnn (Module _ _ _ _ logics nets _) =
+    gatherAnn (Module _ _ _ _ _ logics nets _) =
         foldMap gatherAnn logics ++
         foldMap gatherAnn nets
-    scatterAnn' (Module name params ins outs logics nets cons) = Module
+    scatterAnn' (Module name kind params ins outs logics nets cons) = Module
         <$> pure name
+        <*> pure kind
         <*> pure params
         <*> pure ins
         <*> pure outs

@@ -27,11 +27,11 @@ import Debug.Trace
 raiseRaw :: Data a => a -> a
 raiseRaw x =
     postSimplify $
-    removeTcDicts $
+    --removeTcDicts $
     rewrite $
     preSimplify $
     reconstructAllLets $
-    cleanDefs $
+    --cleanDefs $
     x
 
 cleanDefs :: Data a => a -> a
@@ -50,14 +50,18 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
         goExpr $ EDo [SBind' m] k
     goExpr (EDo ss1 (EDo ss2 e)) =
         goExpr $ EDo (ss1 ++ ss2) e
+
     -- Uninteresting prelude functions
+    goExpr (EApp (EVar (Id "Prelude.forceIsModule" _ _)) _tys [_dct, e]) = goExpr e
+    goExpr (EApp (EVar (Id "Prelude.fromInteger" _ _)) [_] [_dct, e]) = goExpr e
+    goExpr (EApp (EVar (Id "Prelude.fromSizedInteger" _ _)) [_, _] [_dct, e]) = goExpr e
+    goExpr (EApp (EVar (Id "Prelude.fromString" _ _)) [_] [_dct, e]) = goExpr e
+
+    -- Baked-in primitives
     goExpr (EApp (EVar (Id "Prelude.setStateName" _ _)) _tys [_dct, nameExpr, val])
       | EApp (EVar (Id "Prelude.primGetName" _ _)) [] [nameArg] <- nameExpr
       , EVar (Id name _ _) <- nameArg
       = EApp (EPrim $ PSetName name) [] [val]
-    goExpr (EApp (EVar (Id "Prelude.forceIsModule" _ _)) _tys [_dct, e]) = goExpr e
-    goExpr (EApp (EVar (Id "Prelude.fromInteger" _ _)) [_] [_dct, e]) = goExpr e
-    -- Baked-in primitives
     goExpr (EApp (EVar (Id "Prelude.return" _ _)) _tys [_dct, x]) =
         EApp (EPrim PReturn) [] [x]
     goExpr (EApp (EVar (Id "Prelude.mkReg" _ _)) [elemTy, elemWidth, _, _] [_dct1, _dct2, init]) =
@@ -75,12 +79,24 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.primSelectFn" _ _))
             [_tIn, _tOut, _tIdx, _tUnk] [_d1, _d2, _pos, e, idx]) =
         EApp (EPrim PIndex) [] [e, idx]
+    goExpr (EApp (EVar (Id "Prelude.primExtract" _ _))
+            [_tIdx, _tIn, _tArr, _tOut] [_dct, _pos, e, hi, lo]) =
+        EApp (EPrim PSlice) [] [e, hi, lo]
     goExpr (EApp (EVar (Id "Prelude._if" _ _)) [ty] [c, t, e]) =
         EApp (EPrim PIf) [ty] [c, t, e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._read" _ _)) [_] [e]) =
         EApp (EPrim PRegRead) [] [e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._write" _ _)) [_] [l, r]) =
         EApp (EPrim PRegWrite) [] [l, r]
+
+    goExpr (EApp (EVar (Id "Prelude.primValueOf" _ _)) [_] [_]) = EConst "primValueOf"
+    goExpr (EVar (Id "Prelude.constantWithAllBitsSet" _ _)) = EConst "constantWithAllBitsSet"
+    goExpr (EVar (Id "Prelude.constantWithAllBitsUnset" _ _)) = EConst "constantWithAllBitsUnset"
+
+    goExpr (EApp (EVar (Id "Assert.staticAssert" _ _)) [_, _] [_dct, _, _]) =
+        buildLambda [PWild, PWild] (primApp PReturn [] [EConst "staticAssert"])
+    goExpr (EApp (EVar (Id "Assert.dynamicAssert" _ _)) [_, _] [_dct, _, _]) =
+        buildLambda [PWild, PWild] (primApp PReturn [] [EConst "dynamicAssert"])
 
     -- Unary and binary ops
     goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = binOp "+" l r
@@ -115,13 +131,14 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goTy (TApp (TCon (Id "Prelude.IsModule" _ _)) [t1, t2]) = TIsModule t1 t2
     goTy t = t
 
+    primApp p tys args = EApp (EPrim p) tys args
+
     -- Convert a `RawRule` into a `Rule` suitable for use in `EAddRules`.
     convRule :: RawRule -> Maybe Rule
     convRule (RrRule optNameExpr guards body) = do
         optName' <- case optNameExpr of
             Nothing -> return Nothing
-            Just (EApp (EVar (Id "Prelude.fromString" _ _)) [_] [_dct, lit])
-              | ELit (LStr s) <- lit -> return (Just s)
+            Just (ELit (LStr s)) -> return (Just s)
             _ -> Nothing
         conds' <- forM guards $ \g -> case g of
             GCond e -> return e

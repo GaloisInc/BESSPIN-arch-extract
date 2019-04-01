@@ -24,6 +24,7 @@ import Text.Read (readMaybe)
 import Debug.Trace
 import Data.List
 
+import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Lens
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.BSV.Raw
@@ -83,7 +84,8 @@ nextRuleIdx = do
     return idx
 
 
-data BSVModule = BSVModule Id Ty Expr
+-- The Bool is True if this module came from a library package.
+data BSVModule = BSVModule Id Ty Expr Bool
 
 -- # Module processing
 --
@@ -114,37 +116,39 @@ data BSVModule = BSVModule Id Ty Expr
 
 -- Check if a `Def` is the dummy `mkFoo = mkFoo` definition generated for
 -- synthesized modules.
-isDummyDef (Def (Id name _ _) _ [Clause [PTcDict] e])
-  | EApp (EVar (Id name' _ _)) [_, _] [ETcDict] <- e
+isDummyDef (Def (Id name _ _) _ [Clause [_] e])
+  | EApp (EVar (Id name' _ _)) [_, _] [_] <- e
   = name == lastWord name'
 isDummyDef _ = False
 
-convertModule :: Def -> Maybe BSVModule
-convertModule d | isDummyDef d = Nothing
+convertModule :: Bool -> Def -> Maybe BSVModule
+convertModule _ d | isDummyDef d = Nothing
 -- Synthesized module case.  This case is looking at the `mkFoo-` definition,
 -- which needs adjustments to its type and value to get into the standard form.
-convertModule (Def _ ty cs)
+convertModule isLib (Def _ ty cs)
   | [Clause [] body] <- cs
   , (_, ELet (Def i ty' [Clause [] body']) _) <- splitLambda body
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
   = Just $ BSVModule i
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
     body'
+    isLib
   where
     iM = Id "_m__" 0 0
     iC = Id "_c__" 0 0
     dictTy = TIsModule (TVar iM) (TVar iC)
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
-convertModule (Def i ty cs)
+convertModule isLib (Def i ty cs)
   | [Clause dcts body] <- cs
-  , all (\p -> case p of PTcDict -> True; _ -> False) dcts
+  --, all (\p -> case p of PTcDict -> True; _ -> False) dcts
   , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
   , any (isModDict iM) argTys
   = Just $ BSVModule i
     (buildFnTy tyVars argTys (TModule ifcTy))
     body
-convertModule _ = Nothing
+    isLib
+convertModule _ _ = Nothing
 
 isModDict iM (TIsModule (TVar iM') (TVar _)) = iM == iM'
 isModDict _ _ = False
@@ -154,15 +158,22 @@ structAddPackageName (Id pkgName _ _) s =
     let Id name l c = structId s in
     s { structId = Id (pkgName <> "." <> name) l c }
 
-addPackageName :: Id -> BSVModule -> BSVModule
-addPackageName (Id pkgName _ _) (BSVModule (Id name l c) t e) =
-    BSVModule (Id (pkgName <> "." <> name) l c) t e
+defAddPackageName :: Id -> Def -> Def
+defAddPackageName (Id pkgName _ _) d =
+    let Id name l c = defId d in
+    d { defId = Id (pkgName <> "." <> name) l c }
 
-findPackageModules :: Package -> [BSVModule]
-findPackageModules p = 
+addPackageName :: Id -> BSVModule -> BSVModule
+addPackageName (Id pkgName _ _) (BSVModule (Id name l c) t e k) =
+    BSVModule (Id (pkgName <> "." <> name) l c) t e k
+
+findPackageModules :: Config.BSV -> Package -> [BSVModule]
+findPackageModules cfg p =
     map (addPackageName $ packageId p) $
-    mapMaybe convertModule $
+    mapMaybe (convertModule isLib) $
     toList $ packageDefs p
+  where
+    isLib = Set.member (idName $ packageId p) (Config.bsvLibraryPackages cfg)
 
 returnedIfcName :: Ty -> Maybe Text
 returnedIfcName ty
@@ -173,10 +184,10 @@ returnedIfcName ty
   = Just name
   | otherwise = Nothing
 
-extractDesign :: [Package] -> A.Design ()
-extractDesign ps = A.Design archMods
+extractDesign :: Config.BSV -> [Package] -> A.Design ()
+extractDesign cfg ps = A.Design archMods
   where
-    bsvMods = concatMap findPackageModules ps
+    bsvMods = concatMap (findPackageModules cfg) ps
 
     structs = M.unions $ do
         p <- ps
@@ -187,7 +198,8 @@ extractDesign ps = A.Design archMods
     defs = M.unions $ do
         p <- ps
         d <- toList $ packageDefs p
-        return $ M.singleton (idName $ defId d) d
+        let d' = defAddPackageName (packageId p) d
+        return $ M.singleton (idName $ defId d') d'
 
     ifcSpecs = translateIfcStructs structs
 
@@ -197,7 +209,7 @@ extractDesign ps = A.Design archMods
         Just ifc -> ifc
 
     modMap = M.fromList $
-        zipWith (\(BSVModule (Id name _ _) ty _) idx ->
+        zipWith (\(BSVModule (Id name _ _) ty _ _) idx ->
             (name, (idx, ty, modIfc name ty))) bsvMods [0..]
 
     initState = ExtractState
@@ -211,30 +223,36 @@ extractDesign ps = A.Design archMods
         , esModMap =
             trace ("known modules\n" ++ unlines (map (("  " ++) . show) $ M.toList modMap)) $
             modMap
-        , esIfcSpecs = ifcSpecs
+        , esIfcSpecs =
+            trace ("known ifcs\n" ++ unlines (map (("  " ++) . show) $ M.toList ifcSpecs)) $
+            ifcSpecs
         }
     archMods = S.fromList $ evalState (mapM go bsvMods) initState
-    go m@(BSVModule (Id name _ _) ty _) = extractModule m (modIfc name ty)
+    go m@(BSVModule (Id name _ _) ty _ _) = extractModule m (modIfc name ty)
 
 extractModule :: BSVModule -> IfcSpec -> ExtractM (A.Module ())
-extractModule (BSVModule (Id name _ _) ty body) ifc = do
+extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
     traceM (" --- extracting module " ++ show name ++ " ---")
     traceM (T.unpack $ printAny ty)
     traceM (T.unpack $ printAny body)
     traceM "---"
-    let initMod = A.Module name S.empty S.empty S.empty S.empty S.empty S.empty
-    m <- withModule initMod $ do
-        v <- eval M.empty body
+    let kind = if isLib then A.MkExtern else A.MkNormal
+    let initMod = A.Module name kind S.empty S.empty S.empty S.empty S.empty S.empty
+    m <- withModule initMod $
+        if not isLib then do
+            v <- eval M.empty body
 
-        (numTys, numVals) <- countArgs v
-        when (numTys > 0) $ badEval'
-            ("can't provide type arguments to module body", name, v)
-            return ()
-        let argVals = replicate numVals VConst
+            (numTys, numVals) <- countArgs v
+            when (numTys > 0) $ badEval'
+                ("can't provide type arguments to module body", name, v)
+                return ()
+            let argVals = replicate numVals VConst
 
-        v' <- if numVals > 0 then appValue v [] argVals else return v
-        m <- runModule v'
-        buildIfcPorts "" ifc m
+            v' <- if numVals > 0 then appValue v [] argVals else return v
+            m <- runModule v'
+            buildIfcPorts "" ifc m
+        else do
+            buildIfcPorts_ "" ifc
     return $
         reconnectNets $
         m
@@ -348,14 +366,20 @@ eval sc (EApp f tys args) = do
     appValue fv tys argvs
 -- TODO: handling multi-clause defs will require multi-clause VClosure, and
 -- associated changes to application & pattern matching.
+eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e) = do
+    v <- eval sc body
+    eval (M.insert name v sc) e
 eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e) =
     eval (M.insert name (VClosure ps sc body) sc) e
+eval sc (ELet (Def (Id name _ _) _ cs) e) =
+    let v = badEval "multi-clause let binding NYI" in
+    eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
 -- would be to implement, but it doesn't seem to be used very often.
 eval sc (ELetRec ds e) =
     let go name = (name, badEval ("letrec binding (NYI)", name)) in
-    let sc' = M.fromList $ map (go . idName . defId) ds in
-    eval sc' e
+    let bnds = M.fromList $ map (go . idName . defId) ds in
+    eval (bnds <> sc) e
 
 eval sc (ELit _) = return VConst
 -- ERules should be converted to EAddRules by RaiseRaw
@@ -389,6 +413,7 @@ eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
     return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
+eval sc (EConst _) = return VConst
 eval sc (EUnknown cbor) = return $ badEval ("EUnknown", cbor)
 
 
@@ -518,6 +543,7 @@ countArgsPrim p = case p of
     PUnpack -> (0, 1)
     PTruncate -> (0, 1)
     PIndex -> (0, 2)
+    PSlice -> (0, 3)
     PRegRead -> (0, 1)
     PRegWrite -> (0, 2)
     PUnOp _ -> (0, 1)
@@ -533,7 +559,10 @@ appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
 appPrim PTruncate [] [v] = return v
-appPrim PIndex [] [v, i] = return $ badEval ("PIndex NYI", v, i)
+appPrim PIndex [] vs@[v, i] | Just inps <- collectNets vs =
+    if S.null inps then return VConst else VNet <$> genCombLogic inps
+appPrim PSlice [] vs@[v, hi, lo] | Just inps <- collectNets vs =
+    if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim PRegRead [] [VDff _ qNetId] = return $ VNet qNetId
 appPrim PRegWrite [] [VDff muxIdx _, v] = return $ VRegWrite muxIdx v
 appPrim (PUnOp _) [] vs | Just inps <- collectNets vs =
@@ -640,7 +669,7 @@ handleModule :: Value -> ExtractM Value
 handleModule c = go Nothing c
   where
     go :: Maybe Text -> Value -> ExtractM Value
-    go _ (VNamed name c) = go (Just name) c
+    go _ (VNamed name c) = runMonad (go (Just name)) c
     go optName (VMkReg _ty) = do
         name <- case optName of
             Just name -> return name
@@ -718,8 +747,11 @@ buildIfcItemLogic qualName instId (IiMethod m) = do
         A._logicOutputs %= (<> outPins)
 
     case imKind m of
-        MkComb -> return $
+        MkComb
+          | imArgCounts m /= (0, 0) -> return $
             VCombMethod (imArgCounts m) (S.fromList inNets) (head outNets)
+          | otherwise -> return $
+            VNet $ head outNets
         MkAction hasResult -> do
             muxIdx <- addLogic $ A.Logic
                 (A.LkRuleMux S.empty (S.fromList $ imArgNames m))
@@ -822,6 +854,28 @@ buildIfcItemPorts qualName (IiMethod m) impl = do
                     return ()
   where
     hasArgs = not $ null $ imArgNames m
+
+
+
+-- Similar to `buildIfcPorts`, but doesn't connect anything to the new ports.
+buildIfcPorts_ :: Text -> IfcSpec -> ExtractM ()
+buildIfcPorts_ prefix ifc = do
+    forM_ (ifcEntries ifc) $ \(name, entry) -> do
+        buildIfcItemPorts_ (prefix <> name) (ieItem entry)
+
+buildIfcItemPorts_ :: Text -> IfcItem -> ExtractM ()
+buildIfcItemPorts_ qualName (IiSubIfc ifc) =
+    buildIfcPorts_ (qualName <> ".") ifc
+buildIfcItemPorts_ qualName (IiMethod m) = do
+    inNets <- forM (imArgNames m) $ \argName ->
+        addNet $ A.mkNet (qualName <> "." <> argName) 0 A.TUnknown
+    outNets <- forM [0 .. methodOutPorts m - 1] $ \_ ->
+        addNet $ A.mkNet (qualName <> ".return") 0 A.TUnknown
+
+    inPorts <- S.fromList <$> mapM netPort inNets
+    outPorts <- S.fromList <$> mapM netPort outNets
+    _esCurModule . A._moduleInputs %= (<> inPorts)
+    _esCurModule . A._moduleOutputs %= (<> outPorts)
 
 
 
