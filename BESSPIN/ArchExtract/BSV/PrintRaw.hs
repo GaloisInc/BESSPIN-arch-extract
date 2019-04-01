@@ -4,6 +4,7 @@ module BESSPIN.ArchExtract.BSV.PrintRaw where
 import Data.Foldable
 import qualified Data.Sequence as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Prettyprint.Doc
 import Data.Text.Prettyprint.Doc.Render.Text
 
@@ -94,8 +95,12 @@ instance Pretty Prim where
     pretty p = viaShow p
 
 instance Pretty Stmt where
-    pretty (SBind p t e) = pretty p <+> "::" <+> pretty t <+> "<-" <+> pretty e <> semi
-    pretty (SBind' e) = pretty e <> semi
+    pretty (SBind p t e sid) =
+        pretty p <+> "::" <+> pretty t <+> "<-" <+> pretty e <> semi
+            <+> "--" <+> pretty sid
+    pretty (SBind' e sid) =
+        pretty e <> semi <+> "--" <+> pretty sid
+    pretty (SNote text) = vsep $ map (\l -> "--" <+> pretty l) $ T.lines text
 
 instance Pretty Pat where
     pretty (PVar i) = pretty i

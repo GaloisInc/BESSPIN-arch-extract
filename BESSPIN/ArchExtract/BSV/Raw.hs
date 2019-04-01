@@ -110,8 +110,11 @@ data Lit =
     deriving (Show, Data, Typeable)
 
 data Stmt =
-      SBind Pat Ty Expr
-    | SBind' Expr
+    -- Final `Int` is a unique ID, used for attaching comments/error messages
+    -- (as `SNote`s) to particular statements.
+      SBind Pat Ty Expr Int
+    | SBind' Expr Int
+    | SNote Text
     deriving (Show, Data, Typeable)
 
 data Pat =
@@ -176,6 +179,12 @@ splitLambda e = ([], e)
 buildLambda :: [Pat] -> Expr -> Expr
 buildLambda [] e = e
 buildLambda ps e = ELam ps e
+
+splitLet :: Expr -> ([Def], Expr)
+splitLet (ELet d e') =
+    let (defs', body') = splitLet e' in
+    (d : defs', body')
+splitLet e = ([], e)
 
 -- Split an application type into the base type constructor and a list of
 -- arguments.

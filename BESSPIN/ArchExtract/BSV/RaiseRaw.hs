@@ -45,9 +45,9 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
   where
     -- Monad handling
     goExpr (EApp (EVar (Id "Prelude.bind" _ _)) [_tM, tA, _tB] [_dct, m, ELam [p] k]) =
-        goExpr $ EDo [SBind p tA m] k
+        goExpr $ EDo [SBind p tA m 0] k
     goExpr (EApp (EVar (Id "Prelude.bind_" _ _)) _tys [_dct, m, k]) =
-        goExpr $ EDo [SBind' m] k
+        goExpr $ EDo [SBind' m 0] k
     goExpr (EDo ss1 (EDo ss2 e)) =
         goExpr $ EDo (ss1 ++ ss2) e
 

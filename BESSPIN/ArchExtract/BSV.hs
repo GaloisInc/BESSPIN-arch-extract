@@ -1,8 +1,17 @@
+{-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.BSV where
 
 import Data.ByteString (ByteString)
 import Control.Monad
+import Control.Monad.State
+import Data.Foldable
+import Data.Generics
 import Data.List
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Maybe
+import Data.Sequence (Seq)
+import qualified Data.Sequence as S
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -29,12 +38,22 @@ import BESSPIN.ArchExtract.Print
 
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
-    pkgs <- loadPackages cfg
+    pkgs <- numberStmts <$> loadPackages cfg
 
-    forM_ pkgs $ \pkg -> do
+    let er = extractDesign' cfg pkgs
+    let pkgs' = annotateStmts (erStmtErrors er) pkgs
+
+    forM_ pkgs' $ \pkg -> do
         putStrLn $ "\n\n --- package " ++ T.unpack (idName $ packageId pkg) ++ " ---"
         putStrLn $ T.unpack $ printBSV pkg
         putStrLn $ " --- end package " ++ T.unpack (idName $ packageId pkg) ++ " ---\n"
+
+    T.putStrLn $ " --- begin error report ---"
+    forM_ (M.toList $ erModuleErrors er) $ \(modName, errs) -> do
+        forM_ errs $ \err ->
+            T.putStrLn $ "error: " <> modName <> ": " <> err
+        T.putStrLn ""
+    T.putStrLn $ " --- end error report ---"
 
     T.putStrLn $ printArchitecture $ extractDesign cfg pkgs
 
@@ -54,3 +73,25 @@ listPackageNames :: Config.BSV -> IO [Text]
 listPackageNames cfg = do
     pkgs <- loadPackages cfg
     return $ map (idName . packageId) pkgs
+
+
+numberStmts x = evalState (everywhereM (mkM go) x) 1
+  where
+    next = do
+        x <- get
+        modify (+ 1)
+        return x
+
+    go (SBind p t e _) = next >>= \sid -> return $ SBind p t e sid
+    go (SBind' e _) = next >>= \sid -> return $ SBind' e sid
+    go (SNote x) = return $ SNote x
+
+annotateStmts m x = everywhere (mkT go) x
+  where
+    go [] = []
+    go (s:ss) = case s of
+        SBind _ _ _ sid -> s : map SNote (get sid) ++ ss
+        SBind' _ sid -> s : map SNote (get sid) ++ ss
+        _ -> s : ss
+
+    get sid = toList $ fromMaybe S.empty $ M.lookup sid m

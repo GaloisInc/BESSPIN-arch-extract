@@ -43,6 +43,8 @@ data ExtractState = ExtractState
     , esIfcSpecs :: Map Text IfcSpec
     -- Error messages from `badEval`
     , esErrors :: Seq Text
+    , esStmtErrors :: Map Int (Seq Text)
+    , esModuleErrors :: Seq Text
     }
 
 makeLenses' ''ExtractState
@@ -84,6 +86,18 @@ nextRuleIdx = do
     idx <- use _esRuleCounter
     _esRuleCounter %= (+1)
     return idx
+
+takeErrors :: ExtractM (Seq Text)
+takeErrors = do
+    errs <- use _esErrors
+    _esErrors .= S.empty
+    return errs
+
+takeModuleErrors :: ExtractM (Seq Text)
+takeModuleErrors = do
+    errs <- use _esModuleErrors
+    _esModuleErrors .= S.empty
+    return errs
 
 
 -- The Bool is True if this module came from a library package.
@@ -129,11 +143,13 @@ convertModule _ d | isDummyDef d = Nothing
 -- which needs adjustments to its type and value to get into the standard form.
 convertModule isLib (Def _ ty cs)
   | [Clause [] body] <- cs
-  , (_, ELet (Def i ty' [Clause [] body']) _) <- splitLambda body
+  , (_, body') <- splitLambda body
+  , (ds@(_:_), _) <- splitLet body'
+  , Def i ty' [Clause [] body''] <- last ds
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
   = Just $ BSVModule i
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
-    body'
+    body''
     isLib
   where
     iM = Id "_m__" 0 0
@@ -186,8 +202,19 @@ returnedIfcName ty
   = Just name
   | otherwise = Nothing
 
+data ExtractResult = ExtractResult
+    { erDesign :: A.Design ()
+    , erModuleErrors :: Map Text (Seq Text)
+    , erStmtErrors :: Map Int (Seq Text)
+    }
+    deriving (Show)
+
 extractDesign :: Config.BSV -> [Package] -> A.Design ()
-extractDesign cfg ps = A.Design archMods
+extractDesign cfg ps = erDesign $ extractDesign' cfg ps
+
+extractDesign' :: Config.BSV -> [Package] -> ExtractResult
+extractDesign' cfg ps =
+    ExtractResult (A.Design archMods) modErrs stmtErrs
   where
     bsvMods = concatMap (findPackageModules cfg) ps
 
@@ -229,9 +256,19 @@ extractDesign cfg ps = A.Design archMods
             trace ("known ifcs\n" ++ unlines (map (("  " ++) . show) $ M.toList ifcSpecs)) $
             ifcSpecs
         , esErrors = S.empty
+        , esStmtErrors = M.empty
+        , esModuleErrors = S.empty
         }
-    archMods = S.fromList $ evalState (mapM go bsvMods) initState
-    go m@(BSVModule (Id name _ _) ty _ _) = extractModule m (modIfc name ty)
+    (extractedMods, finalState) = runState (mapM go bsvMods) initState
+    archMods = S.fromList [m | (m,_,_) <- extractedMods]
+    modErrs = M.fromList [(A.moduleName m, e) | (m,e,fe) <- extractedMods]
+    stmtErrs = esStmtErrors finalState
+    go m@(BSVModule (Id name _ _) ty _ _) = do
+        m' <- extractModule m (modIfc name ty)
+        finalErrs <- takeErrors
+        errs <- takeModuleErrors
+        return (m', errs, finalErrs)
+
 
 extractModule :: BSVModule -> IfcSpec -> ExtractM (A.Module ())
 extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
@@ -305,7 +342,7 @@ data Value =
     -- Monadic computations.  These are processed by `runModule` and
     -- `runAction`.
     | VReturn Value
-    | VBind Value Value
+    | VBind Value Value Int
     -- Generic wrapper for monadic computations, represented as a function
     -- (whose final return type is `m a`) applied to type and value arguments.
     -- This lets us avoid having separate representations of, say, module
@@ -421,12 +458,13 @@ eval sc (EPrim p) = return $ VPrim p
 eval sc (EDo ss e) = case ss of
     [] -> eval sc e
     s : ss' ->  do
-        let (p, m) = case s of
-                SBind p _ m -> (p, m)
-                SBind' m -> (PWild, m)
+        let (p, m, sid) = case s of
+                SBind p _ m sid -> (p, m, sid)
+                SBind' m sid -> (PWild, m, sid)
+                SNote _ -> (PWild, EConst "SNote", 0)
         mv <- eval sc m
         let kv = VClosure [p] sc (EDo ss' e)
-        return $ VBind mv kv
+        return $ VBind mv kv sid
 eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
     return $ VAddRules rvs
@@ -570,7 +608,7 @@ countArgsPrim p = case p of
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
-appPrim PBind [] [m, k] = return $ VBind m k
+appPrim PBind [] [m, k] = return $ VBind m k 0
 appPrim PMkReg [ty, _width] [_init] = return $ VMkReg ty
 appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
@@ -652,7 +690,7 @@ genOutputPort name netId = do
 
 
 isComputation (VReturn _) = True
-isComputation (VBind _ _) = True
+isComputation (VBind _ _ _) = True
 isComputation (VCompute _ _ _) = True
 isComputation (VNamed _ _) = True
 isComputation (VMkReg _) = True
@@ -671,9 +709,14 @@ runMonad handle c = go c
   where
     go c = case c of
         VReturn v -> return v
-        VBind m k -> do
+        VBind m k sid -> do
             -- Run computation `m` to get a value
             v <- go m
+            when (sid /= 0) $ do
+                errs <- takeErrors
+                let msgs = errs |> T.pack ("result: " ++ show v)
+                _esStmtErrors %= M.alter (\x -> Just $ maybe msgs (<> msgs) x) sid
+                _esModuleErrors %= (<> errs)
             -- Pass the value to `k` to get a new computation
             c' <- appValue k [] [v]
             -- Run the new computation
