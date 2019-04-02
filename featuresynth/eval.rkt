@@ -51,6 +51,7 @@
         (eval-group fm j g cfg))
       (for/list ([d (feature-model-dependencies fm)])
         (eval-dependency fm d cfg))
+      (list (eval-constraint (feature-model-constraint fm) cfg))
       )))
 
 
@@ -76,3 +77,18 @@
     [(claim-fixed? c) (eval-claim-fixed c cfg)]
     [(claim-dep? c) (eval-claim-dep c cfg)]
     [(claim-antidep? c) (eval-claim-antidep c cfg)]))
+
+
+; Constraint evaluation
+
+(define (eval-constraint c cfg)
+  (define (loop c) (eval-constraint c cfg))
+  (match c
+    [(? integer?) (vector-ref cfg c)]
+    [(? boolean?) c]
+    [(cons '&& args) (apply && (map loop args))]
+    [(cons '|| args) (apply || (map loop args))]
+    [(cons '! args) (apply ! (map loop args))]
+    [(cons '=> args) (apply => (map loop args))]
+    [(cons '<=> args) (apply <=> (map loop args))]
+    ))

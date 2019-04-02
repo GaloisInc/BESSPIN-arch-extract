@@ -113,7 +113,11 @@
         (format "[ ~a => ~a ]" a-path b-path)
         (format "[ ~a => ! ~a ]" a-path b-path))))
 
-  (append feature-constraints dependency-constraints))
+  (define constraint-constraints
+    (list
+      (format "; ~a" (feature-model-constraint fm))))
+
+  (append feature-constraints dependency-constraints constraint-constraints))
 
 (define (feature-model->clafer feature-names fm)
   (define tree (build-feature-tree fm))

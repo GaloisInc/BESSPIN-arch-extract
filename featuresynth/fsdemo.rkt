@@ -18,8 +18,8 @@
 
 ; Demo
 
-(define example-fm-2
-  (make-feature-model
+(define example-fm-2-raw
+  (list
     (list
       (cons 'a1 (feature #f #f 0 #f #f))
       (cons 'a2 (feature #f #f 0 #f #f))
@@ -35,6 +35,7 @@
     (list
       (dependency 'b1 'c2 #t)
     )
+    #t
   ))
 
 
@@ -66,6 +67,7 @@
     (list
       (dependency 'rv-d 'rv-f #t)
     )
+    #t
   ))
 
 (define secure-cpu-isa-init-tests
@@ -118,6 +120,7 @@
       (dependency 'hmac-drbg 'hash #t)
       (dependency 'ctr-drbg 'symmetric #t)
     )
+    #t
   ))
 
 (define secure-cpu-arch-init-tests
@@ -129,16 +132,41 @@
   ))
 
 
+(define constraint-test-fm-raw
+  (list
+    (list
+      (cons 'a (feature #f #f 0 #f #f))
+      (cons 'b (feature #f #f 0 #f #f))
+      (cons 'c (feature #f #f 0 #f #f))
+    )
+    (list)
+    (list)
+    '(=> (&& a b) c)
+  ))
+
+(define constraint-test-init-tests
+  (list
+    #(#t #t #t)
+    #(#t #f #f)
+    #(#f #t #f)
+    #(#f #f #f)
+    #(#f #f #t)
+    ))
+
+
 (random-seed 12345)
 ;(define oracle-fm-raw example-fm-2-raw)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define init-tests '())
-(define oracle-fm-raw secure-cpu-isa-fm-raw)
-(define symbolic-fm (?*feature-model 15 4 1))
-(define init-tests secure-cpu-isa-init-tests)
+;(define oracle-fm-raw secure-cpu-isa-fm-raw)
+;(define symbolic-fm (?*feature-model 15 4 1))
+;(define init-tests secure-cpu-isa-init-tests)
 ;(define oracle-fm-raw secure-cpu-arch-fm-raw)
 ;(define symbolic-fm (?*feature-model 24 8 3))
 ;(define init-tests secure-cpu-arch-init-tests)
+(define oracle-fm-raw constraint-test-fm-raw)
+(define symbolic-fm (?*feature-model 3 0 0 #:constraint '(=> (&& _ _) _)))
+(define init-tests constraint-test-init-tests)
 
 (define oracle-fm (apply make-feature-model oracle-fm-raw))
 (assert (valid-feature-model oracle-fm))
@@ -314,7 +342,8 @@
     (list
       (feature-model-num-features symbolic-fm)
       (feature-model-num-groups symbolic-fm)
-      (feature-model-num-dependencies symbolic-fm)))
+      (feature-model-num-dependencies symbolic-fm)
+      '(=> (&& _ _) _)))
   (define fm
     (run-manager
       `(
@@ -324,7 +353,9 @@
         ;(boredom 100 ,@symbolic-fm-args)
         )
       `(eval-fm ,(struct->vector* oracle-fm))
+      #hash()
       init-tests
+      '()
       ))
   (pretty-write fm)
   (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))

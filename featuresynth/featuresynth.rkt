@@ -91,7 +91,8 @@
     (list
       (vector-length feature-names)
       config-max-groups
-      config-max-dependencies))
+      config-max-dependencies
+      (=> (&& _ _) _)))
   (run-manager
     `(
       (bitflip)

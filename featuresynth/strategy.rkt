@@ -142,11 +142,10 @@
   (match spec
     [(list 'bitflip)
      (strategy-bitflip chan)]
-    [(list 'distinguish nf ng nd)
-     (strategy-distinguish (?*feature-model nf ng nd) chan)]
-    [(list 'disprove nf ng nd)
-     (strategy-disprove (?*feature-model nf ng nd) chan)]
-    [(list 'boredom threshold nf ng nd)
-     (strategy-boredom threshold (?*feature-model nf ng nd) chan)]
-
+    [(list 'distinguish nf ng nd c)
+     (strategy-distinguish (?*feature-model nf ng nd #:constraint c) chan)]
+    [(list 'disprove nf ng nd c)
+     (strategy-disprove (?*feature-model nf ng nd #:constraint c) chan)]
+    [(list 'boredom threshold nf ng nd c)
+     (strategy-boredom threshold (?*feature-model nf ng nd #:constraint c) chan)]
     ))

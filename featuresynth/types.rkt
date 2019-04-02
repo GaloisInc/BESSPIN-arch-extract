@@ -28,7 +28,7 @@
 (struct feature (parent-id group-id depth force-on force-off) #:transparent)
 (struct group (parent-id min-card max-card) #:transparent)
 (struct dependency (a b val) #:transparent)
-(struct feature-model (features groups dependencies) #:transparent)
+(struct feature-model (features groups dependencies constraint) #:transparent)
 
 (define (feature-model-feature fm i)
   (vector-ref (feature-model-features fm) i))
@@ -159,6 +159,20 @@
         ))
       (= -1 (dependency-a d) (dependency-b d)))))
 
+(define (valid-constraint fm c)
+  (define (loop c) (valid-constraint fm c))
+  (displayln (list 'check c))
+  (match c
+    [(? integer?) (&& (<= 0 c) (valid-feature-id fm c))]
+    [(? boolean?) #t]
+    [(cons '&& args) (apply && (map loop args))]
+    [(cons '|| args) (apply && (map loop args))]
+    [(cons '! args) (apply && (map loop args))]
+    [(cons '=> args) (apply && (map loop args))]
+    [(cons '<=> args) (apply && (map loop args))]
+    [else #f]
+    ))
+
 (define (valid-feature-model fm)
   (apply &&
     (append
@@ -166,6 +180,7 @@
       (for/list ([(g j) (in-indexed (feature-model-groups fm))])
         (valid-group fm j g))
       (for/list ([d (feature-model-dependencies fm)]) (valid-dependency fm d))
+      (list (valid-constraint fm (feature-model-constraint fm)))
       )))
 
 

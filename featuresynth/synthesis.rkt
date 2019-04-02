@@ -39,11 +39,13 @@
 (define (?*dependency)
   (dependency (?*feature-id) (?*feature-id) (?*bool)))
 
-(define (?*feature-model num-features num-groups num-dependencies)
+(define (?*feature-model num-features num-groups num-dependencies
+                         #:constraint [constraint #t])
   (feature-model
     (build-vector num-features (lambda (i) (?*feature)))
     (build-vector num-groups (lambda (i) (?*group)))
     (build-vector num-dependencies (lambda (i) (?*dependency)))
+    (convert-constraint-wildcards constraint)
   ))
 
 (define (?*config num-features)
@@ -54,6 +56,19 @@
     (vector-length (feature-model-features fm))
     (vector-length (feature-model-groups fm))
     (vector-length (feature-model-dependencies fm))))
+
+(define (convert-constraint-wildcards c)
+  (define loop convert-constraint-wildcards)
+  (match c
+    ['_ (?*feature-id)]
+    [(? integer?) c]
+    [(? boolean?) c]
+    [(cons '&& args) (cons '&& (map loop args))]
+    [(cons '|| args) (cons '|| (map loop args))]
+    [(cons '! args) (cons '! (map loop args))]
+    [(cons '=> args) (cons '=> (map loop args))]
+    [(cons '<=> args) (cons '<=> (map loop args))]
+    ))
 
 
 ; Synthesis

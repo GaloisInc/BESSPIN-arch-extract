@@ -49,14 +49,28 @@
     (dependency-val d)
   ))
 
+(define (resolve-constraint nm c)
+  (define (loop c) (resolve-constraint nm c))
+  (match c
+    [(? symbol?) (resolve-feature-id nm c)]
+    [(? integer?) c]
+    [(? boolean?) c]
+    [(cons '&& args) (cons '&& (map loop args))]
+    [(cons '|| args) (cons '|| (map loop args))]
+    [(cons '! args) (cons '! (map loop args))]
+    [(cons '=> args) (cons '=> (map loop args))]
+    [(cons '<=> args) (cons '<=> (map loop args))]
+    ))
+
 (define (resolve-feature-model nm fm)
   (feature-model
     (vector-map (lambda (f) (resolve-feature nm f)) (feature-model-features fm))
     (vector-map (lambda (f) (resolve-group nm f)) (feature-model-groups fm))
     (vector-map (lambda (f) (resolve-dependency nm f)) (feature-model-dependencies fm))
+    (resolve-constraint nm (feature-model-constraint fm))
   ))
 
-(define (make-feature-model fs gs ds)
+(define (make-feature-model fs gs ds c)
   (let*
     ([nm (name-map (make-hash) (make-hash))]
      [fs  ; vector of unresolved features
@@ -68,7 +82,7 @@
          (hash-set! (name-map-groups nm) (car kv) i)
          (cdr kv))]
      [ds (for/vector ([d ds]) d)])
-    (resolve-feature-model nm (feature-model fs gs ds))))
+    (resolve-feature-model nm (feature-model fs gs ds c))))
 
 
 ; Deserialization of feature models
@@ -81,4 +95,5 @@
   (feature-model
     (vector-map (basic-deserializer feature) (vector-ref v 1))
     (vector-map (basic-deserializer group) (vector-ref v 2))
-    (vector-map (basic-deserializer dependency) (vector-ref v 3))))
+    (vector-map (basic-deserializer dependency) (vector-ref v 3))
+    (vector-ref v 4)))
