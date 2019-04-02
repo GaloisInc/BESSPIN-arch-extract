@@ -26,6 +26,10 @@ EOF
 fi
 
 cat >$inst_dir/cur-config.txt
+echo ' --- begin config ---'
+cat $inst_dir/cur-config.txt
+echo ' --- end config ---'
+
 changed_flags=$(
     diff -u $inst_dir/last-config.txt $inst_dir/cur-config.txt |
         grep '^+[01]' |
@@ -50,6 +54,7 @@ echo "define flags are $define_flags"
 
 (
     cd $inst_dir/build
+    rm -f build_dir/*
     bsc -u -elab -verilog \
         -vdir Verilog_RTL -bdir build_dir -info-dir build_dir \
         $define_flags \
