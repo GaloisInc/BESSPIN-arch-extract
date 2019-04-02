@@ -160,9 +160,9 @@ preSimplify x = everywhere (mkT goExpr `extT` goTy) x
     goTy t = t
 
     goExpr (EApp (EApp f tys1 args1) [] args2) = goExpr $ EApp f tys1 (args1 ++ args2)
-    goExpr (ELet (Def i ty [Clause [] body]) (EVar i'))
+    goExpr (ELet (Def i ty [Clause [] body]) (EVar i') _ _)
       | i == i' = goExpr $ body
-    goExpr (ELet (Def i ty [Clause pats body]) (EVar i'))
+    goExpr (ELet (Def i ty [Clause pats body]) (EVar i') _ _)
       | not $ null pats, i == i' = goExpr $ ELam pats body
     goExpr e = e
 
@@ -173,7 +173,7 @@ removeTcDicts :: Data a => a -> a
 removeTcDicts x = everywhere (mkT goExpr `extT` goDefs `extT` goPat) x
   where
     goExpr (EVar (Id t _ _)) | "_tcdict" `T.isPrefixOf` t = ETcDict
-    goExpr (ELet (Def (Id t _ _) _ _) body) | "_tcdict" `T.isPrefixOf` t = body
+    goExpr (ELet (Def (Id t _ _) _ _) body _ _) | "_tcdict" `T.isPrefixOf` t = body
     goExpr e = e
 
     goDefs (Def (Id t _ _) _ _ : rest) | "_tcdict" `T.isPrefixOf` t = rest
@@ -195,7 +195,7 @@ reconstructAllLets x = everywhere (mkT go) x
   where
     go :: Expr -> Expr
     go (ELetRec ds body) = reconstructLet ds body
-    go (ELet d body) = reconstructLet [d] body
+    go (ELet d body _ _) = reconstructLet [d] body
     go e = e
 
 reconstructLet :: [Def] -> Expr -> Expr
@@ -257,7 +257,7 @@ reconstructLet dsList body =
 
     buildScc :: Int -> Expr -> Expr
     buildScc scc body
-      | Set.size dIdxs == 1, not selfRec = ELet (ds `S.index` dIdx) body
+      | Set.size dIdxs == 1, not selfRec = ELet (ds `S.index` dIdx) body 0 []
       | otherwise = ELetRec (map (\dIdx -> ds `S.index` dIdx) $ Set.toList dIdxs) body
       where
         dIdxs = sccs `S.index` scc

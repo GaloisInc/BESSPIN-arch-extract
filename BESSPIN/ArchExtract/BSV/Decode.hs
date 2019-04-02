@@ -116,7 +116,8 @@ getExpr (tag "Expr_Var" -> [i]) = EVar <$> getId i
 getExpr (tag "Expr_LetRec" -> [List defls, body]) =
     ELetRec <$> mapM getDeflDef defls <*> getExpr body
 getExpr (tag "Expr_LetSeq" -> [List defls, body]) =
-    foldr (\d e -> ELet <$> getDeflDef d <*> e) (getExpr body) defls
+    foldr (\d e -> ELet <$> getDeflDef d <*> e <*> pure 0 <*> pure [])
+        (getExpr body) defls
 getExpr (tag "Expr_Apply" -> [f, List args]) =
     EApp <$> getExpr f <*> pure [] <*> mapM getExpr args
 getExpr (tag "Expr_TyApply" -> [f, List tys]) =

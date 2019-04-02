@@ -38,10 +38,10 @@ import BESSPIN.ArchExtract.Print
 
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
-    pkgs <- numberStmts <$> loadPackages cfg
+    pkgs <- numberNodes <$> loadPackages cfg
 
     let er = extractDesign' cfg pkgs
-    let pkgs' = annotateStmts (erStmtErrors er) pkgs
+    let pkgs' = annotateNodes (erNodeErrors er) pkgs
 
     forM_ pkgs' $ \pkg -> do
         putStrLn $ "\n\n --- package " ++ T.unpack (idName $ packageId pkg) ++ " ---"
@@ -75,23 +75,29 @@ listPackageNames cfg = do
     return $ map (idName . packageId) pkgs
 
 
-numberStmts x = evalState (everywhereM (mkM go) x) 1
+numberNodes x = evalState (everywhereM (mkM goStmt `extM` goExpr) x) 1
   where
     next = do
         x <- get
         modify (+ 1)
         return x
 
-    go (SBind p t e _) = next >>= \sid -> return $ SBind p t e sid
-    go (SBind' e _) = next >>= \sid -> return $ SBind' e sid
-    go (SNote x) = return $ SNote x
+    goStmt (SBind p t e _) = next >>= \nid -> return $ SBind p t e nid
+    goStmt (SBind' e _) = next >>= \nid -> return $ SBind' e nid
+    goStmt (SNote x) = return $ SNote x
 
-annotateStmts m x = everywhere (mkT go) x
+    goExpr (ELet d e _ msgs) = next >>= \nid -> return $ ELet d e nid msgs
+    goExpr e = return e
+
+annotateNodes m x = everywhere (mkT goStmts `extT` goExpr) x
   where
-    go [] = []
-    go (s:ss) = case s of
-        SBind _ _ _ sid -> s : map SNote (get sid) ++ ss
-        SBind' _ sid -> s : map SNote (get sid) ++ ss
+    goStmts [] = []
+    goStmts (s:ss) = case s of
+        SBind _ _ _ nid -> s : map SNote (get nid) ++ ss
+        SBind' _ nid -> s : map SNote (get nid) ++ ss
         _ -> s : ss
 
-    get sid = toList $ fromMaybe S.empty $ M.lookup sid m
+    goExpr (ELet d e nid msgs) = ELet d e nid (msgs ++ get nid)
+    goExpr e = e
+
+    get nid = toList $ fromMaybe S.empty $ M.lookup nid m

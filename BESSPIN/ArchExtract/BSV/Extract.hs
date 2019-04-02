@@ -43,7 +43,7 @@ data ExtractState = ExtractState
     , esIfcSpecs :: Map Text IfcSpec
     -- Error messages from `badEval`
     , esErrors :: Seq Text
-    , esStmtErrors :: Map Int (Seq Text)
+    , esNodeErrors :: Map Int (Seq Text)
     , esModuleErrors :: Seq Text
     }
 
@@ -92,6 +92,20 @@ takeErrors = do
     errs <- use _esErrors
     _esErrors .= S.empty
     return errs
+
+saveErrors :: NodeId -> Value -> ExtractM ()
+saveErrors nid v = do
+    errs <- takeErrors
+    let msgs = errs |> T.pack ("result: " ++ show v)
+    _esNodeErrors %= M.alter (\x -> Just $ maybe msgs (<> msgs) x) nid
+    _esModuleErrors %= (<> errs)
+
+saveErrors' :: NodeId -> ExtractM ()
+saveErrors' nid = do
+    errs <- takeErrors
+    let msgs = errs
+    _esNodeErrors %= M.alter (\x -> Just $ maybe msgs (<> msgs) x) nid
+    _esModuleErrors %= (<> errs)
 
 takeModuleErrors :: ExtractM (Seq Text)
 takeModuleErrors = do
@@ -205,7 +219,7 @@ returnedIfcName ty
 data ExtractResult = ExtractResult
     { erDesign :: A.Design ()
     , erModuleErrors :: Map Text (Seq Text)
-    , erStmtErrors :: Map Int (Seq Text)
+    , erNodeErrors :: Map Int (Seq Text)
     }
     deriving (Show)
 
@@ -214,7 +228,7 @@ extractDesign cfg ps = erDesign $ extractDesign' cfg ps
 
 extractDesign' :: Config.BSV -> [Package] -> ExtractResult
 extractDesign' cfg ps =
-    ExtractResult (A.Design archMods) modErrs stmtErrs
+    ExtractResult (A.Design archMods) modErrs nodeErrs
   where
     bsvMods = concatMap (findPackageModules cfg) ps
 
@@ -256,13 +270,13 @@ extractDesign' cfg ps =
             trace ("known ifcs\n" ++ unlines (map (("  " ++) . show) $ M.toList ifcSpecs)) $
             ifcSpecs
         , esErrors = S.empty
-        , esStmtErrors = M.empty
+        , esNodeErrors = M.empty
         , esModuleErrors = S.empty
         }
     (extractedMods, finalState) = runState (mapM go bsvMods) initState
     archMods = S.fromList [m | (m,_,_) <- extractedMods]
-    modErrs = M.fromList [(A.moduleName m, e) | (m,e,fe) <- extractedMods]
-    stmtErrs = esStmtErrors finalState
+    modErrs = M.fromList [(A.moduleName m, e <> fe) | (m,e,fe) <- extractedMods]
+    nodeErrs = esNodeErrors finalState
     go m@(BSVModule (Id name _ _) ty _ _) = do
         m' <- extractModule m (modIfc name ty)
         finalErrs <- takeErrors
@@ -419,13 +433,17 @@ eval sc (EApp f tys args) = do
     appValue fv tys argvs
 -- TODO: handling multi-clause defs will require multi-clause VClosure, and
 -- associated changes to application & pattern matching.
-eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e) = do
+eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e nid _) = do
     v <- eval sc body
+    saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e) =
-    eval (M.insert name (VClosure ps sc body) sc) e
-eval sc (ELet (Def (Id name _ _) _ cs) e) = do
+eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e nid _) = do
+    let v = VClosure ps sc body
+    saveErrors nid v
+    eval (M.insert name v sc) e
+eval sc (ELet (Def (Id name _ _) _ cs) e nid _) = do
     v <- badEval ("multi-clause let binding NYI", name)
+    saveErrors nid v
     eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
 -- would be to implement, but it doesn't seem to be used very often.
@@ -712,11 +730,7 @@ runMonad handle c = go c
         VBind m k sid -> do
             -- Run computation `m` to get a value
             v <- go m
-            when (sid /= 0) $ do
-                errs <- takeErrors
-                let msgs = errs |> T.pack ("result: " ++ show v)
-                _esStmtErrors %= M.alter (\x -> Just $ maybe msgs (<> msgs) x) sid
-                _esModuleErrors %= (<> errs)
+            when (sid /= 0) $ saveErrors sid v
             -- Pass the value to `k` to get a new computation
             c' <- appValue k [] [v]
             -- Run the new computation

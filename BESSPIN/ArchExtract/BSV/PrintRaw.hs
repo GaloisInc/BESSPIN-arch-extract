@@ -49,11 +49,11 @@ instance Pretty Expr where
         "\\" <> hsep (map pretty pats) <+> "->" <+> pretty body
     pretty (EApp f tys args) = parens $ hsep $
         [pretty f] ++ map (\t -> "@" <> pretty t) tys ++ map pretty args
-    pretty (ELet def body) =
-        vsep
-            [ "let" <+> hang 0 (pretty def) <+> "in"
-            , pretty body
-            ]
+    pretty (ELet def body nid msgs) =
+        vsep $
+            [ "let" <+> hang 0 (pretty def) <+> "in" <+> "--" <+> pretty nid ]
+            ++ map (\l -> "--" <+> pretty l) msgs
+            ++ [pretty body]
     pretty (ELetRec defs body) =
         vsep
             [ "letrec" <+> hang 0 (vsep $ map pretty defs) <+> "in"
@@ -95,11 +95,11 @@ instance Pretty Prim where
     pretty p = viaShow p
 
 instance Pretty Stmt where
-    pretty (SBind p t e sid) =
+    pretty (SBind p t e nid) =
         pretty p <+> "::" <+> pretty t <+> "<-" <+> pretty e <> semi
-            <+> "--" <+> pretty sid
-    pretty (SBind' e sid) =
-        pretty e <> semi <+> "--" <+> pretty sid
+            <+> "--" <+> pretty nid
+    pretty (SBind' e nid) =
+        pretty e <> semi <+> "--" <+> pretty nid
     pretty (SNote text) = vsep $ map (\l -> "--" <+> pretty l) $ T.lines text
 
 instance Pretty Pat where

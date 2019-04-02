@@ -9,6 +9,10 @@ import Data.Text (Text)
 import qualified Codec.CBOR.Term as CBOR
 
 
+-- Some nodes have unique IDs assigned so we can associate errors and other
+-- messages with those nodes.
+type NodeId = Int
+
 data Package = Package
     { packageId :: Id
     , packageDefs :: Seq Def
@@ -47,7 +51,8 @@ data Expr =
       EVar Id
     | ELam [Pat] Expr
     | EApp Expr [Ty] [Expr]
-    | ELet Def Expr
+    -- Let bindings have NodeIds and messages associated with the `Def`'s RHS.
+    | ELet Def Expr NodeId [Text]
     | ELetRec [Def] Expr
 
     -- BSV-specific primitives
@@ -112,8 +117,8 @@ data Lit =
 data Stmt =
     -- Final `Int` is a unique ID, used for attaching comments/error messages
     -- (as `SNote`s) to particular statements.
-      SBind Pat Ty Expr Int
-    | SBind' Expr Int
+      SBind Pat Ty Expr NodeId
+    | SBind' Expr NodeId
     | SNote Text
     deriving (Show, Data, Typeable)
 
@@ -181,7 +186,7 @@ buildLambda [] e = e
 buildLambda ps e = ELam ps e
 
 splitLet :: Expr -> ([Def], Expr)
-splitLet (ELet d e') =
+splitLet (ELet d e' _ _) =
     let (defs', body') = splitLet e' in
     (d : defs', body')
 splitLet e = ([], e)
