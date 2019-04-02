@@ -9,6 +9,7 @@
   config-max-groups
   config-max-dependencies
   config-boredom-threshold
+  config-hard-constraints
   config-out-file
   read-config-file
   expand-command
@@ -28,71 +29,60 @@
 (define config-max-groups 0)
 (define config-max-dependencies 0)
 (define config-boredom-threshold 1000)
+(define config-hard-constraints '())
 (define config-out-file #f)
+
+(define (get-typed c k t)
+  (match (hash-ref c k #f)
+    [#f #f]
+    [(? t x) x]
+    [x (raise (format "expected config value for ~a to satisfy ~a, but it was ~a~n"
+                      k t x))]))
+
+(define (get-constraint-list c k)
+  (define raw (get-typed c k list?))
+  (if (not raw) #f
+    (call-with-default-reading-parameterization
+      (lambda ()
+        (for/list ([s raw])
+          (read (open-input-string s)))))))
 
 (define (read-config-file path)
   (define c
     (hash-ref (parse-toml (file->string path)) 'featuresynth hash))
 
-  (if-let ([x (hash-ref c 'list-features-command #f)])
-    (begin
-      (assert (string? x))
-      (set! config-list-features-command x))
-    (void))
+  (when-let ([x (get-typed c 'list-features-command string?)])
+    (set! config-list-features-command x))
 
-  (if-let ([x (hash-ref c 'oracle-command #f)])
-    (begin
-      (assert (string? x))
-      (set! config-oracle-command x))
-    (void))
+  (when-let ([x (get-typed c 'oracle-command string?)])
+    (set! config-oracle-command x))
 
-  (if-let ([x (hash-ref c 'oracle-cache-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-oracle-cache-file x))
-    (void))
+  (when-let ([x (get-typed c 'oracle-cache-file string?)])
+    (set! config-oracle-cache-file x))
 
-  (if-let ([x (hash-ref c 'oracle-threads #f)])
-    (begin
-      (assert (exact-positive-integer? x))
-      (set! config-oracle-threads x))
-    (void))
+  (when-let ([x (get-typed c 'oracle-threads exact-positive-integer?)])
+    (set! config-oracle-threads x))
 
-  (if-let ([x (hash-ref c 'init-tests-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-init-tests-file x))
-    (void))
+  (when-let ([x (get-typed c 'init-tests-file string?)])
+    (set! config-init-tests-file x))
 
-  (if-let ([x (hash-ref c 'resume-tests-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-resume-tests-file x))
-    (void))
+  (when-let ([x (get-typed c 'resume-tests-file string?)])
+    (set! config-resume-tests-file x))
 
-  (if-let ([x (hash-ref c 'max-groups #f)])
-    (begin
-      (assert (exact-nonnegative-integer? x))
-      (set! config-max-groups x))
-    (void))
+  (when-let ([x (get-typed c 'max-groups exact-nonnegative-integer?)])
+    (set! config-max-groups x))
 
-  (if-let ([x (hash-ref c 'max-dependencies #f)])
-    (begin
-      (assert (exact-nonnegative-integer? x))
-      (set! config-max-dependencies x))
-    (void))
+  (when-let ([x (get-typed c 'max-dependencies exact-nonnegative-integer?)])
+    (set! config-max-dependencies x))
 
-  (if-let ([x (hash-ref c 'boredom-threshold #f)])
-    (begin
-      (assert (exact-nonnegative-integer? x))
-      (set! config-boredom-threshold x))
-    (void))
+  (when-let ([x (get-typed c 'boredom-threshold exact-nonnegative-integer?)])
+    (set! config-boredom-threshold x))
 
-  (if-let ([x (hash-ref c 'out-file #f)])
-    (begin
-      (assert (string? x))
-      (set! config-out-file x))
-    (void))
+  (when-let ([x (get-constraint-list c 'hard-constraints)])
+    (set! config-hard-constraints x))
+
+  (when-let ([x (get-typed c 'out-file string?)])
+    (set! config-out-file x))
 )
 
 (define (expand-command cmd meta)

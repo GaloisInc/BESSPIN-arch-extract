@@ -3,6 +3,8 @@
 (provide
   make-feature-model
   vector->feature-model
+  feature-name-list->name-map
+  resolve-constraint
   )
 
 (require "types.rkt")
@@ -83,6 +85,15 @@
          (cdr kv))]
      [ds (for/vector ([d ds]) d)])
     (resolve-feature-model nm (feature-model fs gs ds c))))
+
+(define (feature-name-list->name-map names)
+  (define features (make-hash))
+  (for ([(n i) (in-indexed names)])
+    (define sym (if (string? n) (string->symbol n) n))
+    (define str (if (symbol? n) (symbol->string n) n))
+    (hash-set! features sym i)
+    (hash-set! features str i))
+  (name-map features (hash)))
 
 
 ; Deserialization of feature models

@@ -3,6 +3,7 @@
 (provide
   eval-claim
   eval-feature-model
+  eval-constraint
   )
 
 (require "types.rkt")

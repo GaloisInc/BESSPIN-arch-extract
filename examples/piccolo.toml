@@ -18,3 +18,14 @@ max-dependencies = 4
 boredom-threshold = 5000
 out-file = "examples/piccolo/piccolo.cfr"
 
+hard-constraints = [
+    # These are MMU options.  Piccolo doesn't have an MMU, so we disable them.
+    "(! Sv32)",
+    "(! SV34)",
+    "(! SV39)",
+    # Piccolo is a 32-bit core, not 64 or 128
+    "RV32",
+    "(! RV64)",
+    "(! RV128)",
+]
+

@@ -28,11 +28,14 @@
     (define out (eval-feature-model fm inp))
     (place-channel-put chan `(,inp ,out ,meta))))
 
-(define (oracle-command cmd feature-names args chan)
+(define (oracle-command cmd feature-names constraint args chan)
   (define exp-cmd (expand-command cmd args))
   (for ([msg (in-place-channel chan)])
     (match-define `(,inp ,meta) msg)
-    (define out (run-oracle-command exp-cmd feature-names inp))
+    (define out
+      (if (eval-constraint constraint inp)
+        (run-oracle-command exp-cmd feature-names inp)
+        #f))
     (place-channel-put chan `(,inp ,out ,meta))))
 
 (define (oracle-multi-cached num-threads cache-file oracle-spec args chan)
@@ -112,8 +115,8 @@
   (match spec
     [`(eval-fm ,fm)
      (oracle-eval-fm (vector->feature-model fm) chan)]
-    [`(command ,cmd ,feature-names)
-     (oracle-command cmd feature-names args chan)]
+    [`(command ,cmd ,feature-names ,constraint)
+     (oracle-command cmd feature-names constraint args chan)]
     [`(multi-cached ,num-threads ,cache-file ,oracle-spec)
       (oracle-multi-cached num-threads cache-file oracle-spec args chan)]
     ))

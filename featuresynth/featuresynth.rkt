@@ -10,6 +10,7 @@
 (require "manager.rkt")
 (require "clafer.rkt")
 (require "config.rkt")
+(require "build.rkt")
 (current-bitwidth #f)
 
 
@@ -56,35 +57,23 @@
   (build-vector (vector-length feature-names)
                 (lambda (i) (set-member? feature-idxs i))))
 
-(define (read-tests port)
-  (define (loop)
-    (define inp (read port))
-    (if (eof-object? inp)
-      '()
-      (cons (parse-test inp) (loop))))
-  (loop))
-
 (define init-tests
   (if config-init-tests-file
     (call-with-default-reading-parameterization
-      (lambda ()
-        (call-with-input-file* config-init-tests-file read-tests)))
+      (lambda () (map parse-test (read-many-from-file config-init-tests-file))))
     '()))
-
-(define (read-resume-tests port)
-  (define (loop)
-    (define inp (read port))
-    (if (eof-object? inp)
-      '()
-      (cons inp (loop))))
-  (loop))
 
 (define resume-tests
   (if (and config-resume-tests-file (file-exists? config-resume-tests-file))
     (call-with-default-reading-parameterization
-      (lambda ()
-        (call-with-input-file* config-resume-tests-file read-resume-tests)))
+      (lambda () (read-many-from-file config-resume-tests-file)))
     '()))
+
+(define name-map (feature-name-list->name-map feature-names))
+
+(define hard-constraints
+  (for/list ([c config-hard-constraints])
+    (resolve-constraint name-map c)))
 
 (define (synthesize)
   (define symbolic-fm-args
@@ -92,7 +81,7 @@
       (vector-length feature-names)
       config-max-groups
       config-max-dependencies
-      (=> (&& _ _) _)))
+      (cons '&& hard-constraints)))
   (run-manager
     `(
       (bitflip)
@@ -105,7 +94,8 @@
        ,config-oracle-cache-file
        (command
          ,config-oracle-command
-         ,feature-names))
+         ,feature-names
+         (&& ,@hard-constraints)))
     `#hash( (config-path . ,config-path) )
     init-tests
     resume-tests

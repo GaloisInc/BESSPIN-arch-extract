@@ -1,8 +1,9 @@
 #lang rosette
 
 (provide
-  if-let
+  if-let when-let
   pretty-write-to-file read-from-file
+  read-many-from-port read-many-from-file
   struct->vector*
 
   in-place-channel
@@ -16,6 +17,10 @@
   (let ([x e])
     (if x f1 f2)))
 
+(define-syntax-rule (when-let ([x e]) f ...)
+  (let ([x e])
+    (when x f ...)))
+
 (define (pretty-write-to-file v path)
   (call-with-output-file* path
     (lambda (f) (pretty-write v f))
@@ -24,6 +29,17 @@
 (define (read-from-file path)
   (call-with-input-file* path
     (lambda (f) (read f))))
+
+(define (read-many-from-port port)
+  (define (loop)
+    (define inp (read port))
+    (if (eof-object? inp)
+      '()
+      (cons inp (loop))))
+  (loop))
+
+(define (read-many-from-file path)
+  (call-with-input-file* path read-many-from-port))
 
 (define (struct->vector* s)
   (cond
