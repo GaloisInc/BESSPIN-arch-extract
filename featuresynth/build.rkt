@@ -52,17 +52,18 @@
   ))
 
 (define (resolve-constraint nm c)
-  (define (loop c) (resolve-constraint nm c))
-  (match c
-    [(? symbol?) (resolve-feature-id nm c)]
-    [(? integer?) c]
-    [(? boolean?) c]
-    [(cons '&& args) (cons '&& (map loop args))]
-    [(cons '|| args) (cons '|| (map loop args))]
-    [(cons '! args) (cons '! (map loop args))]
-    [(cons '=> args) (cons '=> (map loop args))]
-    [(cons '<=> args) (cons '<=> (map loop args))]
-    ))
+  (define (loop want c)
+    (match c
+      [(? symbol?) (hash-ref (name-map-features nm) c want)]
+      [(? integer?) c]
+      [(? boolean?) c]
+      [(cons '&& args) (cons '&& (map (lambda (c) (loop want c)) args))]
+      [(cons '|| args) (cons '|| (map (lambda (c) (loop want c)) args))]
+      [(cons '! args) (cons '! (map (lambda (c) (loop (not want) c)) args))]
+      [(list '=> a b) (list '=> (loop (not want) a) (loop want b))]
+      [(list '<=> a b) (loop want `(&& (=> ,a ,b) (=> ,b ,a)))]
+      ))
+  (loop #t c))
 
 (define (resolve-feature-model nm fm)
   (feature-model

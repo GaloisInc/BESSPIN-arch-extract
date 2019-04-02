@@ -17,6 +17,7 @@
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
+(require "unsatcore.rkt")
 
 
 ; Symbolic construction helpers
@@ -39,8 +40,7 @@
 (define (?*dependency)
   (dependency (?*feature-id) (?*feature-id) (?*bool)))
 
-(define (?*feature-model num-features num-groups num-dependencies
-                         #:constraint [constraint #t])
+(define (?*feature-model num-features num-groups num-dependencies [constraint #t])
   (feature-model
     (build-vector num-features (lambda (i) (?*feature)))
     (build-vector num-groups (lambda (i) (?*group)))
@@ -99,8 +99,11 @@
 ;   of a test input (a vector of booleans, one for each feature in
 ;   `symbolic-fm`) and output (a boolean, with `#t` indicating that the input
 ;   vector represents a valid configuration).
-(define (oracle-guided-synthesis+ symbolic-fm)
-  (define solver (z3))
+(define (oracle-guided-synthesis+ symbolic-fm
+                                  #:unsat-cores [unsat-cores #f])
+  (define opts
+    (if unsat-cores (hash ':produce-unsat-cores 'true) (hash)))
+  (define solver (z3 #:options opts))
   (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
   (define tests '())
 
@@ -161,6 +164,25 @@
       (try-evaluate-config symbolic-config (solver-check solver))
       (solver-pop solver)))
 
+  ; Compute an unsat core from a list of new tests.  The unsat core is a subset
+  ; of the new tests that is sufficient to cause synthesis to fail.
+  (define (unsat-core tests)
+    (solver-push solver)
+    (define M (solver-check solver))
+    (when (not (sat? M)) (raise "ran unsat-core in already unsatisfiable state"))
+    ; Assert predicates and build a table mapping symbolic exprs to tests
+    (define test-map
+      (for/hasheq ([t tests])
+        (match-define `(,inp ,out ,meta) t)
+        (define expr (<=> out (eval-feature-model symbolic-fm inp)))
+        (solver-assert solver (list expr))
+        (values expr t)))
+    (define U (solver-debug2 solver))
+    (when (not (unsat? U)) (raise "tests did not produce an unsat result"))
+    (solver-pop solver)
+    (for/list ([expr (core U)])
+      (hash-ref test-map expr expr)))
+
   (solver-assert solver (list (valid-feature-model symbolic-fm)))
 
   (lambda args
@@ -182,21 +204,8 @@
        (if val
          (solver-assert solver (list (feature-force-on f)))
          (solver-assert solver (list (feature-force-off f))))]
-      [(list 'unsat-core tests)
-       (solver-push solver)
-       (define M (solver-check solver))
-       (when (not (sat? M)) (raise "ran unsat-core in already unsatisfiable state"))
-       ; Assert predicates and build a table mapping symbolic exprs to tests
-       (define test-map
-         (for/hasheq ([t tests])
-           (match-define `(,inp ,out ,meta) t)
-           (define expr (<=> out (eval-feature-model symbolic-fm inp)))
-           (solver-assert solver (list expr))
-           (values expr t)))
-       (define U (solver-debug solver))
-       (when (not (unsat? U)) (raise "tests did not produce an unsat result"))
-       (for/list ([expr (core U)])
-         (hash-ref test-map expr expr))]
+      [(list 'unsat-core tests) (unsat-core tests)]
+      [(list 'check-sat) (sat? (solver-check solver))]
     )))
 
 (define (oracle-guided-synthesis symbolic-fm oracle init-tests)

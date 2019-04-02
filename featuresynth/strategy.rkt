@@ -143,9 +143,9 @@
     [(list 'bitflip)
      (strategy-bitflip chan)]
     [(list 'distinguish nf ng nd c)
-     (strategy-distinguish (?*feature-model nf ng nd #:constraint c) chan)]
+     (strategy-distinguish (?*feature-model nf ng nd c) chan)]
     [(list 'disprove nf ng nd c)
-     (strategy-disprove (?*feature-model nf ng nd #:constraint c) chan)]
+     (strategy-disprove (?*feature-model nf ng nd c) chan)]
     [(list 'boredom threshold nf ng nd c)
-     (strategy-boredom threshold (?*feature-model nf ng nd #:constraint c) chan)]
+     (strategy-boredom threshold (?*feature-model nf ng nd c) chan)]
     ))

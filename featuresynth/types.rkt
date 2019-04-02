@@ -161,7 +161,6 @@
 
 (define (valid-constraint fm c)
   (define (loop c) (valid-constraint fm c))
-  (displayln (list 'check c))
   (match c
     [(? integer?) (&& (<= 0 c) (valid-feature-id fm c))]
     [(? boolean?) #t]
