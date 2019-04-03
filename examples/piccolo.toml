@@ -23,9 +23,23 @@ hard-constraints = [
     "(! Sv32)",
     "(! SV34)",
     "(! SV39)",
+
     # Piccolo is a 32-bit core, not 64 or 128
     "RV32",
     "(! RV64)",
     "(! RV128)",
+
+    # MULT_* options are used only in `RISCV_MBox.bsv`, which is included only
+    # when ISA_M is enabled.  Without this constraint, the solver gets very
+    # confused about whether the MULT_* options are mutually exclusive or not.
+    "(=> (|| MULT_SERIAL MULT_SYNTH) ISA_M)",
+
+    # The rest of these we can hopefully get rid of soon.  These simply force
+    # certain flags to match the settings in the default configuration.  This
+    # helps us avoid tricky corners of the design that confuse the solver.
+    "(! CSR_REGFILE_MIN)",
+    "FABRIC64",
+    "(! (|| ISA_F ISA_D ISA_FD ISA_FD_DIV ISA_F_OR_D) )",
+    "(! (|| EXTERNAL_DEBUG_MODULE INCLUDE_GDB_CONTROL INCLUDE_TANDEM_VERIF) )",
 ]
 
