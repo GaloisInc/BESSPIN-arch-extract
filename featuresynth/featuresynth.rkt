@@ -199,6 +199,12 @@
   (define tests (for/list ([t resume-tests]) (slice-test vs t)))
   (minimal-unsat-core? symbolic-fm tests))
 
+; Get the names of all features enabled in the input for test `t`.
+(define (test-features t [vs #f])
+  (match-define `(,inp ,out ,meta) t)
+  (for/list ([i (or vs (in-range (vector-length inp)))] #:when (vector-ref inp i))
+    (vector-ref feature-names i)))
+
 (define (do-slice-tests)
   (define all-vs (for/list ([i (in-range (vector-length feature-names))]) i))
   (define min-vs (delta-minimize all-vs check-var-slice))
@@ -211,11 +217,12 @@
   (printf "these test results produce a contradiction:~n")
   (for ([t resume-tests])
     (match-define `(,inp ,out ,meta) t)
-    (define pretty-inp
-      (for/list ([i min-vs] #:when (vector-ref inp i))
-        (vector-ref feature-names i)))
-    (printf "~a ~a~n" (if out "good:" "bad: ") pretty-inp))
+    (printf "~a ~a~n" (if out "good:" "bad: ") (test-features t min-vs)))
   )
+
+(define (do-render-tests)
+  (for ([t resume-tests])
+    (displayln (test-features t))))
 
 
 (match subcommand
@@ -224,4 +231,5 @@
   ['("unsat-core") (do-unsat-core)]
   ['("minimize-unsat-core") (do-minimize-unsat-core)]
   ['("slice-tests") (do-slice-tests)]
+  ['("render-tests") (do-render-tests)]
   )
