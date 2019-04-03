@@ -1,0 +1,20 @@
+[src.bsv]
+type = "bsv"
+ast-file = "piccolo.cbor"
+library-packages = [
+    "ActionSeq", "Array", "Assert", "Clocks", "ConfigReg", "Connectable",
+    "Counter", "Enum", "Environment", "FIFO", "FIFOF", "FIFOF_", "FIFOLevel",
+    "FShow", "FoldFIFO", "FoldFIFOF", "Fork", "GetPut", "Inout", "LevelFIFO",
+    "List", "ListN", "Once", "Prelude", "PreludeBSV", "Probe", "ProbeWire",
+    "RWire", "Real", "RegFile", "Reserved", "RevertingVirtualReg", "Vector",
+]
+ 
+
+[graphviz]
+out-dir = "out"
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true

@@ -3,23 +3,56 @@ type = "verilog"
 src-files = ["../LEG/leg_pipelined/*.sv"]
 # - io_fwd_shim and testbench use simulation-only system calls.
 # - micropsfsm is just really big: >50% of clafers and >90% of graphviz running
-#   time (for 2-pass pipeline rendering) is spent on this one module.
+#   time is spent on this one module.
 blackbox-modules = ["io_fwd_shim", "testbench", "micropsfsm"]
-ast-file = "leg.cbor"
+# Disconnect (and hide) uninteresting nets so they don't clutter the output.
 disconnect-nets = [
     "clk", "HCLK",
     "rst", "reset", "HRESETn", "HResetn"
 ]
 
 [graphviz]
-out-dir = "leg-arch"
-draw-onesided-nets = false
-shorten-net-names = true
+out-dir = "out"
+
+# Draw nodes for nets?  Each net node will have an incoming edge from each
+# output that drives the net, and an outgoing edge to each input connected to
+# the net.  When net nodes are disabled, the inputs and outputs are connected
+# to each other directly.
 draw-nets = false
+
+# Draw nodes for combinational logic?  When disabled, the input and output nets
+# of each logic node will be drawn as a single net.
 draw-logics = false
-draw-logic-ports = false
-draw-ext-ports = false
+
+# Draw separate nodes for each external port?  When rendering a module with
+# this setting disabled, all of the module's input ports will be drawn as a
+# single input node, and similarly for its output ports.
+draw-ext-ports = true
+
+# Draw individual ports on module instantiations?  When disabled, only
+# high-level dataflow between components will be visible, rather than dataflow
+# to/from individual input/output ports of the module.
+draw-logic-ports = true
+
+# Deduplicate edges with the same source and target?  For example, with this
+# setting disabled, `a & a` will produce two parallel edges from the `a` net to
+# the combinational logic for the `&`; with this setting enabled, those two
+# edges will be drawn as one.  This setting is especially useful when draw-nets
+# and draw-logics are disabled, as otherwise that configuration will produce
+# dozens of parallel edges, one for each distinct path from an output to an
+# input.
 dedup-edges = true
 
-[module-tree]
-root-module = "top"
+# Display `net1 (+2 more)` instead of `net1, net2, net3` when several nets are
+# merged together.
+shorten-net-names = true
+
+# The settings above will display the architecture of each module in terms of
+# the module instantiations it contains and the flow of data between their
+# ports.
+#
+# For a higher-level view, hide the individual ports: set `draw-ext-ports` and
+# `draw-logic-ports` to `false`.
+#
+# For a lower-level view, show the nets and combinational logic elements: set
+# `draw-nets` and `draw-logics` to `true`.

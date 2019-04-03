@@ -16,7 +16,7 @@ resume-tests-file = "examples/piccolo/resume-tests.rktd"
 max-groups = 5
 max-dependencies = 4
 boredom-threshold = 5000
-out-file = "examples/piccolo/piccolo.cfr"
+out-file = "piccolo.cfr"
 
 hard-constraints = [
     # These are MMU options.  Piccolo doesn't have an MMU, so we disable them.

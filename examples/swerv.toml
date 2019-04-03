@@ -12,6 +12,17 @@ src-files = [
     "../swerv_eh1/design/lsu/*.sv",
 ]
 
+
+[graphviz]
+out-dir = "out"
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
+
 # Feature-model synthesis configuration
 [featuresynth]
 
