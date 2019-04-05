@@ -12,6 +12,8 @@ import qualified Data.ByteString.Lazy as BSL
 import System.Directory
 import System.Exit
 import qualified System.FilePath.Glob as Glob
+import System.Environment
+import System.FilePath
 import System.IO.Temp
 import System.Process
 
@@ -32,7 +34,14 @@ listSources cfg = do
 
 -- Run `exporter` on `srcs`, writing a CBOR AST to `dest`.
 exportAst :: [FilePath] -> FilePath -> IO ()
-exportAst srcs dest = callProcess "./export-verilog" ("-o" : dest : srcs)
+exportAst srcs dest = do
+    exporter <- lookupEnv "BESSPIN_ARCH_EXTRACT_EXPORT_VERILOG" >>= \x -> case x of
+        Just path -> return path
+        Nothing -> do
+            selfPath <- getExecutablePath
+            return $ takeDirectory selfPath </> "export-verilog"
+    putStrLn $ "parsing verilog using " ++ show exporter
+    callProcess exporter ("-o" : dest : srcs)
 
 needsRebuild :: [FilePath] -> FilePath -> IO Bool
 needsRebuild inputs output = do
