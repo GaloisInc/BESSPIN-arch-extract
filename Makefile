@@ -5,19 +5,19 @@ CXXFLAGS = -O3 -std=c++11 -g
 LDFLAGS = -lz -ltinycbor \
 	-lverific_verilog -lverific_util -lverific_containers -lverific_database
 
-all:    exporter importer ppfeatures driver
+all:    export-verilog importer ppfeatures driver
 
-EXPORTER_OBJS = exporter.o
+EXPORT_VERILOG_OBJS = export-verilog.o
 
 %.o: %.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
-exporter:    $(EXPORTER_OBJS)
+export-verilog:		$(EXPORT_VERILOG_OBJS)
 	# Note - order of -l flags matters for linking
 	$(CXX) $^ -o $@ $(CXXFLAGS) $(LDFLAGS)
 
 clean:
-	rm -fv $(EXPORTER_OBJS) exporter
+	rm -fv $(EXPORT_VERILOG_OBJS) exporter
 
 importer:
 	ghc -j1 --make -O3 importer.hs

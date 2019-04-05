@@ -32,7 +32,7 @@ listSources cfg = do
 
 -- Run `exporter` on `srcs`, writing a CBOR AST to `dest`.
 exportAst :: [FilePath] -> FilePath -> IO ()
-exportAst srcs dest = callProcess "./exporter" ("-o" : dest : srcs)
+exportAst srcs dest = callProcess "./export-verilog" ("-o" : dest : srcs)
 
 needsRebuild :: [FilePath] -> FilePath -> IO Bool
 needsRebuild inputs output = do
