@@ -68,9 +68,11 @@ defaultVerilog = Verilog
     }
 
 data BSV = BSV
+    -- List of BSV source files to parse.  This can include shell globs.
+    { bsvSrcFiles :: [Text]
     -- Path to the CBOR file that contains the exported AST.  This tool doesn't
     -- yet support automatically exporting from src-files.
-    { bsvAstFile :: Text
+    , bsvAstFile :: Text
     -- Names of packages that are considered "library packages".  These
     -- packages are processed as normal, except that modules found in library
     -- packages will have only ports (no internal structures) and will be
@@ -80,7 +82,8 @@ data BSV = BSV
     deriving (Show)
 
 defaultBSV = BSV
-    { bsvAstFile = "bsv.cbor"
+    { bsvSrcFiles = []
+    , bsvAstFile = "bsv.cbor"
     , bsvLibraryPackages = Set.empty
     }
 
@@ -388,6 +391,7 @@ verilog x = tableFold defaultVerilog x
 bsv :: TOML.Value -> BSV
 bsv x = tableFold defaultBSV x
     [ ("type", \c x -> c)
+    , ("src-files", \c x -> c { bsvSrcFiles = listOf str x })
     , ("ast-file", \c x -> c { bsvAstFile = str x })
     , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
     ]
