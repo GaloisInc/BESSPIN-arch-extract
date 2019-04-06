@@ -22,6 +22,7 @@ import qualified Data.ByteString.Lazy as BSL
 import System.Directory
 import System.Exit
 import qualified System.FilePath.Glob as Glob
+import System.IO
 import System.IO.Temp
 import System.Process
 
@@ -57,9 +58,18 @@ testAst cfg = do
 
     T.putStrLn $ printArchitecture $ extractDesign cfg pkgs
 
+readMaybeGzippedFile :: FilePath -> IO BSL.ByteString
+readMaybeGzippedFile fp
+  | ".gz" `isSuffixOf` fp = do
+    (Nothing, Just stdout, Nothing, ph) <- createProcess $
+        (proc "gunzip" ["-c", fp]) { std_out = CreatePipe }
+    hSetBinaryMode stdout True
+    BSL.hGetContents stdout
+  | otherwise = BSL.readFile fp
+
 loadPackages :: Config.BSV -> IO [Package]
 loadPackages cfg = do
-    cborBs <- BSL.readFile $ T.unpack $ Config.bsvAstFile cfg
+    cborBs <- readMaybeGzippedFile $ T.unpack $ Config.bsvAstFile cfg
     case deserialize cborBs of
         Left err -> error $ T.unpack err
         Right x -> return $ raiseRaw x
