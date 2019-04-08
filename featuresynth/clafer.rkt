@@ -94,6 +94,24 @@
                 (node->clafers feature-names fm sub-n)
                 #f)])))
 
+(define (split-constraint c)
+  (match c
+    [`(&& ,@cs) (append* (map split-constraint cs))]
+    [else (list c)]))
+
+(define (render-constraint path-map c)
+  (define (parenthesize s) (string-append "(" s ")"))
+  (let loop ([c c])
+    (match c
+      [(? integer?) (hash-ref path-map `(feature ,c))]
+      [#t "(1 in 1)"]
+      [#f "(0 in 1)"]
+      [`(&& ,@cs) (parenthesize (string-join (map loop cs) " && "))]
+      [`(|| ,@cs) (parenthesize (string-join (map loop cs) " || "))]
+      [`(! ,c) (format "(! ~a)" (loop c))]
+      [`(=> ,c1 ,c2) (format "(~a => ~a)" (loop c1) (loop c2))]
+      [`(<=> ,c1 ,c2) (format "(~a <=> ~a)" (loop c1) (loop c2))])))
+
 (define (feature-model-constraints path-map fm)
   (define feature-constraints
     (for/list ([(f i) (in-indexed (feature-model-features fm))]
@@ -114,8 +132,8 @@
         (format "[ ~a => ! ~a ]" a-path b-path))))
 
   (define constraint-constraints
-    (list
-      (format "; ~a" (feature-model-constraint fm))))
+    (for/list ([c (split-constraint (feature-model-constraint fm))])
+      (format "[ ~a ]" (render-constraint path-map c))))
 
   (append feature-constraints dependency-constraints constraint-constraints))
 
