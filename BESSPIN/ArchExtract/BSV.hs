@@ -37,6 +37,12 @@ import BESSPIN.ArchExtract.BSV.Extract
 
 import BESSPIN.ArchExtract.Print
 
+listSources :: Config.BSV -> IO [FilePath]
+listSources cfg = do
+    let pats = map (Glob.compile . T.unpack) $ Config.bsvSrcFiles cfg
+    files <- Glob.globDir pats "."
+    return $ concat $ map sort files
+
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
     pkgs <- numberNodes <$> loadPackages cfg

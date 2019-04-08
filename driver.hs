@@ -39,6 +39,7 @@ listSourcesForGroups cfg grps = do
     let srcCfgs = if null grps then allSrcs else map getSrc grps
     liftM concat $ forM srcCfgs $ \src -> case src of
         Config.VerilogSrc vCfg -> V.listSources vCfg
+        Config.BSVSrc bCfg -> BSV.listSources bCfg
   where
     allSrcs = M.elems $ Config.configSrcs cfg
     getSrc g = case M.lookup (T.pack g) (Config.configSrcs cfg) of
