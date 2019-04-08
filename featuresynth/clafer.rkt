@@ -9,7 +9,13 @@
 (require "types.rkt")
 
 
-(struct clafer (name card children optional) #:transparent)
+(struct clafer (name card gcard children) #:transparent)
+
+(define (feature-clafer-cardinality f)
+  (cond
+    [(feature-force-on f) 'force-on]
+    [(feature-force-off f) 'force-off]
+    [else 'default]))
 
 (define (group-name j)
   (format "grp_~a" j))
@@ -85,14 +91,15 @@
     (match-define (cons k sub-n) p)
     (match k
       [`(feature ,i)
-        (clafer (vector-ref feature-names i) 'default
-                (node->clafers feature-names fm sub-n)
-                #t)]
+        (clafer (vector-ref feature-names i)
+                (feature-clafer-cardinality (feature-model-feature fm i))
+                'default
+                (node->clafers feature-names fm sub-n))]
       [`(group ,j)
         (clafer (group-name j)
+                'force-on
                 (group-clafer-cardinality (feature-model-group fm j))
-                (node->clafers feature-names fm sub-n)
-                #f)])))
+                (node->clafers feature-names fm sub-n))])))
 
 (define (split-constraint c)
   (match c
@@ -113,15 +120,6 @@
       [`(<=> ,c1 ,c2) (format "(~a <=> ~a)" (loop c1) (loop c2))])))
 
 (define (feature-model-constraints path-map fm)
-  (define feature-constraints
-    (for/list ([(f i) (in-indexed (feature-model-features fm))]
-               #:when (or (feature-force-on f) (feature-force-off f)))
-      (cond
-        [(feature-force-on f)
-         (format "[ ~a ]" (hash-ref path-map `(feature ,i)))]
-        [(feature-force-off f)
-         (format "[ ! ~a ]" (hash-ref path-map `(feature ,i)))])))
-
   (define dependency-constraints
     (for/list ([d (feature-model-dependencies fm)]
                #:when (not (= -1 (dependency-a d) (dependency-b d))))
@@ -135,7 +133,7 @@
     (for/list ([c (split-constraint (feature-model-constraint fm))])
       (format "[ ~a ]" (render-constraint path-map c))))
 
-  (append feature-constraints dependency-constraints constraint-constraints))
+  (append dependency-constraints constraint-constraints))
 
 (define (feature-model->clafer feature-names fm)
   (define tree (build-feature-tree fm))
@@ -147,6 +145,11 @@
 (define (clafer->lines c)
   (define card
     (match (clafer-card c)
+      ['force-on "1..1"]
+      ['force-off "0..0"]
+      ['default "?"]))
+  (define gcard
+    (match (clafer-gcard c)
       ['xor "xor "]
       ['mux "mux "]
       ['or "or "]
@@ -154,16 +157,16 @@
       ['default ""]))
   (if (not (null? (clafer-children c)))
     (let
-      ([header (format "~a~a~a {~n"
-                       card (clafer-name c) (if (clafer-optional c) " ?" ""))]
+      ([header (format "~a~a ~a {~n"
+                       gcard (clafer-name c) card)]
        [body
          (append-map
            (lambda (c)
              (map (lambda (s) (string-append "  " s)) (clafer->lines c)))
            (clafer-children c))])
       `(,header ,@body "}\n"))
-    (list (format "~a~a~a~n"
-                  card (clafer-name c) (if (clafer-optional c) " ?" "")))))
+    (list (format "~a~a ~a~n"
+                  gcard (clafer-name c) card))))
 
 (define (clafer->string c)
   (match-define (cons clafers constraints) c)
