@@ -9,9 +9,161 @@ Compile the architecture extraction tools:
     make
 
 
-# Running examples
+# `driver` / `besspin-arch-extract`
+
+The `driver` binary corresponds to the `besspin-arch-extract` command in the
+BESSPIN tool suite.
+
+Usage:
+
+    ./driver <config.toml> <cmd...>
+
+`<config.toml>` is the path to a configuration file such as the ones in
+`examples/`.  `<cmd...>` is a subcommand (documented below) and its arguments.
+
+## Subcommands
+
+For the most complete listing of subcommands, see the `main` function in
+`driver.hs`.
+
+### `visualize`
+
+    ./driver <config.toml> visualize
+
+Extracts architectural information from all source files, and renders the
+extracted architecture as Graphviz files.  The settings in the `[graphviz]`
+config section control the appearance of the output.
+
+### `list-srcs`
+
+    ./driver <config.toml> list-srcs [groups...]
+
+Lists the source files contained in the named source groups.  A source group is
+a config section such as `[src.foo]` - in this case, the group name is `foo`.
+If no groups are listed, the tool lists files from all groups.
+
+### `list-pp-flags`
+
+    ./driver <config.toml> list-pp-flags [groups...]
+
+Lists Verilog preprocessor flags that appear in an `ifdef` or similar
+conditional compilation construct and that are not `define`d within the source
+files themselves.  For example:
+
+    `ifdef FOO
+    `define BAR
+    `endif
+
+    `ifdef BAR
+    logic x = `XVAL;
+    // Some code ...
+    `endif
+
+    `ifdef BAZ
+    // Other code ...
+    `endif
+
+On this input, the tool will print `FOO` and `BAZ`.  It will not list `XVAL`
+because it is not used for conditional compilation.  `BAR` is used for
+conditional compilation, but will not be listed because it is (conditionally)
+defined in the input itself.  The assumption is that `define`d macros are not
+truly parameters of the design, but rather are computed or derived from other
+parameters during preprocessing.
+
+### `list-pp-flag-users`
+
+    ./driver <config.toml> list-pp-flag-users [groups... --] [flags...]
+
+Lists the source files from `groups` that use the listed preprocessor flags for
+conditional compilation.  If `groups` is omitted, all source groups are
+checked.  If `groups` is provided, it must be separated from `flags` by a `--`
+argument.
+
+### `bsv-merge-cbor`
+
+    ./driver <config.toml> bsv-merge-cbor <files...>
+
+Reads BSV AST dumps (in CBOR format) from `files`, and combines them into a
+single AST dump called `out.cbor`.  The contents of `config.toml` are not
+actually used by this command (but it must still be a valid configuration
+file).
+
+
+# `featuresynth/featuresynth.rkt` / `besspin-feature-extract`
+
+The `featuresynth/featuresynth.rkt` script corresponds to the
+`besspin-feature-extract` command in the BESSPIN tool suite.
+
+## Subcommands
+
+For the most complete listing of subcommands, see `match` at the bottom of
+`featuresynth/featuresynth.rkt`.
+
+### `synthesize`
+
+    racket featuresynth/featuresynth.rkt <config.toml> synthesize
+
+Synthesize a feature model using the `[featuresynth]` settings in
+`config.toml`.  See `examples/swerv.toml` for a description of the settings.
+
+The synthesis algorithm tests a variety of configurations to determine which
+features of the design are compatible with each other.  It periodically reports
+to the console the number of tests run so far, as well as the number of valid
+configurations it has discovered (called "positive tests").  The synthesis
+process usually requires a broad range of positive tests to complete.  If it
+runs for a long time (hundreds of negative tests) without finding a positive
+tests, then the synthesis algorithm has probably stalled, and is not likely to
+complete without adjustments to the configuration, such as adding a wider
+variety of positive tests to `init-tests-file` or lowering the
+`boredom-threshold`.  If it finds no positive tests at all, then there is
+likely an error with either the `oracle-command` or the `init-tests-file`.
+
+During synthesis, the tool records the outcome of each test into
+`./test-log.rktd`.  After synthesis ends or is stopped, this file can be copied
+to another location and used as the `resume-tests-file` for a future run.
+
+### `unsat-core`
+
+    racket featuresynth/featuresynth.rkt <config.toml> unsat-core
+
+Compute an unsatisfiable core.  Reads a set of tests from the
+`resume-tests-file`, and outputs a subset of those tests (in the same format)
+that is sufficient to make synthesis produce an UNSAT result.  An UNSAT result
+means that there is no feature model (using the `max-groups` and other settings
+from the current config file) that produces the correct results on all tests in
+the provided test set.  When `synthesize` produces an UNSAT result, finding a
+minimal unsat core can help simplify the process of debugging the synthesis
+failure.
+
+### `minimize-unsat-core`
+
+    racket featuresynth/featuresynth.rkt <config.toml> minimize-unsat-core
+
+Minimize an unsatisfiable core.  This command reads an unsatisfiable core (the
+output of `unsat-core`) from the `resume-tests-file` and reduces its size as
+much as possible.  The result is an unsat core that is 1-minimal in the sense
+of delta debugging, meaning removing any test from the set makes synthesis no
+longer produce an UNSAT result.
+
+### `slice-tests`
+
+    racket featuresynth/featuresynth.rkt <config.toml> slice-tests
+
+Remove unnecessary features from a minimal unsat core.  Reads an unsat core
+from the `resume-tests-file`, then outputs a minimal subset of features that
+together cause the test set to produce an unsat result.  Also prints the inputs
+and outputs of each test in human-readable form (like the `render-tests`
+subcommand), but includes only those features that are part of the subset.
+This is helpful for identifying features and specific interactions that are
+relevant to a synthesis failure.
+
+
+# Examples
 
 ## LEG
+
+The `examples/leg.toml` config file is used for visualizing the architecture of
+the LEG CPU.
 
 First, clone the [LEG repository](https://github.com/MWaug/LEG) into `../LEG`.
 
@@ -38,10 +190,13 @@ extraction for it.
 
 ## SWERV
 
+The `examples/swerv.toml` config file is used for visualizing and synthesizing
+feature models for the SWERV CPU.
+
 First, clone the [SWERV repository](https://github.com/westerndigitalcorporation/swerv_eh1/)
 into `../swerv_eh1`.
 
-To extract and visualize the architecture of SWERV: **TODO: test this**
+To extract and visualize the architecture of SWERV:
 
     # Inside nix-shell:
     ./driver examples/swerv.toml visualize
@@ -52,7 +207,7 @@ To render the architecture of the `exu_mul_ctl` module:
 
 Then open `out/exu_mul_ctl.pdf`.
 
-To extract a feature model for SWERV: **TODO: test this**
+To extract a feature model for SWERV:
 
     # Inside nix-shell:
     racket featuresynth/featuresynth.rkt examples/swerv.toml
@@ -64,54 +219,7 @@ available at `examples/swerv-pregen.cfr`.
 
 ## Piccolo
 
-First, clone the [GFE repository](https://gitlab-ext.galois.com/ssith/gfe) into
-`../gfe`.
-
-Extracting an architecture from BSV code currently requires manually building
-the project using [a modified version of `bsc`](
-https://gitlab-ext.galois.com/bsc_src_access/bsc_src/commits/ast-export).  A
-compiled copy of the modified `bsc` is available on the BESSPIN VM at **TODO**.
-
-To prepare the AST files for architecture extraction: **TODO: test this**
-
-    # In the Piccolo directory
-    cd builds/RV32ACIMU_Piccolo_verilator
-    mkdir -p out
-    rm -f build_dir/*
-    PATH=... make compile   # TODO: path to modified `bsc`
-
-    # In the arch-extract directory, inside nix-shell
-    ./driver examples/piccolo.toml bsv-merge-cbor \
-        ../gfe/bluespec-processors/P1/Piccolo/builds/RV32ACIMU_Piccolo_verilator/out/tc.*.bsv.cbor
-    mv out.cbor piccolo.cbor
-
-This will produce a file `piccolo.cbor` containing a representation of the
-Piccolo source code.
-
-To visualize the Piccolo architecture: **TODO: test this**
-
-    # Inside nix-shell
-    ./driver examples/piccolo-arch.toml visualize
-
-To render the architecture of the `Shifter_Box.mkShifter_Box` module:
-
-    dot -Tpdf out/Shifter_Box.mkShifter_Box.dot -o out/Shifter_Box.mkShifter_Box.pdf
-
-Then open `out/Shifter_Box.mkShifter_Box.pdf`.
-
-BSV architecture extraction is currently incomplete, and may fail to detect
-instantiations of some modules, particularly modules from the BSV standard
-library.
-
-To extract a feature model for Piccolo: **TODO: doesn't work**
-
-    # Inside nix-shell:
-    racket featuresynth/featuresynth.rkt examples/piccolo.toml
-
-However, feature model synthesis for Piccolo currently fails.  After running
-for several hours, it will eventually print the lines:
-
-    VOTE-QUIT: strategy 1 ((distinguish ...))
-    VOTE-QUIT: strategy 2 ((disprove ...))
-
-Afterward, it will continue running, but will no longer make any progress.
+The `examples/piccolo.toml` config file is intended for visualizing and
+synthesizing feature models for the Piccolo CPU.  However, it currently does
+not work very well.  Follow the architecture and feature model extraction
+examples from the BESSPIN `tool-suite` repository instead.
