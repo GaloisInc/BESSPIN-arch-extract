@@ -27,14 +27,20 @@ import BESSPIN.ArchExtract.BSV.Raw
 
 type DecodeM a = Either Text a
 
+
+packShort :: Int -> String -> Text
+packShort n s = T.pack pre <> if null suf then "" else " ..."
+  where
+    (pre, suf) = splitAt n s
+
 bad :: Text -> CBOR.Term -> Text -> a -> DecodeM a
 bad what x why dfl =
-    trace (T.unpack $ "bad " <> what <> ": " <> why <> ", at " <> T.pack (show x)) $
+    trace (T.unpack $ "bad " <> what <> ": " <> why <> ", at " <> packShort 500 (show x)) $
     Right dfl
 
 bad' :: Text -> CBOR.Term -> a -> DecodeM a
 bad' what x dfl =
-    trace (T.unpack $ "bad " <> what <> " at " <> T.pack (show x)) $
+    trace (T.unpack $ "bad " <> what <> " at " <> packShort 500 (show x)) $
     Right dfl
 
 
