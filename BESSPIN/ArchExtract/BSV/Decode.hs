@@ -49,14 +49,24 @@ getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
 getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
 getPackages x = bad' "Packages" x $ []
 
+data AnyDefn = AdDef Def | AdStruct Struct | AdError
+
 getPackage :: CBOR.Term -> DecodeM Package
-getPackage (tag "Package" -> [i, _, List defns]) =
+getPackage (tag "Package" -> [i, _, List defns]) = do
+    anys <- mapM getDefnAny defns
+    let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
+    let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
     Package
         <$> getId i
-        <*> (S.fromList <$> mapM getDefnDef defns)
-        <*> (S.fromList <$> mapM getDefnStruct defns)
+        <*> pure (S.fromList defs)
+        <*> pure (S.fromList structs)
 getPackage x = bad' "Package" x $
     Package (badId "package") S.empty S.empty
+
+getDefnAny :: CBOR.Term -> DecodeM AnyDefn
+getDefnAny x@(tag "Defn_Struct" -> (_ : _)) = AdStruct <$> getDefnStruct x
+getDefnAny x@(tag "Defn_ValueSign" -> (_ : _)) = AdDef <$> getDefnDef x
+getDefnAny x = bad' "Defn" x AdError
 
 getDefnStruct :: CBOR.Term -> DecodeM Struct
 getDefnStruct (tag "Defn_Struct" -> [sub, name, List tyParams, List fields]) =
