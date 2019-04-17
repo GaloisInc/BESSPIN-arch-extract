@@ -32,7 +32,22 @@ raiseRaw x =
     preSimplify $
     reconstructAllLets $
     --cleanDefs $
+    prefixNames $
     x
+
+prefixNames :: Data a => a -> a
+prefixNames x = everywhere (mkT goPackage) x
+  where
+    goPackage (Package i ds ss) =
+        let pkgName = idName i in
+        Package i (fmap (goDef pkgName) ds) (fmap (goStruct pkgName) ss)
+
+    goDef pkgName d@(Def { defId = Id name l c })
+      | (pkgName <> ".") `T.isPrefixOf` name && "~" `T.isInfixOf` name = d
+      | otherwise = d { defId = Id (pkgName <> "." <> name) l c }
+
+    goStruct pkgName s@(Struct { structId = Id name l c })
+      | otherwise = s { structId = Id (pkgName <> "." <> name) l c }
 
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x

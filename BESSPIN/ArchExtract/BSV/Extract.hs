@@ -155,13 +155,13 @@ convertModule :: Bool -> Def -> Maybe BSVModule
 convertModule _ d | isDummyDef d = Nothing
 -- Synthesized module case.  This case is looking at the `mkFoo-` definition,
 -- which needs adjustments to its type and value to get into the standard form.
-convertModule isLib (Def _ ty cs)
+convertModule isLib (Def i0 ty cs)
   | [Clause [] body] <- cs
   , (_, body') <- splitLambda body
   , (ds@(_:_), _) <- splitLet body'
   , Def i ty' [Clause [] body''] <- last ds
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
-  = Just $ BSVModule i
+  = Just $ BSVModule (addPkgName i)
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
     body''
     isLib
@@ -169,6 +169,8 @@ convertModule isLib (Def _ ty cs)
     iM = Id "_m__" 0 0
     iC = Id "_c__" 0 0
     dictTy = TIsModule (TVar iM) (TVar iC)
+    pkgName = fst $ T.breakOn "." $ idName i0
+    addPkgName (Id name l c) = Id (pkgName <> "." <> name) l c
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
 convertModule isLib (Def i ty cs)
@@ -185,23 +187,8 @@ convertModule _ _ = Nothing
 isModDict iM (TIsModule (TVar iM') (TVar _)) = iM == iM'
 isModDict _ _ = False
 
-structAddPackageName :: Id -> Struct -> Struct
-structAddPackageName (Id pkgName _ _) s =
-    let Id name l c = structId s in
-    s { structId = Id (pkgName <> "." <> name) l c }
-
-defAddPackageName :: Id -> Def -> Def
-defAddPackageName (Id pkgName _ _) d =
-    let Id name l c = defId d in
-    d { defId = Id (pkgName <> "." <> name) l c }
-
-addPackageName :: Id -> BSVModule -> BSVModule
-addPackageName (Id pkgName _ _) (BSVModule (Id name l c) t e k) =
-    BSVModule (Id (pkgName <> "." <> name) l c) t e k
-
 findPackageModules :: Config.BSV -> Package -> [BSVModule]
 findPackageModules cfg p =
-    map (addPackageName $ packageId p) $
     mapMaybe (convertModule isLib) $
     toList $ packageDefs p
   where
@@ -235,14 +222,12 @@ extractDesign' cfg ps =
     structs = M.unions $ do
         p <- ps
         s <- toList $ packageStructs p
-        let s' = structAddPackageName (packageId p) s
-        return $ M.singleton (idName $ structId s') s'
+        return $ M.singleton (idName $ structId s) s
 
     defs = M.unions $ do
         p <- ps
         d <- toList $ packageDefs p
-        let d' = defAddPackageName (packageId p) d
-        return $ M.singleton (idName $ defId d') d'
+        return $ M.singleton (idName $ defId d) d
 
     ifcSpecs = translateIfcStructs structs
 
