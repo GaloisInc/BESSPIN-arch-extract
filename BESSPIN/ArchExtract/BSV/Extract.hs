@@ -3,7 +3,7 @@ module BESSPIN.ArchExtract.BSV.Extract where
 
 import Control.Monad
 import Control.Monad.ST
-import Control.Monad.State
+import Control.Monad.State.Strict
 import Data.Array.ST
 import Data.Foldable
 import Data.Generics
@@ -313,6 +313,13 @@ data Value =
     -- anywhere in place of a `VNet`.
     | VConst
 
+    -- Delayed access to a global definition.  If a global refers to itself,
+    -- the recursive reference evaluates to one of these.
+    | VThunkGlobal Text
+    -- Delayed function application.  Constructed by `appValue` when at least
+    -- one input is a thunk.
+    | VThunk Value [Ty] [Value]
+
     -- Function-like values.
     | VClosure [Pat] Scope Expr
     -- Partial application.  Much easier to have one unified way of handling
@@ -373,6 +380,10 @@ data Value =
     | VUnknown
     deriving (Show)
 
+isThunk (VThunkGlobal _) = True
+isThunk (VThunk _ _ _) = True
+isThunk _ = False
+
 data RuleVal = RuleVal Text [Value] Value
     deriving (Show)
 
@@ -381,13 +392,16 @@ type Scope = Map Text Value
 badEval :: Show a => a -> ExtractM Value
 badEval msg = badEval' msg VUnknown
 
+truncateMessage n msg =
+    let (keep, rest) = splitAt 1000 msg in
+    keep ++ (if not $ null rest then " ... (message truncated)" else "")
+
 badEval' :: Show a => a -> r -> ExtractM r
 badEval' msg value = do
     _esErrors %= (|> T.pack msg')
     traceShow ("evaluation failure: " ++ msg') $ return value
   where
-    (keep, rest) = splitAt 1000 $ show msg
-    msg' = keep ++ (if not $ null rest then " ... (message truncated)" else "")
+    msg' = truncateMessage 1000 (show msg)
 
 badEval_ :: Show a => a -> ExtractM ()
 badEval_ msg = badEval' msg ()
@@ -395,9 +409,7 @@ badEval_ msg = badEval' msg ()
 badCall' :: Show a => a -> r -> r
 badCall' msg value = trace msg' value
   where
-    (keep, rest) = splitAt 1000 $ show msg
-    msg' = "evaluation failure: " ++
-        keep ++ (if not $ null rest then " ... (message truncated)" else "")
+    msg' = "evaluation failure: " ++ truncateMessage 1000 (show msg)
 
 
 -- Evaluate `e` in `sc`.  This lives in the `ExtractM` monad because some
@@ -414,10 +426,7 @@ eval sc (EVar i@(Id name _ _))
         (Just (modId, ty, ifc), _) -> do
             let (tyVars, argTys, retTy) = splitFnTy ty
             return $ VModuleCtor modId (length tyVars, length argTys) ifc
-        (Nothing, Just (Def _ _ [Clause [] e])) -> eval M.empty e
-        (Nothing, Just (Def _ _ [Clause ps e])) -> eval M.empty $ ELam ps e
-        (Nothing, Just (Def _ _ _)) ->
-            badEval ("reference to multi-clause def (NYI)", name)
+        (Nothing, Just d) -> return $ VThunkGlobal name
         (Nothing, Nothing) -> badEval ("unknown variable", name)
 eval sc (ELam ps body) = return $ VClosure ps sc body
 eval sc (EApp f tys args) = do
@@ -483,6 +492,10 @@ eval sc ETcDict = return VTcDict
 eval sc (EConst _) = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
+evalDef name d = case d of
+    Def _ _ [Clause [] e] -> eval M.empty e
+    Def _ _ [Clause ps e] -> eval M.empty $ ELam ps e
+    Def _ _ _ -> badEval ("reference to multi-clause def (NYI)", name)
 
 evalRule sc (Rule name conds body) = do
     idx <- nextRuleIdx
@@ -496,6 +509,8 @@ evalRule sc (Rule name conds body) = do
 
 -- Apply a value to (type and value) arguments.
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
+appValue f tys vals | isThunk f || any isThunk vals =
+    return $ VThunk f tys vals
 appValue f tys [] | not $ isFunc f =
     badEval' ("value doesn't accept type arguments", f, tys) f
 appValue f tys vals | not $ isFunc f =
@@ -643,6 +658,28 @@ appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 
+
+force :: Value -> ExtractM Value
+force v = do
+    traceM $ "BEGIN forcing " ++ show v
+    v' <- force' v
+    traceM $ "END forcing " ++ show v
+    return v'
+
+force' :: Value -> ExtractM Value
+force' (VThunk f ty args) = do
+    f <- force f
+    args <- mapM force args
+    v <- appValue f ty args
+    force v
+force' (VThunkGlobal name) = do
+    optDef <- use $ _esDefs . at name
+    case optDef of
+        Just d -> evalDef name d
+        Nothing -> badEval ("VThunkGlobal refers to unknown definition", name)
+force' v = return v
+
+
 -- Process a list of values.  On `VNet`, produces the `NetId`.  On `VConst`,
 -- produces nothing.  If any other value is present in the input, `collectNets`
 -- returns `Nothing`.
@@ -718,7 +755,7 @@ isComputationType _ = False
 runMonad :: (Value -> ExtractM Value) -> Value -> ExtractM Value
 runMonad handle c = go c
   where
-    go c = case c of
+    go c = force c >>= \c -> case c of
         VReturn v -> return v
         VBind m k sid -> do
             -- Run computation `m` to get a value

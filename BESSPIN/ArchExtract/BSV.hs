@@ -47,19 +47,30 @@ testAst :: Config.BSV -> IO ()
 testAst cfg = do
     pkgs <- numberNodes <$> loadPackages cfg
 
+    let pkgs' = pkgs
     let er = extractDesign' cfg pkgs
     let pkgs' = annotateNodes (erNodeErrors er) pkgs
+
+    forM_ pkgs' $ \pkg -> do
+        putStrLn $ T.unpack $ "\ncontents of package " <> idName (packageId pkg) <> ":"
+        forM_ (packageDefs pkg) $ \def -> do
+            let name = idName $ defId def
+            let go c = if fromEnum c < 128 then T.singleton c
+                    else "<" <> T.pack (show $ fromEnum c) <> ">"
+            putStrLn $ T.unpack $ T.concatMap go name
 
     forM_ pkgs' $ \pkg -> do
         putStrLn $ "\n\n --- package " ++ T.unpack (idName $ packageId pkg) ++ " ---"
         putStrLn $ T.unpack $ printBSV pkg
         putStrLn $ " --- end package " ++ T.unpack (idName $ packageId pkg) ++ " ---\n"
+        hFlush stdout
 
     T.putStrLn $ " --- begin error report ---"
     forM_ (M.toList $ erModuleErrors er) $ \(modName, errs) -> do
         forM_ errs $ \err ->
             T.putStrLn $ "error: " <> modName <> ": " <> err
         T.putStrLn ""
+        hFlush stdout
     T.putStrLn $ " --- end error report ---"
 
     T.putStrLn $ printArchitecture $ extractDesign cfg pkgs
