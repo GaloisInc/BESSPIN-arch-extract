@@ -171,6 +171,14 @@ convertModule isLib (Def i0 ty cs)
     dictTy = TIsModule (TVar iM) (TVar iC)
     pkgName = fst $ T.breakOn "." $ idName i0
     addPkgName (Id name l c) = Id (pkgName <> "." <> name) l c
+-- Synthesized module stub definition.  This is the `mkFoo` definition, which
+-- simply calls `mkFoo-`.  We recognize it by checking if the body of the
+-- definition is an `EApp` (for full non-synthesized modules, the body is
+-- usually an `ELet` or `ELam` instead).
+convertModule isLib (Def i ty cs)
+  | [Clause dcts body] <- cs
+  , EApp _ _ _ <- body
+  = Nothing
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
 convertModule isLib (Def i ty cs)
