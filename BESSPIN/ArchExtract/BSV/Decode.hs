@@ -65,6 +65,7 @@ getPackage x = bad' "Package" x $
 
 getDefnAny :: CBOR.Term -> DecodeM AnyDefn
 getDefnAny x@(tag "Defn_Struct" -> (_ : _)) = AdStruct <$> getDefnStruct x
+getDefnAny x@(tag "Defn_Class" -> (_ : _)) = AdStruct <$> getDefnStruct x
 getDefnAny x@(tag "Defn_ValueSign" -> (_ : _)) = AdDef <$> getDefnDef x
 getDefnAny x = bad' "Defn" x AdError
 
@@ -148,6 +149,7 @@ getExpr (tag "Expr_StructT" -> [ty, List fs]) =
   where
     go (List [f, e]) = (,) <$> getId f <*> getExpr e
     go x = bad' "struct entry" x (Id "<bad-struct-entry>" 0 0, EUnknown CBOR.TNull)
+getExpr (tag "Expr_AnyT" -> [_ty]) = return EUndef
 --getExpr x = bad' "Expr" x $ EUnknown x
 getExpr x = bad' "Expr" x $ EUnknown (maybe CBOR.TNull CBOR.TString $ getTag x)
 

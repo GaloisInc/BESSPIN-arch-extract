@@ -482,6 +482,7 @@ eval sc (EAddRules rs) = do
     return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
 eval sc (EConst _) = return VConst
+eval sc EUndef = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
 evalDef name d = case d of
@@ -649,6 +650,8 @@ appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
 appPrim PIf [ty] vs
   | not $ isComputationType ty, Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
+  | isComputationType ty =
+    return $ VCompute (VPrim PIf) [ty] vs
 appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
@@ -742,6 +745,7 @@ isComputation (VRegWrite _ _) = True
 isComputation _ = False
 
 isComputationType (TModule _) = True
+isComputationType (TAction _) = True
 isComputationType _ = False
 
 -- Run a monadic computation.  `handle` should implement the behavior of all
@@ -902,6 +906,9 @@ handleAction c = go c
         argNets <- mapM asNet vals
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
+    go (VCompute (VPrim PIf) [_ty] [_c, t, e]) = do
+        _ <- runAction e
+        runAction t
     go c = badEval ("unsupported Action computation", c)
 
 

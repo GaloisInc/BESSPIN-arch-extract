@@ -69,6 +69,8 @@ data Expr =
     | ETcDict   -- Replacement for elided `_tcdict` `EVar`s
     | EConst Text   -- always evaluates to a constant
 
+    | EUndef    -- Generate an undefined value of appropriate type
+
     | EUnknown CBOR.Term
     deriving (Show, Data, Typeable)
 
