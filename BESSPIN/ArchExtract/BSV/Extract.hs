@@ -144,15 +144,7 @@ data BSVModule = BSVModule Id Ty Expr Bool
 -- instantiations of the module call the `mkFoo` definition, not `mkFoo-`, so
 -- the arguments passed at the call site are consistent with the second form.
 
--- Check if a `Def` is the dummy `mkFoo = mkFoo` definition generated for
--- synthesized modules.
-isDummyDef (Def (Id name _ _) _ [Clause [_] e])
-  | EApp (EVar (Id name' _ _)) [_, _] [_] <- e
-  = name == lastWord name'
-isDummyDef _ = False
-
 convertModule :: Bool -> Def -> Maybe BSVModule
-convertModule _ d | isDummyDef d = Nothing
 -- Synthesized module case.  This case is looking at the `mkFoo-` definition,
 -- which needs adjustments to its type and value to get into the standard form.
 convertModule isLib (Def i0 ty cs)
@@ -192,7 +184,7 @@ convertModule isLib (Def i ty cs)
     isLib
 convertModule _ _ = Nothing
 
-isModDict iM (TIsModule (TVar iM') (TVar _)) = iM == iM'
+isModDict iM (TIsModule (TVar iM') (TVar _)) = idName iM == idName iM'
 isModDict _ _ = False
 
 findPackageModules :: Config.BSV -> Package -> [BSVModule]
