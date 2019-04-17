@@ -503,6 +503,9 @@ evalRule sc (Rule name conds body) = do
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
 appValue f tys vals | isThunk f || any isThunk vals =
     return $ VThunk f tys vals
+-- Should probably investigate *why* we're seeing `EApp`s with no arguments,
+-- but it's easy enough to ignore for now...
+appValue f [] [] | not $ isFunc f = return f
 appValue f tys [] | not $ isFunc f =
     badEval' ("value doesn't accept type arguments", f, tys) f
 appValue f tys vals | not $ isFunc f =
