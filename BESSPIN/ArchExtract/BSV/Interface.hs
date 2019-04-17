@@ -107,7 +107,8 @@ translateIfcStructs ss = case fixMap go (M.keys ss') of
         Nothing -> traceShow ("unknown ifc", k) $ return dummyIfc
         Just s -> layoutIfc <$> mapM (goField get) (structFields s)
 
-    goField get (Field (Id name _ _) (TIfc (Id subIfcName _ _)) _) = do
+    goField get (Field (Id name _ _) ty _)
+      | (TIfc (Id subIfcName _ _), _) <- splitAppTy ty = do
         subIfc <- get subIfcName
         return (name, IiSubIfc subIfc)
     goField get (Field (Id name _ _) ty optArgNames) =
