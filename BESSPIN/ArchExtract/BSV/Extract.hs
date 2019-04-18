@@ -329,6 +329,9 @@ data Value =
     | VModuleCtor A.ModId (Int, Int) IfcSpec
     | VMethod
         (Int, Int)      -- number of type and value arguments
+        Bool            -- rule mux has an extra `token`/`_go` input
+        -- NB: The token (if present) is not included in the previous argument
+        -- count field.
         Int             -- logic ID of the rule mux for the method's inputs
         (Maybe A.NetId) -- the output net, if any
     -- Combinational method.  Similar to `VMethod`, except combinational
@@ -559,7 +562,7 @@ appExact f tys vals = case f of
           | Just v <- M.lookup name fs -> return v
           | otherwise -> badEval ("unknown struct field", name, fs)
         _ -> badEval ("expected exactly one struct argument", f, vals)
-    VMethod _ _ _ -> return $ VCompute f tys vals
+    VMethod _ _ _ _ -> return $ VCompute f tys vals
     VCombMethod _ inNets outNet -> do
         argNets <- mapM asNet vals
         forM_ (zip argNets (toList inNets)) $ \(a,b) ->
@@ -579,7 +582,7 @@ isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
 isFunc (VFieldAcc _ _) = True
-isFunc (VMethod _ _ _) = True
+isFunc (VMethod _ _ _ _) = True
 isFunc (VCombMethod _ _ _) = True
 isFunc _ = False
 
@@ -593,7 +596,7 @@ countArgs (VPartApp f tys vals) = do
 countArgs (VPrim p) = return $ countArgsPrim p
 countArgs (VModuleCtor _ numArgs _) = return numArgs
 countArgs (VFieldAcc _ numTys) = return (numTys, 1)
-countArgs (VMethod numArgs _ _) = return numArgs
+countArgs (VMethod numArgs _ _ _) = return numArgs
 countArgs (VCombMethod numArgs _ _) = return numArgs
 countArgs _ = return (0, 0)
 
@@ -864,13 +867,18 @@ buildIfcItemLogic qualName instId (IiMethod m) = do
             VCombMethod (imArgCounts m) (S.fromList inNets) (head outNets)
           | otherwise -> return $
             VNet $ head outNets
-        MkAction hasResult -> do
+        MkAction hasToken hasResult -> do
             muxIdx <- addLogic $ A.Logic
                 (A.LkRuleMux S.empty (S.fromList $ imArgNames m))
                 S.empty inPins ()
-            return $ VMethod (imArgCounts m)
-                muxIdx
-                (if hasResult then Just $ head outNets else Nothing)
+            let mv = VMethod (imArgCounts m)
+                    hasToken
+                    muxIdx
+                    (if hasResult then Just $ head outNets else Nothing)
+            return $
+                if imArgCounts m == (0, 0) then VCompute mv [] []
+                else mv     -- To be applied to arguments later
+
 
 runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
@@ -909,8 +917,11 @@ handleAction c = go c
         accessRuleMux muxIdx [netId]
 
         return VConst   -- reg write returns unit
-    go (VCompute (VMethod _ muxIdx optOutNet) _ vals) = do
-        argNets <- mapM asNet vals
+    go (VCompute (VMethod _ hasToken muxIdx optOutNet) _ vals) = do
+        argNets0 <- mapM asNet vals
+        argNets <-
+            if not hasToken then mapM asNet vals
+            else (:[]) <$> asNet VConst     -- Token value
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
     go (VCompute (VPrim PIf) [_ty] [_c, t, e]) = do
@@ -957,8 +968,8 @@ buildIfcItemPorts qualName (IiMethod m) impl = do
                 VConst -> return ()
                 _ -> badEval_ ("combinational method returned non-logic value", val)
 
-        MkAction hasResult -> do
-            comp <- if hasArgs then appValue impl [] (map VNet inNets)
+        MkAction hasToken hasResult -> do
+            comp <- if hasArgs && not hasToken then appValue impl [] (map VNet inNets)
                 else return impl
             val <- withRuleName qualName $ runAction comp
             when hasResult $ case val of

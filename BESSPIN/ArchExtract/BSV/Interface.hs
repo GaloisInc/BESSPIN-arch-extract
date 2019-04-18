@@ -55,8 +55,10 @@ data IfcMethod = IfcMethod
 
 data MethodKind =
       MkComb
-    -- `True` means it has a return value / output port
-    | MkAction Bool 
+    -- First flag indicates that the method's argument is a dummy token
+    -- argument, added  because the method has no real arguments.  Second flag
+    -- indicates that the method has a return value (non-`TUnit`).
+    | MkAction Bool Bool
     deriving (Show)
 
 
@@ -114,22 +116,29 @@ translateIfcStructs ss = case fixMap go (M.keys ss') of
     goField get (Field (Id name _ _) ty optArgNames) =
         return (name, IiMethod $ IfcMethod kind name argNames argCounts)
       where
-        (tys, args, ret) = splitFnTy ty
-        kind = case ret of
-            TAction TUnit -> MkAction False
-            TAction _ -> MkAction True
-            _ -> MkComb
+        (tys, args0, ret) = splitFnTy ty
+
+        (kind, addTokenArg) = case ret of
+            TAction t ->
+                let addToken = null args0 in
+                let hasRet = case t of TUnit -> False; _ -> True in
+                (MkAction addToken hasRet, addToken)
+            _ -> (MkComb, False)
 
         providedArgNames = maybe [] (map idName) optArgNames
         autoArgNames = map (\i -> "_arg" <> T.pack (show i))
-            [length providedArgNames .. length args - 1]
-        argNames = providedArgNames ++ autoArgNames
+            [length providedArgNames .. length args0 - 1]
+        argNames0 = providedArgNames ++ autoArgNames
 
-        argCounts = (length tys, length args)
+        (args, argNames) =
+            if not addTokenArg then (args0, argNames0)
+            else ([TUnit], ["_go"])
+
+        argCounts = (length tys, length args0)
 
 methodInPorts m = length $ imArgNames m
 
-methodOutPorts (IfcMethod { imKind = MkAction False }) = 0
+methodOutPorts (IfcMethod { imKind = MkAction _ False }) = 0
 methodOutPorts _ = 1
 
 itemInPorts (IiMethod m) = methodInPorts m
