@@ -143,6 +143,12 @@ data LogicKind =
         { lkRuleMuxRuleNames :: Seq Text
         , lkRuleMuxPinNames :: Seq Text
         } |
+    -- Simple 1-input 0-output logic element used to represent the condition of
+    -- a BSV rule.
+    LkRuleEnable
+        -- Name of the rule that this logic element enables.
+        { lkRuleEnableName :: Text
+        } |
     LkExpr |
     LkOther
     deriving (Show, Eq, Typeable, Data, Generic, NFData)

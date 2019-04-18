@@ -724,6 +724,17 @@ asNet v = do
     badEval_ ("expected a net or const", v)
     asNet VConst
 
+combineNets :: [A.NetId] -> ExtractM A.NetId
+combineNets [] = asNet VConst
+combineNets [n] = return n
+combineNets ns = do
+    n' <- addNet $ A.mkNet "merge" (-1) A.TUnknown
+    addLogic $ A.Logic A.LkExpr
+        (S.fromList $ map (\n -> A.Pin n A.TUnknown) ns)
+        (S.singleton $ A.Pin n' A.TUnknown)
+        ()
+    return n'
+
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
 genCombLogic :: Seq A.NetId -> ExtractM A.NetId
@@ -835,11 +846,20 @@ handleModule c = go Nothing c
 
         buildModule name modId ifc
     go _ (VAddRules rs) = do
-        forM_ rs $ \(RuleVal name conds body) ->
-            -- TODO: do something with conds
+        forM_ rs $ \(RuleVal name conds body) -> do
+            condNets <- mapM asNet conds
+            condNet' <- combineNets condNets
+            addLogic $ A.Logic
+                (A.LkRuleEnable name)
+                (S.singleton $ A.Pin condNet' A.TUnknown)
+                S.empty
+                ()
+
             withRuleName name $ runAction body
         return VConst   -- returns unit
     go _ c = badEval ("unsupported Module computation", c)
+
+
 
 buildModule :: Text -> A.ModId -> IfcSpec -> ExtractM Value
 buildModule name modId ifc = do

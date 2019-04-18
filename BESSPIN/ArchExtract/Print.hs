@@ -49,7 +49,8 @@ instance Pretty (Logic x) where
                 LkRegister name -> "reg" <+> pretty name
                 LkDFlipFlop name _ -> "dff" <+> pretty name
                 LkRam name _ _ _ _ -> "ram" <+> pretty name
-                LkRuleMux _ _ -> "rulemux"
+                LkRuleMux _ _ -> "ruleMux"
+                LkRuleEnable name -> "ruleEnable" <+> pretty name
                 LkExpr -> "expr"
                 LkOther -> emptyDoc
         in
