@@ -1,12 +1,14 @@
-{-# LANGUAGE OverloadedStrings, TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell, RankNTypes,
+   DeriveGeneric, DeriveAnyClass #-}
 module BESSPIN.ArchExtract.BSV.Extract where
 
+import Control.DeepSeq (deepseq, NFData)
 import Control.Monad
 import Control.Monad.ST
 import Control.Monad.State.Strict
 import Data.Array.ST
 import Data.Foldable
-import Data.Generics
+import Data.Generics hiding (Generic)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
@@ -18,10 +20,11 @@ import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UnionFind.ST as UF
+import GHC.Generics
 import Lens.Micro.Platform
 import Text.Read (readMaybe)
 
-import Debug.Trace
+import Debug.FilterTrace
 import Data.List
 
 import qualified BESSPIN.ArchExtract.Config as Config
@@ -31,6 +34,9 @@ import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.BSV.Interface
 import BESSPIN.ArchExtract.Simplify (reconnectNets)
+
+
+TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Extract"
 
 
 data ExtractState = ExtractState
@@ -46,6 +52,7 @@ data ExtractState = ExtractState
     , esNodeErrors :: Map Int (Seq Text)
     , esModuleErrors :: Seq Text
     }
+    deriving (Generic, NFData)
 
 makeLenses' ''ExtractState
 
@@ -116,6 +123,7 @@ takeModuleErrors = do
 
 -- The Bool is True if this module came from a library package.
 data BSVModule = BSVModule Id Ty Expr Bool
+    deriving (Generic, NFData)
 
 -- # Module processing
 --
@@ -219,15 +227,15 @@ extractDesign' cfg ps =
   where
     bsvMods = concatMap (findPackageModules cfg) ps
 
-    structs = M.unions $ do
+    structs = M.fromList $ do
         p <- ps
         s <- toList $ packageStructs p
-        return $ M.singleton (idName $ structId s) s
+        return (idName $ structId s, s)
 
-    defs = M.unions $ do
+    defs = M.fromList $ do
         p <- ps
         d <- toList $ packageDefs p
-        return $ M.singleton (idName $ defId d) d
+        return (idName $ defId d, d)
 
     ifcSpecs = translateIfcStructs structs
 
@@ -240,7 +248,13 @@ extractDesign' cfg ps =
         zipWith (\(BSVModule (Id name _ _) ty _ _) idx ->
             (name, (idx, ty, modIfc name ty))) bsvMods [0..]
 
-    initState = ExtractState
+    initState =
+        seq (alwaysTrace ("processing " ++ show (M.size structs) ++ " structs") structs) $
+        seq (alwaysTrace ("processing " ++ show (M.size defs) ++ " defs") defs) $
+        deepseq (alwaysTrace ("converting interfaces") ifcSpecs) $
+        deepseq (alwaysTrace ("collecting modules") bsvMods) $
+        seq (alwaysTrace ("indexing " ++ show (length bsvMods) ++ " modules") modMap) $
+        ExtractState
         { esCurModule = error "no current module"
         , esCurRuleName =
             badCall' "ran Action not in any rule" $
@@ -258,12 +272,16 @@ extractDesign' cfg ps =
         , esNodeErrors = M.empty
         , esModuleErrors = S.empty
         }
-    (extractedMods, finalState) = runState (mapM go bsvMods) initState
+    (extractedMods, finalState) =
+        seq initState $
+        alwaysTrace ("extracting modules") $
+        runState (mapM go bsvMods) initState
     archMods = S.fromList [m | (m,_,_) <- extractedMods]
     modErrs = M.fromList [(A.moduleName m, e <> fe) | (m,e,fe) <- extractedMods]
     nodeErrs = esNodeErrors finalState
     go m@(BSVModule (Id name _ _) ty _ _) = do
         m' <- extractModule m (modIfc name ty)
+        deepseq m' $ return ()
         finalErrs <- takeErrors
         errs <- takeModuleErrors
         return (m', errs, finalErrs)

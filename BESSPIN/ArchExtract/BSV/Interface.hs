@@ -1,12 +1,18 @@
-{-# LANGUAGE OverloadedStrings, Rank2Types #-}
-module BESSPIN.ArchExtract.BSV.Interface where
+{-# LANGUAGE OverloadedStrings, Rank2Types, DeriveGeneric, DeriveAnyClass #-}
+module BESSPIN.ArchExtract.BSV.Interface
+( IfcSpec(..), IfcEntry(..), IfcItem(..), IfcMethod(..), MethodKind(..)
+, methodInPorts, methodOutPorts, itemInPorts, itemOutPorts
+, dummyIfc
+, translateIfcStructs
+) where
 
+import Control.DeepSeq
 import Control.Monad
 import Control.Monad.ST
 import Control.Monad.State
 import Data.Array.ST
 import Data.Foldable
-import Data.Generics
+import Data.Generics hiding (Generic)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
@@ -18,14 +24,18 @@ import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UnionFind.ST as UF
+import GHC.Generics
 import Lens.Micro.Platform
 import Text.Read (readMaybe)
 
-import Debug.Trace
+import Debug.FilterTrace
 import Data.List
 
 import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
+
+
+TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Interface"
 
 
 data IfcSpec = IfcSpec
@@ -33,17 +43,17 @@ data IfcSpec = IfcSpec
     , ifcInPorts :: Int
     , ifcOutPorts :: Int
     }
-    deriving (Show)
+    deriving (Show, Generic, NFData)
 
 data IfcEntry = IfcEntry
     { ieItem :: IfcItem
     , ieFirstInPort :: Int
     , ieFirstOutPort :: Int
     }
-    deriving (Show)
+    deriving (Show, Generic, NFData)
 
 data IfcItem = IiMethod IfcMethod | IiSubIfc IfcSpec
-    deriving (Show)
+    deriving (Show, Generic, NFData)
 
 data IfcMethod = IfcMethod
     { imKind :: MethodKind
@@ -51,7 +61,7 @@ data IfcMethod = IfcMethod
     , imArgNames :: [Text]
     , imArgCounts :: (Int, Int)
     }
-    deriving (Show)
+    deriving (Show, Generic, NFData)
 
 data MethodKind =
       MkComb
@@ -59,7 +69,7 @@ data MethodKind =
     -- argument, added  because the method has no real arguments.  Second flag
     -- indicates that the method has a return value (non-`TUnit`).
     | MkAction Bool Bool
-    deriving (Show)
+    deriving (Show, Generic, NFData)
 
 
 dummyIfc = IfcSpec [] 0 0

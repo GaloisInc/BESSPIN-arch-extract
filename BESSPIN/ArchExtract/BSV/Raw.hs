@@ -1,10 +1,13 @@
-{-# LANGUAGE DeriveDataTypeable, StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable, DeriveGeneric, DeriveAnyClass,
+   StandaloneDeriving #-}
 module BESSPIN.ArchExtract.BSV.Raw where
 
+import Control.DeepSeq
 import Control.Monad
 import Data.Data
 import Data.Sequence (Seq)
 import Data.Text (Text)
+import GHC.Generics
 
 import qualified Codec.CBOR.Term as CBOR
 
@@ -18,7 +21,7 @@ data Package = Package
     , packageDefs :: Seq Def
     , packageStructs :: Seq Struct
     }
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Struct = Struct
     { structId :: Id
@@ -26,25 +29,25 @@ data Struct = Struct
     , structFields :: [Field]
     , structIsIfc :: Bool
     }
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 -- A field that contains a function may have a list of default arg names
 -- associated with it.
 data Field = Field Id Ty (Maybe [Id])
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Def = Def
     { defId :: Id
     , defTy :: Ty
     , defClauses :: [Clause]
     }
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Clause = Clause
     { clausePats :: [Pat]
     , clauseBody :: Expr
     }
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Expr =
     -- Standard functional constructs
@@ -72,7 +75,7 @@ data Expr =
     | EUndef    -- Generate an undefined value of appropriate type
 
     | EUnknown CBOR.Term
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Prim =
       PReturn -- a -> m a
@@ -90,31 +93,31 @@ data Prim =
     | PBinOp Text
     | PIf       -- forall a. Bool -> a -> a -> a
     | PSetName Text -- Module a -> Module a
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data RawRule =
       RrRule (Maybe Expr) [Guard] Expr
     | RrUnknown CBOR.Term
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Rule = Rule
     { ruleName :: Maybe Text
     , ruleConds :: [Expr]
     , ruleBody :: Expr
     }
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Guard =
       GCond Expr
     | GPat Pat Ty Expr
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Lit =
       LStr Text
     | LChar Char
     | LInt Integer
     | LDouble Double
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Stmt =
     -- Final `Int` is a unique ID, used for attaching comments/error messages
@@ -122,14 +125,14 @@ data Stmt =
       SBind Pat Ty Expr NodeId
     | SBind' Expr NodeId
     | SNote Text
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Pat =
       PWild
     | PVar Id
     | PTcDict   -- Replacement for elided `_tcdict` `PVar`s
     | PUnknown CBOR.Term
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Ty =
       TVar Id
@@ -151,14 +154,16 @@ data Ty =
     | TIsModule Ty Ty
 
     | TUnknown CBOR.Term
-    deriving (Show, Data, Typeable)
+    deriving (Show, Data, Typeable, Generic, NFData)
 
 data Id = Id Text Int Int
-    deriving (Show, Eq, Ord, Data, Typeable)
+    deriving (Show, Eq, Ord, Data, Typeable, Generic, NFData)
 
 idName (Id name _ _) = name
 
 deriving instance Data CBOR.Term
+deriving instance Generic CBOR.Term
+deriving instance NFData CBOR.Term
 
 
 -- Split a function type into a list of type variables, a list of argument

@@ -1,11 +1,13 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, DeriveGeneric, DeriveAnyClass #-}
 module BESSPIN.ArchExtract.Verilog.Raw where
 
+import Control.DeepSeq
 import Data.Data
 import Data.Map (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word
+import GHC.Generics
 
 
 newtype NodeId = NodeId { unwrapNodeId :: Int }
@@ -241,7 +243,7 @@ data BinOp =
     deriving (Show, Eq, Data, Typeable)
 
 data Span = Span !Word32 !Word32
-    deriving (Show, Eq, Ord, Data, Typeable)
+    deriving (Show, Eq, Ord, Data, Typeable, Generic, NFData)
 
 data FileInfo = FileInfo
     { fileInfoName :: Text

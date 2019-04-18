@@ -1,9 +1,11 @@
-{-# LANGUAGE OverloadedStrings, ViewPatterns, PatternSynonyms #-}
+{-# LANGUAGE OverloadedStrings, ViewPatterns, PatternSynonyms,
+   StandaloneDeriving #-}
 module BESSPIN.ArchExtract.BSV.Decode where
 
 import Prelude hiding (span)
 import Control.Monad
 import Control.Monad.Identity
+import Data.Generics
 import qualified Data.ByteString.Lazy as BSL
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -16,13 +18,16 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import Data.Word
 
-import Debug.Trace
+import Debug.FilterTrace
 
 import qualified Codec.CBOR.Decoding as CBOR
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
 
 import BESSPIN.ArchExtract.BSV.Raw
+
+
+TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Decode"
 
 
 type DecodeM a = Either Text a
@@ -45,19 +50,24 @@ bad' what x dfl =
 
 
 getPackages :: CBOR.Term -> DecodeM [Package]
-getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
-getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
+getPackages (tag "Packages" -> [List ps]) =
+    alwaysTrace ("loading " ++ show (length ps) ++ " packages") $
+    mapM getPackage ps
+getPackages x@(tag "Package" -> (_:_)) =
+    alwaysTrace ("loading 1 package") $
+    (:[]) <$> getPackage x
 getPackages x = bad' "Packages" x $ []
 
 data AnyDefn = AdDef Def | AdStruct Struct | AdError
 
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, _, List defns]) = do
+    i <- getId i
     anys <- mapM getDefnAny defns
     let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
     let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
     Package
-        <$> getId i
+        <$> pure i
         <*> pure (S.fromList defs)
         <*> pure (S.fromList structs)
 getPackage x = bad' "Package" x $

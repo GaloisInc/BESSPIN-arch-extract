@@ -1,4 +1,5 @@
-{-# LANGUAGE DeriveDataTypeable, TemplateHaskell, Rank2Types #-}
+{-# LANGUAGE DeriveDataTypeable, DeriveGeneric, DeriveAnyClass,
+   TemplateHaskell, Rank2Types #-}
 module BESSPIN.ArchExtract.Architecture
     ( module BESSPIN.ArchExtract.Architecture
     , Span(..)
@@ -6,6 +7,7 @@ module BESSPIN.ArchExtract.Architecture
     , dummySpan
     ) where
 
+import Control.DeepSeq
 import Control.Monad.State
 import Data.Data
 import Data.Ix
@@ -14,6 +16,7 @@ import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable
+import GHC.Generics (Generic)
 import Lens.Micro.Platform
 
 import BESSPIN.ArchExtract.Lens
@@ -25,7 +28,7 @@ import BESSPIN.ArchExtract.Verilog.AST (Span(..), HasSpan(..), dummySpan)
 type ModId = Int
 -- The ID of a net is its position in `moduleNets`.
 newtype NetId = NetId { unwrapNetId :: Int }
-    deriving (Show, Eq, Ord, Ix, Typeable, Data)
+    deriving (Show, Eq, Ord, Ix, Typeable, Data, Generic, NFData)
 
 instance Enum NetId where
     toEnum = NetId
@@ -34,7 +37,7 @@ instance Enum NetId where
 data Design ann = Design
     { designMods :: Seq (Module ann)
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 data Module ann = Module
     { moduleName :: Text
@@ -46,7 +49,7 @@ data Module ann = Module
     , moduleNets :: Seq (Net ann)
     , moduleConstraints :: Seq Constraint
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 data ModuleKind =
       MkNormal
@@ -55,7 +58,7 @@ data ModuleKind =
     -- should have no logics, and only a net for each port.  Backends should
     -- omit these modules or mark them in some way.
     | MkExtern
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 
 data Param = Param
@@ -63,7 +66,7 @@ data Param = Param
     , paramDefault :: Maybe ConstExpr
     , paramKind :: ParamKind
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 data ParamKind =
     -- Ordinary global parameter, which can be set by module instantiations.
@@ -73,14 +76,14 @@ data ParamKind =
     -- Enum variant.  Behaves like `PkLocal`, but it may not have an
     -- initializer.
     PkEnum
-    deriving (Show, Eq, Data, Typeable)
+    deriving (Show, Eq, Data, Typeable, Generic, NFData)
 
 data Port = Port
     { portName :: Text
     , portNet :: NetId
     , portTy :: Ty
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 
 data Logic ann = Logic
@@ -89,7 +92,7 @@ data Logic ann = Logic
     , logicOutputs :: Seq Pin
     , logicAnn :: ann
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 data LogicKind =
     LkInst Inst |
@@ -142,20 +145,20 @@ data LogicKind =
         } |
     LkExpr |
     LkOther
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 data Inst = Inst 
     { instModId :: ModId
     , instName :: Text
     , instParams :: Seq (Maybe ConstExpr)
     }
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 data Pin = Pin
     { pinNet :: NetId
     , pinTy :: Ty
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 
 data Net ann = Net
@@ -167,7 +170,7 @@ data Net ann = Net
     , netTy :: Ty
     , netAnn :: ann
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 -- For `ExtPort`, the `Int` is an index into the `moduleInputs`/`Outputs` list
 -- (`Inputs` if this `Conn` is on the `netSinks` side of the `Net`, `Outputs`
@@ -175,14 +178,14 @@ data Net ann = Net
 -- index of the `Logic` in `moduleLogics`, and the second `Int` indexes into
 -- `logicInputs`/`Outputs`.
 data Conn = ExtPort Int | LogicPort Int Int
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 
 data Constraint = Constraint
     { constraintExpr :: ConstExpr
     , constraintOrigin :: ConstraintOrigin
     }
-    deriving (Show, Typeable, Data)
+    deriving (Show, Typeable, Data, Generic, NFData)
 
 data ConstraintOrigin =
     -- From the provided expression for parameter `j` on LkInst logic `i`.
@@ -197,7 +200,7 @@ data ConstraintOrigin =
     CoPortConn Int Side Int |
     CoCustom |
     CoText Text
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 
 data Ty =
@@ -217,7 +220,7 @@ data Ty =
     -- Type for values used only in simulation (int, string, etc).
     TSimVal |
     TUnknown
-    deriving (Show, Eq, Typeable, Data)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 
 data ConstExpr =
@@ -247,16 +250,16 @@ data ConstExpr =
     -- Like `EOverride`, but using a generated override associated with
     -- parameter `j` of instance `i` within the current module.
     | EOverrideInstParam Int Int ConstExpr
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 data UnArithOp = UClog2 | UIsPow2
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 data BinArithOp = BAdd | BSub | BMul
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 data BinCmpOp = BEq | BNe | BLt | BLe | BGt | BGe
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 _subexprs :: Traversal' ConstExpr ConstExpr
 _subexprs f e = case e of
@@ -276,7 +279,7 @@ _subexprs f e = case e of
 -- are named `Source` and `Sink` instead of `Input` and `Output` because
 -- `Input`/`Output` have opposite meanings on external ports vs. logic.
 data Side = Source | Sink
-    deriving (Show, Eq, Ord, Typeable, Data)
+    deriving (Show, Eq, Ord, Typeable, Data, Generic, NFData)
 
 flipSide Source = Sink
 flipSide Sink = Source
