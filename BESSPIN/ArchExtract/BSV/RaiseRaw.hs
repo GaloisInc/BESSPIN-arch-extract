@@ -24,8 +24,11 @@ import BESSPIN.ArchExtract.GraphOps
 import Debug.Trace
 
 
+-- This is generally meant to be used on the full [Package].  It will run on
+-- other parts of the AST, but functionality may be limited.
 raiseRaw :: Data a => a -> a
 raiseRaw x =
+    convertTypeclassAccessors $
     postSimplify $
     --removeTcDicts $
     rewrite $
@@ -54,6 +57,21 @@ cleanDefs x = everywhere (mkT goPackage) x
   where
     goPackage (Package i ds ss) = Package i (S.filter checkDef ds) ss
     checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
+
+-- At the level where we're operating, typeclass definitions have already been
+-- converted into structs, but the accessors are still `EVar "Foo.f"` instead
+-- of `EStatic "Foo.Tc" "Foo.f"`.  This pass does the conversion.
+convertTypeclassAccessors :: Data a => a -> a
+convertTypeclassAccessors x = everywhere (mkT go) x
+  where
+    go (EVar i@(Id name _ _)) | Just sId <- M.lookup name fieldMap = EStatic sId i
+    go e = e
+
+    fieldMap = everything (<>) (M.empty `mkQ` gather) x
+    gather (Struct sId _ fs _) = M.fromList $ map (gatherField sId) fs
+    gatherField sId (Field fId _ _) =
+        let (pkgPrefix, _) = T.breakOnEnd "." $ idName sId in
+        (pkgPrefix <> idName fId, sId)
 
 rewrite :: Data a => a -> a
 rewrite x = everywhere (mkT goExpr `extT` goTy) x
