@@ -312,8 +312,10 @@ data Value =
     -- one input is a thunk.
     | VThunk Value [Ty] [Value]
 
-    -- Function-like values.
-    | VClosure [Pat] Scope Expr
+    -- Function-like values.  Closures keep track of how many type arguments
+    -- they expect, but we don't have a way to pass types in at the moment, so
+    -- they just get dropped at application time instead.
+    | VClosure Int [Pat] Scope Expr
     -- Partial application.  Much easier to have one unified way of handling
     -- partial applications, instead of making every single callable type
     -- handle it separately.
@@ -385,8 +387,10 @@ badEval :: Show a => a -> ExtractM Value
 badEval msg = badEval' msg VUnknown
 
 truncateMessage n msg =
-    let (keep, rest) = splitAt 1000 msg in
+    let (keep, rest) = splitAt n msg in
     keep ++ (if not $ null rest then " ... (message truncated)" else "")
+
+showTrunc n x = truncateMessage n $ show x
 
 badEval' :: Show a => a -> r -> ExtractM r
 badEval' msg value = do
@@ -420,7 +424,7 @@ eval sc (EVar i@(Id name _ _))
             return $ VModuleCtor modId (length tyVars, length argTys) ifc
         (Nothing, Just d) -> return $ VThunkGlobal name
         (Nothing, Nothing) -> badEval ("unknown variable", name)
-eval sc (ELam ps body) = return $ VClosure ps sc body
+eval sc (ELam ps body) = return $ VClosure 0 ps sc body
 eval sc (EApp f tys args) = do
     fv <- eval sc f
     argvs <- mapM (eval sc) args
@@ -431,8 +435,9 @@ eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e nid _) = do
     v <- eval sc body
     saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) _ [Clause ps body]) e nid _) = do
-    let v = VClosure ps sc body
+eval sc (ELet (Def (Id name _ _) ty [Clause ps body]) e nid _) = do
+    let (tyVars, _, _) = splitFnTy ty
+    let v = VClosure (length tyVars) ps sc body
     saveErrors nid v
     eval (M.insert name v sc) e
 eval sc (ELet (Def (Id name _ _) _ cs) e nid _) = do
@@ -475,7 +480,7 @@ eval sc (EDo ss e) = case ss of
                 SBind' m sid -> (PWild, m, sid)
                 SNote _ -> (PWild, EConst "SNote", 0)
         mv <- eval sc m
-        let kv = VClosure [p] sc (EDo ss' e)
+        let kv = VClosure 0 [p] sc (EDo ss' e)
         return $ VBind mv kv sid
 eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
@@ -487,7 +492,9 @@ eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
 evalDef name d = case d of
     Def _ _ [Clause [] e] -> eval M.empty e
-    Def _ _ [Clause ps e] -> eval M.empty $ ELam ps e
+    Def _ ty [Clause ps e] ->
+        let (tyVars, _, _) = splitFnTy ty in
+        return $ VClosure (length tyVars) ps M.empty e
     Def _ _ _ -> badEval ("reference to multi-clause def (NYI)", name)
 
 evalRule sc (Rule name conds body) = do
@@ -543,7 +550,7 @@ appValue f tys vals = do
 -- Like `appValue`, but the caller must provide exactly the right number of
 -- `tys` and `vals`.
 appExact f tys vals = case f of
-    VClosure ps sc' body -> appClosure ps vals sc' body
+    VClosure _ ps sc' body -> appClosure ps vals sc' body
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
@@ -567,7 +574,7 @@ mkPartApp (VPartApp f tys vals) tys' vals' =
 mkPartApp f tys vals =
     VPartApp f tys vals
 
-isFunc (VClosure _ _ _) = True
+isFunc (VClosure _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
@@ -579,7 +586,7 @@ isFunc _ = False
 -- Count the number of type and value arguments that `v` expects to receive.
 -- Returns (0,0) for non-functions.
 countArgs :: Value -> ExtractM (Int, Int)
-countArgs (VClosure ps _ _) = return (0, length ps)
+countArgs (VClosure numTys ps _ _) = return (numTys, length ps)
 countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
     return (numTys - length tys, numVals - length vals)
