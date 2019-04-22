@@ -28,6 +28,22 @@
     (place/context chan (run-oracle* oracle-spec oracle-args chan)))
   (define seen-tests (mutable-set))
 
+  (define strategy-reactive (make-vector (vector-length strategy-chans) #f))
+  (define strategy-has-recovery (make-vector (vector-length strategy-chans) #f))
+  (define strategy-failed (make-vector (vector-length strategy-chans) #f))
+  (define (all-strategies-failed)
+    (for/and ([reactive strategy-reactive]
+              [failed strategy-failed])
+      (or reactive failed)))
+  (define (attempt-recovery)
+    (define idx (vector-member #t strategy-has-recovery))
+    (if (not idx) #f
+      (begin
+        (printf "attempting recovery using strategy ~a (~a)~n"
+                idx (list-ref strategy-specs idx))
+        (place-channel-put (vector-ref strategy-chans idx) '(recover))
+        (vector-fill! strategy-failed #f))))
+
   (define (broadcast-strategies msg)
     (for ([chan strategy-chans])
       (place-channel-put chan msg)))
@@ -57,8 +73,6 @@
       (handle-evt strategy-evt (lambda (x) (cons 'strategy x)))
       (handle-evt oracle-chan (lambda (x) (list 'oracle x)))))
 
-  (define quit-votes 0)
-
   (define (loop)
     (match (sync any-evt)
       [`(strategy ,i input ,inp ,meta)
@@ -68,23 +82,32 @@
         (loop)]
       [`(strategy ,i solution ,fmv)
         (vector->feature-model fmv)]
-      [`(strategy ,i vote-quit ,quiet)
-        (printf "VOTE-QUIT: strategy ~a (~a)~n"
-                i (list-ref strategy-specs i))
-        (when (not quiet)
-          (for ([chan strategy-chans])
-            (place-channel-put chan '(vote-quit))))
-        (set! quit-votes (+ 1 quit-votes))
-        (if (< quit-votes (vector-length strategy-chans))
-          (loop)
-          #f)]
       [`(strategy ,i fix-feature ,idx ,val)
         (for ([chan strategy-chans])
           (place-channel-put chan `(fix-feature ,idx ,val)))
         (loop)]
+      [`(strategy ,i property reactive ,val)
+        (vector-set! strategy-reactive i val)
+        (loop)]
+      [`(strategy ,i property has-recovery ,val)
+        (vector-set! strategy-has-recovery i val)
+        (loop)]
+      [`(strategy ,i property failed ,val)
+        (printf "FAILED: strategy ~a (~a)~n"
+                i (list-ref strategy-specs i))
+        (vector-set! strategy-failed i val)
+        (if (and (all-strategies-failed) (not (attempt-recovery)))
+          (begin
+            (printf "All strategies failed, and no recovery options are available.~n")
+            (printf " -- SYNTHESIS FAILED --~n")
+            #f)
+          (loop))]
+      [`(strategy ,i recovery-done)
+        (broadcast-strategies '(start))
+        (loop)]
       [`(oracle ,test)
-       (dispatch-test test)
-       (loop)]
+        (dispatch-test test)
+        (loop)]
       [evt
         (displayln evt)
         (raise "bad event")]

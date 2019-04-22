@@ -14,23 +14,20 @@
 (require "synthesis.rkt")
 
 
-(define (vote-quit chan [quiet #f])
-  (place-channel-put chan '(vote-quit ,quiet)))
-
 (define (fail-flag chan [quiet #f])
   (define val #f)
   (lambda (x)
     (match x
       ['get val]
       ['set
-       (vote-quit chan quiet)
+       (place-channel-put chan '(property failed #t))
        (set! val #t)]
       ['reset (set! val #f)])))
 
 
 (define (strategy-bitflip chan)
   (printf "strategy-bitflip running~n")
-  (vote-quit chan #t)
+  (place-channel-put chan `(property reactive #t))
   (for ([msg (in-place-channel chan)])
     (match msg
       [`(test ,inp ,out ,meta)
@@ -102,15 +99,24 @@
         [(vector? result) (place-channel-put chan `(input ,result ()))]
         [(false? result) (failed 'set)]))))
 
-; Run silently until either another strategy vote-quits, or 100 positive tests
-; or 1000 negative tests go by without removing any "fixed" claims.  Once
-; triggered, broadcast all "fixed" claims to other strategies, vote-quit, and
-; exit.
 (define (strategy-boredom threshold symbolic-fm chan)
   (printf "strategy-boredom running~n")
+  (place-channel-put chan `(property reactive #t))
+  (place-channel-put chan `(property has-recovery #t))
   (define claims (all-fixed-claims symbolic-fm))
   (define prev-count (length claims))
   (define counter threshold)
+  (define done #f)
+
+  (define (fire)
+    (printf "strategy-boredom got bored!  broadcasting ~a claims~n"
+            (length claims))
+    (for ([c claims])
+      (displayln c)
+      (place-channel-put chan
+        `(fix-feature ,(claim-fixed-a c) ,(claim-fixed-val c))))
+    (place-channel-put chan `(property has-recovery #f)))
+
   (for ([msg (in-place-channel chan)])
     (match msg
       [`(test ,inp ,out ,meta)
@@ -122,21 +128,17 @@
                     (length claims)))
           (set! prev-count (length claims)))
         (set! counter (- counter (if out 10 1)))]
-      ['(vote-quit)
-       (set! counter 0)]
+      [`(recover)
+        (fire)
+        (set! done #t)
+        (place-channel-put chan '(recovery-done))]
       [else (void)])
 
     (when (<= counter 0)
-      (printf "strategy-boredom got bored!  broadcasting ~a claims~n"
-              (length claims))
-      (for ([c claims])
-        (displayln c)
-        (place-channel-put chan
-          `(fix-feature ,(claim-fixed-a c) ,(claim-fixed-val c))))
-      ; TODO may need a delay here, so we don't actually cause the manager to
-      ; quit before other strategies have a chance to unvote-quit
-      (vote-quit chan))
-    #:break (<= counter 0)
+      (fire)
+      (set! done #t))
+
+    #:break done
     (void)))
 
 ; TODO strategy-quorum
