@@ -158,15 +158,15 @@
 ;(define oracle-fm-raw example-fm-2-raw)
 ;(define symbolic-fm (?*feature-model 6 2 1))
 ;(define init-tests '())
-;(define oracle-fm-raw secure-cpu-isa-fm-raw)
-;(define symbolic-fm (?*feature-model 15 4 1))
-;(define init-tests secure-cpu-isa-init-tests)
+(define oracle-fm-raw secure-cpu-isa-fm-raw)
+(define symbolic-fm (?*feature-model 15 4 1))
+(define init-tests secure-cpu-isa-init-tests)
 ;(define oracle-fm-raw secure-cpu-arch-fm-raw)
 ;(define symbolic-fm (?*feature-model 24 8 3))
 ;(define init-tests secure-cpu-arch-init-tests)
-(define oracle-fm-raw constraint-test-fm-raw)
-(define symbolic-fm (?*feature-model 3 0 0 #:constraint '(=> (&& _ _) _)))
-(define init-tests constraint-test-init-tests)
+;(define oracle-fm-raw constraint-test-fm-raw)
+;(define symbolic-fm (?*feature-model 3 0 0 #:constraint '(=> (&& _ _) _)))
+;(define init-tests constraint-test-init-tests)
 
 (define oracle-fm (apply make-feature-model oracle-fm-raw))
 (assert (valid-feature-model oracle-fm))
@@ -343,7 +343,16 @@
       (feature-model-num-features symbolic-fm)
       (feature-model-num-groups symbolic-fm)
       (feature-model-num-dependencies symbolic-fm)
-      '(=> (&& _ _) _)))
+      #t))
+
+
+  (define resume-tests
+    (if (file-exists? "resume-tests.rktd")
+      (call-with-default-reading-parameterization
+        (lambda () (read-many-from-file "resume-tests.rktd")))
+      '()))
+  (displayln `(read ,(length resume-tests) resume tests))
+
   (define fm
     (run-manager
       `(
@@ -355,7 +364,8 @@
       `(eval-fm ,(struct->vector* oracle-fm))
       #hash()
       init-tests
-      '()
+      resume-tests
+      (open-output-file "test-log.rktd" #:exists 'truncate)
       ))
   (pretty-write fm)
   (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))

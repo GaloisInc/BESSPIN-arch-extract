@@ -28,22 +28,25 @@
     (place/context chan (run-oracle* oracle-spec oracle-args chan)))
   (define seen-tests (mutable-set))
 
-  (define (dispatch-test t)
-    (define msg (cons 'test t))
+  (define (broadcast-strategies msg)
     (for ([chan strategy-chans])
-      (place-channel-put chan msg))
+      (place-channel-put chan msg)))
+  (define (dispatch-test t)
+    (broadcast-strategies `(test ,@t))
     (when test-record-port
       (writeln t test-record-port)
       (flush-output test-record-port)))
   (define (dispatch-input inp)
     (place-channel-put oracle-chan inp))
 
-  (for ([inp init-inputs])
-    (dispatch-input `(,inp ())))
-
+  ; Initialization
   (for ([t init-tests])
     (set-add! seen-tests (first t))
     (dispatch-test t))
+  (for ([inp init-inputs])
+    (when (not (set-member? seen-tests inp))
+      (dispatch-input `(,inp ()))))
+  (broadcast-strategies '(start))
 
   (define strategy-evt
     (apply choice-evt
@@ -75,11 +78,6 @@
         (if (< quit-votes (vector-length strategy-chans))
           (loop)
           #f)]
-      [`(strategy ,i unvote-quit)
-        (printf "UNVOTE-QUIT: strategy ~a (~a)~n"
-                i (list-ref strategy-specs i))
-        (set! quit-votes (- quit-votes 1))
-        (loop)]
       [`(strategy ,i fix-feature ,idx ,val)
         (for ([chan strategy-chans])
           (place-channel-put chan `(fix-feature ,idx ,val)))
