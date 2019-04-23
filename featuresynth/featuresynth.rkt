@@ -119,6 +119,7 @@
   (if fm
     (output-feature-model fm)
     (output-unsat (apply ?*feature-model symbolic-fm-args)
+                  ; TODO - more principled way to get tests out of the manager
                   (read-many-from-file "test-log.rktd")))
   )
 
@@ -139,109 +140,32 @@
       (get-unsat-core symbolic-fm tests)))
   (define vs (minimize-features symbolic-fm min-tests))
   (printf "~n")
+
   (printf "Relevant features:~n")
   (for ([v vs]) (printf "  ~a~n" (vector-ref feature-names v)))
   (printf "~n")
+
+  ;(printf "Reduced feature model template:~n")
+  ;(pretty-write (slice-symbolic-fm symbolic-fm vs))
+  ;(printf "~n")
+
   (printf "No valid feature model exists for the combination of the following tests:~n")
   (for ([t min-tests])
-    (match-define `(,inp ,out ,meta) t)
-    (define inp-names
-      (for/list ([i vs] #:when (vector-ref inp i)) (vector-ref feature-names i)))
-    (printf "  ~a ~a~n" (if out "ok: " "bad:") inp-names)))
+    (printf "  ~a ~a~n"
+            (if (second t) "ok: " "bad:")
+            (test-features t vs)))
+  )
+
+
 
 (define (do-unsat-core)
-  (define symbolic-fm (make-symbolic-fm))
-  (when (or (not config-resume-tests-file)
-            (not (file-exists?  config-resume-tests-file)))
-    (raise "must provide resume-tests-file with tests that produce an UNSAT result"))
-
-  (define synth (oracle-guided-synthesis+ symbolic-fm #:unsat-cores #t))
-  (fprintf (current-error-port) "compute unsat core from ~a tests~n" (length resume-tests))
-  (define U (synth 'unsat-core resume-tests))
-  (fprintf (current-error-port) "unsat core (~a tests):~n" (length U))
-  (for ([t U]) (displayln t))
-  )
-
-(define (do-minimize-unsat-core)
-  (define symbolic-fm (make-symbolic-fm))
-  (when (or (not config-resume-tests-file)
-            (not (file-exists?  config-resume-tests-file)))
-    (raise "must provide resume-tests-file with tests that produce an UNSAT result"))
-
-  (define (check tests)
-    (fprintf (current-error-port) "try with ~a tests~n" (length tests))
-    (define synth (oracle-guided-synthesis+ symbolic-fm))
-    (for ([t tests])
-      (match-define `(,inp ,out ,meta) t)
-      (synth 'test (cons inp out)))
-    (not (synth 'check-sat)))
-
-  (define min-tests (delta-minimize resume-tests check))
-  (fprintf (current-error-port) "reduced ~a -> ~a tests~n"
-           (length resume-tests) (length min-tests))
-  (for ([t min-tests]) (displayln t))
-  )
-
-(define (minimal-unsat-core? symbolic-fm tests)
-  (for/and ([(unsat-test i) (in-indexed tests)])
-    (fprintf (current-error-port) "minimal-unsat-core?: check ~a~n" i)
-    (define synth (oracle-guided-synthesis+ symbolic-fm))
-
-    (for/list ([(t j) (in-indexed tests)] #:when (not (= i j)))
-      (match-define `(,inp ,out ,meta) t)
-      (synth 'test (cons inp out)))
-    (define sat1 (synth 'check-sat))
-
-    (match-define `(,inp ,out ,meta) unsat-test)
-    (synth 'test (cons inp out))
-    (define sat2 (synth 'check-sat))
-
-    (and sat1 (not sat2))))
-
-(define (slice-test vs t)
-  (match-define `(,inp ,out ,meta) t)
-  (define sliced-inp (for/vector ([i vs]) (vector-ref inp i)))
-  `(,sliced-inp ,out ,meta))
-
-(define (make-sliced-symbolic-fm vs)
-  (define sliced-feature-names
-    (for/vector ([i vs]) (vector-ref feature-names i)))
-  (define nm (feature-name-list->name-map sliced-feature-names))
-  (define cs
-    (for/list ([c config-hard-constraints])
-      (resolve-constraint nm c)))
-  (?*feature-model
-    (length vs)
-    config-max-groups
-    config-max-dependencies
-    (cons '&& cs)))
-
-(define (check-var-slice vs)
-  (fprintf (current-error-port) "check-var-slice: ~a~n" vs)
-  (define symbolic-fm (make-sliced-symbolic-fm vs))
-  (define tests (for/list ([t resume-tests]) (slice-test vs t)))
-  (minimal-unsat-core? symbolic-fm tests))
+  (output-unsat (apply ?*feature-model symbolic-fm-args) resume-tests))
 
 ; Get the names of all features enabled in the input for test `t`.
 (define (test-features t [vs #f])
   (match-define `(,inp ,out ,meta) t)
   (for/list ([i (or vs (in-range (vector-length inp)))] #:when (vector-ref inp i))
     (vector-ref feature-names i)))
-
-(define (do-slice-tests)
-  (define all-vs (for/list ([i (in-range (vector-length feature-names))]) i))
-  (define min-vs (delta-minimize all-vs check-var-slice))
-
-  (printf  "sliced ~a variables, leaving only ~a:~n"
-          (length all-vs) (length min-vs))
-  (for ([i min-vs])
-    (printf "~a ~a~n" i (vector-ref feature-names i)))
-
-  (printf "these test results produce a contradiction:~n")
-  (for ([t resume-tests])
-    (match-define `(,inp ,out ,meta) t)
-    (printf "~a ~a~n" (if out "good:" "bad: ") (test-features t min-vs)))
-  )
 
 (define (do-render-tests)
   (for ([t resume-tests])
@@ -252,7 +176,5 @@
   ['() (do-synthesize)]
   ['("synthesize") (do-synthesize)]
   ['("unsat-core") (do-unsat-core)]
-  ['("minimize-unsat-core") (do-minimize-unsat-core)]
-  ['("slice-tests") (do-slice-tests)]
   ['("render-tests") (do-render-tests)]
   )
