@@ -145,7 +145,8 @@
   (printf "No valid feature model exists for the combination of the following tests:~n")
   (for ([t min-tests])
     (match-define `(,inp ,out ,meta) t)
-    (define inp-names (for/list ([i vs]) (vector-ref feature-names i)))
+    (define inp-names
+      (for/list ([i vs] #:when (vector-ref inp i)) (vector-ref feature-names i)))
     (printf "  ~a ~a~n" (if out "ok: " "bad:") inp-names)))
 
 (define (do-unsat-core)
