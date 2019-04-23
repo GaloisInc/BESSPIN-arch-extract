@@ -127,35 +127,12 @@ to another location and used as the `resume-tests-file` for a future run.
     racket featuresynth/featuresynth.rkt <config.toml> unsat-core
 
 Compute an unsatisfiable core.  Reads a set of tests from the
-`resume-tests-file`, and outputs a subset of those tests (in the same format)
-that is sufficient to make synthesis produce an UNSAT result.  An UNSAT result
-means that there is no feature model (using the `max-groups` and other settings
-from the current config file) that produces the correct results on all tests in
-the provided test set.  When `synthesize` produces an UNSAT result, finding a
-minimal unsat core can help simplify the process of debugging the synthesis
-failure.
-
-### `minimize-unsat-core`
-
-    racket featuresynth/featuresynth.rkt <config.toml> minimize-unsat-core
-
-Minimize an unsatisfiable core.  This command reads an unsatisfiable core (the
-output of `unsat-core`) from the `resume-tests-file` and reduces its size as
-much as possible.  The result is an unsat core that is 1-minimal in the sense
-of delta debugging, meaning removing any test from the set makes synthesis no
-longer produce an UNSAT result.
-
-### `slice-tests`
-
-    racket featuresynth/featuresynth.rkt <config.toml> slice-tests
-
-Remove unnecessary features from a minimal unsat core.  Reads an unsat core
-from the `resume-tests-file`, then outputs a minimal subset of features that
-together cause the test set to produce an unsat result.  Also prints the inputs
-and outputs of each test in human-readable form (like the `render-tests`
-subcommand), but includes only those features that are part of the subset.
-This is helpful for identifying features and specific interactions that are
-relevant to a synthesis failure.
+`resume-tests-file`, and finds a minimal set of tests and relevant features
+that produces an UNSAT result (i.e., synthesis failure).  Based only on the
+tests included in the unsat core, the synthesizer can conclude that there is no
+feature model (using the `max-groups` and other settings from the config file)
+that produces correct results on all the tests.  This output can be useful for
+debugging synthesis failures.
 
 
 # Examples
