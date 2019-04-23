@@ -9,6 +9,8 @@
   in-place-channel
   place-channel-get-chunk
   in-place-channel-chunks
+
+  solver-debug2
   )
 
 (require racket/place)
@@ -70,3 +72,31 @@
 (define (in-place-channel-chunks chan)
   (in-producer (lambda () (place-channel-get-chunk chan))))
 
+
+; solver-debug2 doesn't work properly when defined in `#lang rosette` context.
+(module util-racket racket
+  (provide solver-debug2)
+
+  (require rosette/solver/smt/base-solver)
+  (require rosette/solver/smt/cmd)
+  (require rosette/solver/smt/server)
+  (require (only-in rosette/solver/smt/smtlib2 check-sat))
+
+  ; This function is a terrible hack used to get unsat cores from Z3.  We'd like
+  ; to set up some initial constraints, add additional constraints, and obtain an
+  ; unsat core that contains only additional constraints (under the assumption
+  ; that all the initial constraints hold).  Z3 can do this, but Rosette's normal
+  ; `solver-debug` interface resets the solver first.  This hacked version
+  ; doesn't do that.
+  (define (solver-debug2 self)
+    (define asserts (remove-duplicates (solver-asserts self)))
+    (define server (solver-server self))
+    (server-write
+      server
+      (begin (encode-for-proof (solver-env self) asserts)
+             (check-sat)))
+    (solver-clear-stacks! self)
+    (read-solution server (solver-env self) #:unsat-core? #t))
+  )
+
+(require 'util-racket)

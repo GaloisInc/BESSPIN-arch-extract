@@ -5,7 +5,7 @@
   (struct-out group)
   (struct-out dependency)
   (struct-out feature-model)
-  ?*feature-model ?*config
+  ?* ?*feature-model ?*config
   oracle-guided-synthesis
   oracle-guided-synthesis+
   minimize-tests
@@ -17,7 +17,6 @@
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
-(require "unsatcore.rkt")
 
 
 ; Symbolic construction helpers

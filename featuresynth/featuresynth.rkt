@@ -116,6 +116,13 @@
 (define (do-synthesize)
   (random-seed 12345)
   (define fm (synthesize))
+  (if fm
+    (output-feature-model fm)
+    (output-unsat (apply ?*feature-model symbolic-fm-args)
+                  (read-many-from-file "test-log.rktd")))
+  )
+
+(define (output-feature-model fm)
   (pretty-write fm)
   (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
   (displayln clafer-str)
@@ -123,8 +130,23 @@
     (call-with-output-file*
       config-out-file
       #:exists 'truncate
-      (lambda (f) (write-string clafer-str f))))
-  )
+      (lambda (f) (write-string clafer-str f)))))
+
+(define (output-unsat symbolic-fm tests)
+  (printf "Minimizing failing input...~n")
+  (define min-tests
+    (minimize-unsat-core symbolic-fm
+      (get-unsat-core symbolic-fm tests)))
+  (define vs (minimize-features symbolic-fm min-tests))
+  (printf "~n")
+  (printf "Relevant features:~n")
+  (for ([v vs]) (printf "  ~a~n" (vector-ref feature-names v)))
+  (printf "~n")
+  (printf "No valid feature model exists for the combination of the following tests:~n")
+  (for ([t min-tests])
+    (match-define `(,inp ,out ,meta) t)
+    (define inp-names (for/list ([i vs]) (vector-ref feature-names i)))
+    (printf "  ~a ~a~n" (if out "ok: " "bad:") inp-names)))
 
 (define (do-unsat-core)
   (define symbolic-fm (make-symbolic-fm))

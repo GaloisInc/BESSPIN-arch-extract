@@ -4,7 +4,19 @@
   make-feature-model
   vector->feature-model
   feature-name-list->name-map
+  name-map->func
+
+  map-feature
+  map-group
+  map-dependency
+  map-constraint
+  map-feature-model
+
+  resolve-feature
+  resolve-group
+  resolve-dependency
   resolve-constraint
+  resolve-feature-model
   )
 
 (require "types.rkt")
@@ -18,60 +30,77 @@
 
 (struct name-map (features groups) #:transparent)
 
-(define (resolve-feature-id nm i)
-  (if i
-    (hash-ref (name-map-features nm) i)
-    -1))
+(define (name-map->func nm)
+  (lambda (kind loc val)
+    (match kind
+      ['feature (if val (hash-ref (name-map-features nm) val) -1)]
+      ['group (if val (hash-ref (name-map-groups nm) val) -1)]
+      [else (raise "expected 'feature or 'group")])))
 
-(define (resolve-group-id nm j)
-  (if j
-    (hash-ref (name-map-groups nm) j)
-    -1))
 
-(define (resolve-feature nm f)
+(define (map-feature func f)
   (feature
-    (resolve-feature-id nm (feature-parent-id f))
-    (resolve-group-id nm (feature-group-id f))
+    (func 'feature 'feature (feature-parent-id f))
+    (func 'group 'feature (feature-group-id f))
     (feature-depth f)
     (feature-force-on f)
     (feature-force-off f)
   ))
 
-(define (resolve-group nm g)
+(define (map-group func g)
   (group
-    (resolve-feature-id nm (group-parent-id g))
+    (func 'feature 'group (group-parent-id g))
     (group-min-card g)
     (group-max-card g)
   ))
 
-(define (resolve-dependency nm d)
+(define (map-dependency func d)
   (dependency
-    (resolve-feature-id nm (dependency-a d))
-    (resolve-feature-id nm (dependency-b d))
+    (func 'feature 'dependency (dependency-a d))
+    (func 'feature 'dependency (dependency-b d))
     (dependency-val d)
   ))
 
-(define (resolve-constraint nm c)
+(define (map-constraint func c)
   (define (loop want c)
     (match c
-      [(? symbol?) (hash-ref (name-map-features nm) c want)]
-      [(? integer?) c]
       [(? boolean?) c]
       [(cons '&& args) (cons '&& (map (lambda (c) (loop want c)) args))]
       [(cons '|| args) (cons '|| (map (lambda (c) (loop want c)) args))]
       [(cons '! args) (cons '! (map (lambda (c) (loop (not want) c)) args))]
       [(list '=> a b) (list '=> (loop (not want) a) (loop want b))]
       [(list '<=> a b) (loop want `(&& (=> ,a ,b) (=> ,b ,a)))]
+      [else
+        (match (func 'feature 'constraint c)
+          ['want want]
+          [x x])]
       ))
   (loop #t c))
 
-(define (resolve-feature-model nm fm)
+(define (map-feature-model func fm)
   (feature-model
-    (vector-map (lambda (f) (resolve-feature nm f)) (feature-model-features fm))
-    (vector-map (lambda (f) (resolve-group nm f)) (feature-model-groups fm))
-    (vector-map (lambda (f) (resolve-dependency nm f)) (feature-model-dependencies fm))
-    (resolve-constraint nm (feature-model-constraint fm))
+    (vector-map (lambda (f) (map-feature func f)) (feature-model-features fm))
+    (vector-map (lambda (f) (map-group func f)) (feature-model-groups fm))
+    (vector-map (lambda (f) (map-dependency func f)) (feature-model-dependencies fm))
+    (map-constraint func (feature-model-constraint fm))
   ))
+
+
+(define (resolve-feature nm f)
+  (map-feature (name-map->func nm) f))
+
+(define (resolve-group nm g)
+  (map-group (name-map->func nm) g))
+
+(define (resolve-dependency nm d)
+  (map-dependency (name-map->func nm) d))
+
+(define (resolve-constraint nm c)
+  (map-constraint (name-map->func nm) c))
+
+(define (resolve-feature-model nm fm)
+  (map-feature-model (name-map->func nm) fm))
+
 
 (define (make-feature-model fs gs ds c)
   (let*
