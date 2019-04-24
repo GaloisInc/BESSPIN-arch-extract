@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
 module BESSPIN.ArchExtract.Config where
 
 import Data.Map (Map)
@@ -7,11 +7,15 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Lens.Micro.Platform
 import qualified TOML
+
+import BESSPIN.ArchExtract.Lens
 
 
 data Config = Config
     { configSrcs :: Map Text Src
+    , configDesign :: Design
     , configNameMap :: NameMap
     , configConstraints :: Constraints
     , configRewrite :: Maybe Rewrite
@@ -25,6 +29,7 @@ data Config = Config
 
 defaultConfig = Config
     { configSrcs = M.empty
+    , configDesign = defaultDesign
     , configNameMap = defaultNameMap
     , configConstraints = defaultConstraints
     , configRewrite = Nothing
@@ -85,6 +90,18 @@ defaultBSV = BSV
     { bsvSrcFiles = []
     , bsvAstFile = "bsv.cbor"
     , bsvLibraryPackages = Set.empty
+    }
+
+data Design = Design
+    -- The name of the root module of the design.  This setting provides a
+    -- default value for `root-module` options in other sections, and is also
+    -- used directly by some subcommands.
+    { designRootModule :: Text
+    }
+    deriving (Show)
+
+defaultDesign = Design
+    { designRootModule = ""
     }
 
 data NameMap = NameMap
@@ -396,6 +413,11 @@ bsv x = tableFold defaultBSV x
     , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
     ]
 
+design :: TOML.Value -> Design
+design x = tableFold defaultDesign x
+    [ ("root-module", \c x -> c { designRootModule = str x })
+    ]
+
 nameMap :: TOML.Value -> NameMap
 nameMap x = tableFold defaultNameMap x
     [ ("file", \c x -> c { nameMapFile = Just $ str x })
@@ -472,7 +494,40 @@ paramClafer x = tableFold defaultParamClafer x
     ]
 
 
+makeLenses' ''Config
+makeLenses' ''Src
+makeLenses' ''Design
+makeLenses' ''NameMap
+makeLenses' ''Constraints
+makeLenses' ''Rewrite
+makeLenses' ''Graphviz
+makeLenses' ''ModuleTree
+makeLenses' ''Clafer
+makeLenses' ''SMT
+makeLenses' ''ParamClafer
+
+
+postprocess :: Config -> Config
+postprocess c = applyRootModule $ c
+
+applyRootModule c = if T.null root then c else c'
+  where
+    root = c ^. _configDesign . _designRootModule
+
+    maybeSetRoot s = if T.null s then root else s
+
+    maybeSetRoots [] = [root]
+    maybeSetRoots xs = xs
+
+    c' = c
+        & _configRewrite . traversed . _rewriteRootModule %~ maybeSetRoot
+        & _configModuleTreeOutput . traversed . _moduleTreeRootModule %~ maybeSetRoot
+        & _configClaferOutput . traversed . _claferRootModules %~ maybeSetRoots
+        & _configSMTOutput . traversed . _smtRootModule %~ maybeSetRoot
+        & _configParamClaferOutput . traversed . _paramClaferRootModule %~ maybeSetRoot
+
+
 parse :: Text -> Config
 parse t = case TOML.parseTOML t of
     Left e -> error $ show e
-    Right kvs -> config $ TOML.Table kvs
+    Right kvs -> postprocess $ config $ TOML.Table kvs
