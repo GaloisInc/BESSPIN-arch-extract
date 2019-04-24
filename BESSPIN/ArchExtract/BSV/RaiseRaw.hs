@@ -41,9 +41,9 @@ raiseRaw x =
 prefixNames :: Data a => a -> a
 prefixNames x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i ds ss) =
+    goPackage (Package i imps ds ss) =
         let pkgName = idName i in
-        Package i (fmap (goDef pkgName) ds) (fmap (goStruct pkgName) ss)
+        Package i imps (fmap (goDef pkgName) ds) (fmap (goStruct pkgName) ss)
 
     goDef pkgName d@(Def { defId = Id name l c })
       | (pkgName <> ".") `T.isPrefixOf` name && "~" `T.isInfixOf` name = d
@@ -55,7 +55,7 @@ prefixNames x = everywhere (mkT goPackage) x
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i ds ss) = Package i (S.filter checkDef ds) ss
+    goPackage (Package i imps ds ss) = Package i imps (S.filter checkDef ds) ss
     checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
 
 -- At the level where we're operating, typeclass definitions have already been

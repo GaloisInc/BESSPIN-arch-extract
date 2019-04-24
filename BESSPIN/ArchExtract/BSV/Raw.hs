@@ -18,6 +18,7 @@ type NodeId = Int
 
 data Package = Package
     { packageId :: Id
+    , packageImports :: [Id]
     , packageDefs :: Seq Def
     , packageStructs :: Seq Struct
     }

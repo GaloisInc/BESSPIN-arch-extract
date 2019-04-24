@@ -61,17 +61,18 @@ getPackages x = bad' "Packages" x $ []
 data AnyDefn = AdDef Def | AdStruct Struct | AdError
 
 getPackage :: CBOR.Term -> DecodeM Package
-getPackage (tag "Package" -> [i, _, List defns]) = do
+getPackage (tag "Package" -> [i, List imports, List defns]) = do
     i <- getId i
     anys <- mapM getDefnAny defns
     let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
     let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
     Package
         <$> pure i
+        <*> mapM getImportId imports
         <*> pure (S.fromList defs)
         <*> pure (S.fromList structs)
 getPackage x = bad' "Package" x $
-    Package (badId "package") S.empty S.empty
+    Package (badId "package") [] S.empty S.empty
 
 getDefnAny :: CBOR.Term -> DecodeM AnyDefn
 getDefnAny x@(tag "Defn_Struct" -> (_ : _)) = AdStruct <$> getDefnStruct x
@@ -97,6 +98,12 @@ getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [] False)
 getStructIsIfc :: CBOR.Term -> DecodeM Bool
 getStructIsIfc (tag0 "StructKind_Ifc" -> True) = return True
 getStructIsIfc _ = return False
+
+getImportId (tag "Import_Sign" -> [sig]) = getSignatureId sig
+getImportId x = return $ badId "import"
+
+getSignatureId (tag "Signature" -> [name]) = getId name
+getSignatureId x = return $ badId "signature"
 
 getField :: CBOR.Term -> DecodeM Field
 getField (tag "Field" -> [name, pragmas, ty]) =

@@ -11,8 +11,11 @@ import Data.Text.Prettyprint.Doc.Render.Text
 import BESSPIN.ArchExtract.BSV.Raw
 
 instance Pretty Package where
-    pretty (Package name defs structs) =
-        vsep $ punctuate line $ toList $ fmap pretty defs <> fmap pretty structs
+    pretty (Package name imports defs structs) =
+        vsep $ punctuate line $
+            map prettyImport imports <> map pretty (toList defs) <> map pretty (toList structs)
+
+prettyImport name = "import" <+> pretty name
 
 instance Pretty Struct where
     pretty (Struct i tyParams fields isIfc) =
