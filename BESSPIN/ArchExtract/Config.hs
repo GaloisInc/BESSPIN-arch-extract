@@ -92,6 +92,11 @@ data BSV = BSV
     , bsvRootModule :: Text
     -- List of extra command-line options to pass to the Bluespec Compiler.
     , bsvBscFlags :: [Text]
+
+    -- "Internal" config fields are populated automatically by various pieces
+    -- of code.  (Other fields are set only by the config file.)
+    , bsvInternalAstDir :: Text
+    , bsvInternalLibraryPackages :: Set Text
     }
     deriving (Show)
 
@@ -101,6 +106,9 @@ defaultBSV = BSV
     , bsvLibraryPackages = Set.empty
     , bsvRootModule = ""
     , bsvBscFlags = []
+
+    , bsvInternalAstDir = error "bsvInternalAstDir not yet initialized"
+    , bsvInternalLibraryPackages = error "bsvInternalLibraryPackages not yet initialized"
     }
 
 data Design = Design

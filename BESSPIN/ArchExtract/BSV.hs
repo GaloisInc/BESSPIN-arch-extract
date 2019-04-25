@@ -48,15 +48,14 @@ import BESSPIN.ArchExtract.Print
 -- Ensure that `bsvAstDir` is set, by filling it in with a temporary directory
 -- if it's `Nothing`.
 withAstDir :: Config.BSV -> (Config.BSV -> IO a) -> IO a
-withAstDir cfg act
-  | Nothing <- Config.bsvAstDir cfg =
-    withSystemTempDirectory "bsv-ast" $ \dirPath ->
-        act (cfg { Config.bsvAstDir = Just $ T.pack dirPath })
-  | otherwise = act cfg
+withAstDir cfg act = case Config.bsvAstDir cfg of
+    Nothing ->
+        withSystemTempDirectory "bsv-ast" $ \dirPath ->
+            act (cfg { Config.bsvInternalAstDir = T.pack dirPath })
+    Just dir ->
+        act (cfg { Config.bsvInternalAstDir = dir })
 
-astDirPath cfg
-  | Just path <- Config.bsvAstDir cfg = T.unpack path
-  | otherwise = error "astDirPath: bsvAstDir is unset (called outside withAstDir)"
+astDirPath cfg = T.unpack $ Config.bsvInternalAstDir cfg
 
 bsvRootPackage cfg = T.takeWhile (/= '.') $ Config.bsvRootModule cfg
 
@@ -70,6 +69,9 @@ pathPackage p = T.pack $ dropExtension (takeFileName p)
 
 buildPackageMap :: [FilePath] -> Map Text FilePath
 buildPackageMap paths = M.fromList [(pathPackage p, p) | p <- paths]
+
+addAutoLibraryPackages autoPkgs cfg =
+    cfg { Config.bsvInternalLibraryPackages = Config.bsvLibraryPackages cfg <> autoPkgs }
 
 
 -- Monad for CBOR package loading.  Most operations in this module (even ones
@@ -245,8 +247,11 @@ testAst :: Config.BSV -> IO ()
 testAst cfg = do
     pkgs <- runLoadM cfg $ \cfg -> loadDesign cfg
 
+    autoLibs <- liftM M.keysSet $ liftM buildPackageMap $ listLibraryCbors
+    let exCfg = addAutoLibraryPackages autoLibs cfg
+
     let pkgs' = numberNodes $ raiseRaw pkgs
-    let er = extractDesign' cfg pkgs'
+    let er = extractDesign' exCfg pkgs'
     let pkgs'' = annotateNodes (erNodeErrors er) pkgs'
 
     forM_ pkgs'' $ \pkg -> do
@@ -287,7 +292,9 @@ readMaybeGzippedFile fp
 readAndExtract :: Config.BSV -> IO (A.Design (), [FileInfo])
 readAndExtract cfg = runLoadM cfg $ \cfg -> do
     pkgs <- loadDesign cfg
-    return (extractDesign cfg $ raiseRaw pkgs, [])
+    autoLibs <- lift $ liftM M.keysSet $ liftM buildPackageMap $ listLibraryCbors
+    let exCfg = addAutoLibraryPackages autoLibs cfg
+    return (extractDesign exCfg $ raiseRaw pkgs, [])
 
 listPackageNames :: Config.BSV -> IO [Text]
 listPackageNames cfg = runLoadM cfg $ \cfg -> do

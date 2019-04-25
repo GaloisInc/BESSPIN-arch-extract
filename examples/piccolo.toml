@@ -7,25 +7,6 @@ src-files = [
 ]
 ast-dir = "examples/piccolo/ast"
 
-library-packages = [
-    # BSV Prelude
-    "ActionSeq", "Array", "Assert", "Clocks", "ConfigReg", "Connectable",
-    "Counter", "Enum", "Environment", "FIFO", "FIFOF", "FIFOF_", "FIFOLevel",
-    "FShow", "FoldFIFO", "FoldFIFOF", "Fork", "GetPut", "Inout", "LevelFIFO",
-    "List", "ListN", "Once", "Prelude", "PreludeBSV", "Probe", "ProbeWire",
-    "RWire", "Real", "RegFile", "Reserved", "RevertingVirtualReg", "Vector",
-
-    # BSV Libraries
-    "BGetPut", "BitonicSort", "Boolify", "BRAM_Compat", "BRAMCore", "CGetPut",
-    "ClientServer", "CompletionBuffer", "DPSRAM", "DReg", "EqFunction",
-    "Esl_defs", "FlexBitArith", "IVec", "LFSR", "ListFIFO", "ListReg", "Mcp",
-    "ModuleAugmented", "OInt", "OVLAssertions", "PopCount", "Pull", "Push",
-    "RAM", "RegTwo", "RPush", "SplitTRAM", "SPSRAM", "SRAM", "SRAMFile",
-    "StmtFSM", "STRAM", "SVA", "SyncSRAM", "Tabulate", "ToString", "TRAM",
-    "TriState", "TurboFIFO", "UIntRange", "UniqueWrappers", "Wallace", "ZBus",
-    "ZBusUtil",
-]
-
 bsc-flags = [
     "-D", "RV32",
     "-D", "ISA_PRIV_M",

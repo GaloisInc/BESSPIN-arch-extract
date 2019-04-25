@@ -200,7 +200,7 @@ findPackageModules cfg p =
     mapMaybe (convertModule isLib) $
     toList $ packageDefs p
   where
-    isLib = Set.member (idName $ packageId p) (Config.bsvLibraryPackages cfg)
+    isLib = Set.member (idName $ packageId p) (Config.bsvInternalLibraryPackages cfg)
 
 returnedIfcName :: Ty -> Maybe Text
 returnedIfcName ty
