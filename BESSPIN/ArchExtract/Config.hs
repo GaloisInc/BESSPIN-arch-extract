@@ -92,11 +92,21 @@ data BSV = BSV
     , bsvRootModule :: Text
     -- List of extra command-line options to pass to the Bluespec Compiler.
     , bsvBscFlags :: [Text]
+    -- List of extra command-line options to pass to the Bluespec Compiler for
+    -- configuration purposes.  Most commands combine both `bsv-flags` and
+    -- `bsv-config-flags` when calling `bsc`, but the `bsv-check-config`
+    -- command will ignore these flags in order to test a specific config.
+    , bsvBscConfigFlags :: [Text]
 
     -- "Internal" config fields are populated automatically by various pieces
     -- of code.  (Other fields are set only by the config file.)
+
+    -- The AST cache location, which may be a temporary directory.
     , bsvInternalAstDir :: Text
+    -- Names of all library packages, including those detected automatically.
     , bsvInternalLibraryPackages :: Set Text
+    -- Complete set of flags to use when invoking the BSV exporter.
+    , bsvInternalBscFlags :: [Text]
     }
     deriving (Show)
 
@@ -106,9 +116,11 @@ defaultBSV = BSV
     , bsvLibraryPackages = Set.empty
     , bsvRootModule = ""
     , bsvBscFlags = []
+    , bsvBscConfigFlags = []
 
     , bsvInternalAstDir = error "bsvInternalAstDir not yet initialized"
     , bsvInternalLibraryPackages = error "bsvInternalLibraryPackages not yet initialized"
+    , bsvInternalBscFlags = error "bsvInternalBscFlags not yet initialized"
     }
 
 data Design = Design
@@ -433,6 +445,7 @@ bsv x = tableFold defaultBSV x
     , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
     , ("root-module", \c x -> c { bsvRootModule = str x })
     , ("bsc-flags", \c x -> c { bsvBscFlags = listOf str x })
+    , ("bsc-config-flags", \c x -> c { bsvBscConfigFlags = listOf str x })
     ]
 
 design :: TOML.Value -> Design

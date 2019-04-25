@@ -56,6 +56,17 @@ withAstDir cfg act = case Config.bsvAstDir cfg of
     Just dir ->
         act (cfg { Config.bsvInternalAstDir = dir })
 
+withAllBscFlags :: Config.BSV -> (Config.BSV -> IO a) -> IO a
+withAllBscFlags cfg act =
+    act (cfg { Config.bsvInternalBscFlags =
+        Config.bsvBscFlags cfg <> Config.bsvBscConfigFlags cfg })
+
+withNormalConfig :: Config.BSV -> (Config.BSV -> IO a) -> IO a
+withNormalConfig cfg act =
+    withAstDir cfg $ \cfg ->
+    withAllBscFlags cfg $ \cfg ->
+    act cfg
+
 astDirPath cfg = T.unpack $ Config.bsvInternalAstDir cfg
 
 bsvRootPackage cfg = T.takeWhile (/= '.') $ Config.bsvRootModule cfg
@@ -157,7 +168,7 @@ updateAstFiles cfg = do
         exporter <- lift $ fromMaybe "besspin-arch-extract-export-bsv" <$>
             lookupEnv "BESSPIN_ARCH_EXTRACT_EXPORT_BSV"
         lift $ callProcess exporter
-            (map T.unpack (Config.bsvBscFlags cfg) ++
+            (map T.unpack (Config.bsvInternalBscFlags cfg) ++
                 ["-u", "-p", searchPath, "-bdir", astDirPath cfg, rootSrc])
 
         -- Update `inputs.txt` with the list of inputs that were used.  We do
@@ -240,7 +251,7 @@ loadDesign cfg = do
 -- Run a `LoadM` action.  This runs `updateAstFiles` before `act`, so all
 -- `LoadM` actions will work normally.
 runLoadM :: Config.BSV -> (Config.BSV -> LoadM a) -> IO a
-runLoadM cfg act = withAstDir cfg $ \cfg' -> flip evalStateT M.empty $ do
+runLoadM cfg act = withNormalConfig cfg $ \cfg' -> flip evalStateT M.empty $ do
     updateAstFiles cfg'
     act cfg'
 

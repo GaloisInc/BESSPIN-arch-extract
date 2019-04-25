@@ -7,7 +7,7 @@ src-files = [
 ]
 ast-dir = "examples/piccolo/ast"
 
-bsc-flags = [
+bsc-config-flags = [
     "-D", "RV32",
     "-D", "ISA_PRIV_M",
     "-D", "ISA_PRIV_U",
