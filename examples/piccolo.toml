@@ -1,10 +1,57 @@
 [src.piccolo]
-# BSV isn't supported yet, but the Verilog preprocessor handling works on it.
 type = "bsv"
 src-files = [
     "../gfe/bluespec-processors/P1/Piccolo/src_Core/*/*.bsv",
-    #"../gfe/bluespec-processors/P1/Piccolo/src_SSITH_P1/src_BSV/*.bsv",
+    "../gfe/bluespec-processors/P1/Piccolo/src_Testbench/*/*.bsv",
+    "../gfe/bluespec-processors/P1/Piccolo/src_Testbench/*/*/*.bsv",
 ]
+ast-dir = "examples/piccolo/ast"
+
+library-packages = [
+    # BSV Prelude
+    "ActionSeq", "Array", "Assert", "Clocks", "ConfigReg", "Connectable",
+    "Counter", "Enum", "Environment", "FIFO", "FIFOF", "FIFOF_", "FIFOLevel",
+    "FShow", "FoldFIFO", "FoldFIFOF", "Fork", "GetPut", "Inout", "LevelFIFO",
+    "List", "ListN", "Once", "Prelude", "PreludeBSV", "Probe", "ProbeWire",
+    "RWire", "Real", "RegFile", "Reserved", "RevertingVirtualReg", "Vector",
+
+    # BSV Libraries
+    "BGetPut", "BitonicSort", "Boolify", "BRAM_Compat", "BRAMCore", "CGetPut",
+    "ClientServer", "CompletionBuffer", "DPSRAM", "DReg", "EqFunction",
+    "Esl_defs", "FlexBitArith", "IVec", "LFSR", "ListFIFO", "ListReg", "Mcp",
+    "ModuleAugmented", "OInt", "OVLAssertions", "PopCount", "Pull", "Push",
+    "RAM", "RegTwo", "RPush", "SplitTRAM", "SPSRAM", "SRAM", "SRAMFile",
+    "StmtFSM", "STRAM", "SVA", "SyncSRAM", "Tabulate", "ToString", "TRAM",
+    "TriState", "TurboFIFO", "UIntRange", "UniqueWrappers", "Wallace", "ZBus",
+    "ZBusUtil",
+]
+
+bsc-flags = [
+    "-D", "RV32",
+    "-D", "ISA_PRIV_M",
+    "-D", "ISA_PRIV_U",
+    "-D", "ISA_I",
+    "-D", "ISA_M",
+    "-D", "ISA_A",
+    "-D", "ISA_C",
+    "-D", "SHIFT_SERIAL",
+    "-D", "MULT_SYNTH",
+    "-D", "Near_Mem_Caches",
+    "-D", "FABRIC64",
+]
+
+[design]
+root-module = "Top_HW_Side.mkTop_HW_Side"
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
 
 # Feature-model synthesis configuration
 [featuresynth]

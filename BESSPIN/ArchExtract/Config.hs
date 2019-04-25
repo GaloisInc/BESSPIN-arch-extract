@@ -75,21 +75,32 @@ defaultVerilog = Verilog
 data BSV = BSV
     -- List of BSV source files to parse.  This can include shell globs.
     { bsvSrcFiles :: [Text]
-    -- Path to the CBOR file that contains the exported AST.  This tool doesn't
-    -- yet support automatically exporting from src-files.
-    , bsvAstFile :: Text
+    -- Path to a directory where the CBOR files containing serialized package
+    -- ASTs should be cached.  If this is `Nothing`, the AST is re-exported
+    -- each time.  Setting this is recommended: many driver operations on BSV
+    -- sources require access to the AST, and re-exporting it each time is
+    -- fairly expensive.
+    , bsvAstDir :: Maybe Text
     -- Names of packages that are considered "library packages".  These
     -- packages are processed as normal, except that modules found in library
     -- packages will have only ports (no internal structures) and will be
     -- marked as `MkExtern`
     , bsvLibraryPackages :: Set Text
+    -- Qualified name (`Pkg.mkFoo`) of the root module of the design.  The
+    -- package containing this module is always imported; other packages are
+    -- imported only when required due to an `import` statement in the BSV.
+    , bsvRootModule :: Text
+    -- List of extra command-line options to pass to the Bluespec Compiler.
+    , bsvBscFlags :: [Text]
     }
     deriving (Show)
 
 defaultBSV = BSV
     { bsvSrcFiles = []
-    , bsvAstFile = "bsv.cbor"
+    , bsvAstDir = Nothing
     , bsvLibraryPackages = Set.empty
+    , bsvRootModule = ""
+    , bsvBscFlags = []
     }
 
 data Design = Design
@@ -374,6 +385,7 @@ config x =
     else
         tableFold defaultConfig x
             [ ("src", \c x -> c { configSrcs = srcs x })
+            , ("design", \c x -> c { configDesign = design x })
             , ("name-map", \c x -> c { configNameMap = nameMap x })
             , ("constraints", \c x -> c { configConstraints = constraints x })
             , ("rewrite", \c x -> c { configRewrite = Just $ rewrite x })
@@ -409,8 +421,10 @@ bsv :: TOML.Value -> BSV
 bsv x = tableFold defaultBSV x
     [ ("type", \c x -> c)
     , ("src-files", \c x -> c { bsvSrcFiles = listOf str x })
-    , ("ast-file", \c x -> c { bsvAstFile = str x })
+    , ("ast-dir", \c x -> c { bsvAstDir = Just $ str x })
     , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
+    , ("root-module", \c x -> c { bsvRootModule = str x })
+    , ("bsc-flags", \c x -> c { bsvBscFlags = listOf str x })
     ]
 
 design :: TOML.Value -> Design
@@ -495,7 +509,8 @@ paramClafer x = tableFold defaultParamClafer x
 
 
 makeLenses' ''Config
-makeLenses' ''Src
+makeLenses' ''Verilog
+makeLenses' ''BSV
 makeLenses' ''Design
 makeLenses' ''NameMap
 makeLenses' ''Constraints
@@ -505,6 +520,16 @@ makeLenses' ''ModuleTree
 makeLenses' ''Clafer
 makeLenses' ''SMT
 makeLenses' ''ParamClafer
+
+-- Lenses for `Src`
+
+_VerilogSrc :: Traversal Src Src Verilog Verilog
+_VerilogSrc f (VerilogSrc a) = VerilogSrc <$> f a
+_VerilogSrc f x = pure x
+
+_BSVSrc :: Traversal Src Src BSV BSV
+_BSVSrc f (BSVSrc a) = BSVSrc <$> f a
+_BSVSrc f x = pure x
 
 
 postprocess :: Config -> Config
@@ -525,6 +550,7 @@ applyRootModule c = if T.null root then c else c'
         & _configClaferOutput . traversed . _claferRootModules %~ maybeSetRoots
         & _configSMTOutput . traversed . _smtRootModule %~ maybeSetRoot
         & _configParamClaferOutput . traversed . _paramClaferRootModule %~ maybeSetRoot
+        & _configSrcs . traversed . _BSVSrc . _bsvRootModule %~ maybeSetRoot
 
 
 parse :: Text -> Config

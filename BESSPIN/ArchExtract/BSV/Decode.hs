@@ -50,12 +50,8 @@ bad' what x dfl =
 
 
 getPackages :: CBOR.Term -> DecodeM [Package]
-getPackages (tag "Packages" -> [List ps]) =
-    alwaysTrace ("loading " ++ show (length ps) ++ " packages") $
-    mapM getPackage ps
-getPackages x@(tag "Package" -> (_:_)) =
-    alwaysTrace ("loading 1 package") $
-    (:[]) <$> getPackage x
+getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
+getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
 getPackages x = bad' "Packages" x $ []
 
 data AnyDefn = AdDef Def | AdStruct Struct | AdError
@@ -63,6 +59,7 @@ data AnyDefn = AdDef Def | AdStruct Struct | AdError
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, List imports, List defns]) = do
     i <- getId i
+    alwaysTrace ("loading package " ++ show (idName i)) $ return ()
     anys <- mapM getDefnAny defns
     let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
     let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
