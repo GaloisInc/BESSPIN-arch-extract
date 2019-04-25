@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module BESSPIN.ArchExtract.BSV
 ( listSources
+, listSourcesUsed
 , readAndExtract
 , testAst
 , listPackageNames
@@ -145,7 +146,7 @@ updateAstFiles cfg = do
     when (not ok) $ do
         lift $ createDirectoryIfMissing True (astDirPath cfg)
 
-        allSources <- lift $ listAllSources cfg
+        allSources <- lift $ listSources cfg
         let allSourceDirs = dedup $ map takeDirectory allSources
         let searchPath = intercalate ":" allSourceDirs ++ ":+"
         let pkgMap = buildPackageMap allSources
@@ -195,8 +196,8 @@ walkPackages srcMap pkgName = go Set.empty pkgName
 
 -- List all sources that might be used in the design by expanding globs in the
 -- `bsvSrcFiles` config option.
-listAllSources :: Config.BSV -> IO [FilePath]
-listAllSources cfg = do
+listSources :: Config.BSV -> IO [FilePath]
+listSources cfg = do
     let pats = map (Glob.compile . T.unpack) $ Config.bsvSrcFiles cfg
     files <- Glob.globDir pats "."
     return $ concat $ map sort files
@@ -204,14 +205,15 @@ listAllSources cfg = do
 -- List the BSV sources actually used in the current design, reading them from
 -- the cached `inputs.txt`.  This only produces good results if
 -- `updateAstFiles` has already been run.
-listSourcesCached :: Config.BSV -> LoadM [FilePath]
-listSourcesCached cfg =
+listSourcesUsedFromCache :: Config.BSV -> LoadM [FilePath]
+listSourcesUsedFromCache cfg =
     lift $ lines <$> readFile (astDirPath cfg </> "inputs.txt")
 
--- External API for listing BSV sources.  Internal callers that have already
--- run `updateAstFiles` should use `listSourcesCached` instead.
-listSources :: Config.BSV -> IO [FilePath]
-listSources cfg = runLoadM cfg $ \cfg -> listSourcesCached cfg
+-- External API for listing BSV sources used in the design.  Internal callers
+-- that have already run `updateAstFiles` should use `listSourcesUsedFromCache`
+-- instead.
+listSourcesUsed :: Config.BSV -> IO [FilePath]
+listSourcesUsed cfg = runLoadM cfg $ \cfg -> listSourcesUsedFromCache cfg
 
 
 listLibraryCbors :: IO [FilePath]
@@ -226,7 +228,7 @@ listLibraryCbors = do
 loadDesign :: Config.BSV -> LoadM [Package]
 loadDesign cfg = do
     libMap <- lift $ buildPackageMap <$> listLibraryCbors
-    designSrcMap <- buildPackageMap <$> listSourcesCached cfg
+    designSrcMap <- buildPackageMap <$> listSourcesUsedFromCache cfg
     let designMap = M.mapWithKey (\k _ ->
             astDirPath cfg </> T.unpack k <.> "cbor") designSrcMap
 
