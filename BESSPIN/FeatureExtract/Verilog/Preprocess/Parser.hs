@@ -21,7 +21,7 @@ import Text.Parsec.Pos
 
 import Debug.Trace
 
-import BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer (Token(..))
+import BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer (Token(..), tokenize)
 
 
 -- `Branch name val evts`: If the definition status of preprocessor macro
@@ -142,3 +142,10 @@ parseEvents :: [Token] -> [Event]
 parseEvents ts = case runParser block () "<tokens>" ts of
     Left e -> error $ show e
     Right x -> x
+
+readEvents :: FilePath -> IO [Event]
+readEvents file = do
+    text <- T.readFile file
+    let toks = tokenize text
+    let evts = parseEvents toks
+    return evts

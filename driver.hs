@@ -46,16 +46,9 @@ listSourcesForGroups cfg grps = do
         Just x -> x
         Nothing -> error $ "source group " ++ show g ++ " not found"
 
-readPpEvents :: FilePath -> IO [VPP.Event]
-readPpEvents file = do
-    text <- T.readFile file
-    let toks = VPP.tokenize text
-    let evts = VPP.parseEvents toks
-    return evts
-
 getPpFlagsInFiles :: [FilePath] -> IO (Set Text)
 getPpFlagsInFiles files = do
-    ess <- mapM readPpEvents files
+    ess <- mapM VPP.readEvents files
     return $ collectFlags ess Set.\\ collectDefines ess
   where
     collectFlags es = everything (<>) (Set.empty `mkQ` go) es
@@ -72,7 +65,7 @@ listPpFlagsInFiles files = Set.toList <$> getPpFlagsInFiles files
 
 doesFileUseAnyPpFlag :: Set Text -> FilePath -> IO Bool
 doesFileUseAnyPpFlag flags file = do
-    evts <- readPpEvents file
+    evts <- VPP.readEvents file
     return $ everything (||) (False `mkQ` goB `extQ` goE) evts
   where
     goB (VPP.Branch t _ _) = Set.member t flags
@@ -175,6 +168,21 @@ main = do
             let bs = CBOR.toLazyByteString $ CBOR.encodeTerm merged
             BSL.writeFile "out.cbor" bs
             putStrLn $ "wrote merged ASTs to out.cbor"
+
+        ("check-config", flagStrs) -> do
+            let flags = map T.pack flagStrs
+            usedFlagSets <- forM (M.elems $ Config.configSrcs cfg) $ \src -> case src of
+                Config.VerilogSrc vCfg ->
+                    error $ "check-config verilog support is not yet implemented"
+                Config.BSVSrc bCfg -> BSV.checkConfig bCfg flags
+            let usedFlags = Set.unions usedFlagSets
+            let allFlags = Set.fromList flags
+            let ignoredFlags = allFlags Set.\\ usedFlags
+            when (not $ Set.null ignoredFlags) $ do
+                putStrLn $ show (Set.size ignoredFlags) ++ " features were ignored:"
+                mapM_ T.putStrLn $ Set.toList ignoredFlags
+                exitFailure
+
 
         (cmd, _) -> error $ "unknown command " ++ show cmd
         

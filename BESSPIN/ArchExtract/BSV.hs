@@ -5,6 +5,7 @@ module BESSPIN.ArchExtract.BSV
 , readAndExtract
 , testAst
 , listPackageNames
+, checkConfig
 ) where
 
 import Data.ByteString (ByteString)
@@ -42,24 +43,39 @@ import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.BSV.RaiseRaw
 import BESSPIN.ArchExtract.BSV.Extract
-
 import BESSPIN.ArchExtract.Print
+import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Eval as VPP
+import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer as VPP
+import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Parser as VPP
 
 
--- Ensure that `bsvAstDir` is set, by filling it in with a temporary directory
--- if it's `Nothing`.
+
+-- Fill in `bsvInternalAstDir` using either `bsvAstDir` or a temporary
+-- directory.
 withAstDir :: Config.BSV -> (Config.BSV -> IO a) -> IO a
 withAstDir cfg act = case Config.bsvAstDir cfg of
-    Nothing ->
-        withSystemTempDirectory "bsv-ast" $ \dirPath ->
-            act (cfg { Config.bsvInternalAstDir = T.pack dirPath })
+    Nothing -> withTempAstDir cfg act
     Just dir ->
         act (cfg { Config.bsvInternalAstDir = dir })
 
+-- Fill in `bsvInternalAstDir` with a temporary directory, regardless of the
+-- setting of `bsvAstDir`.
+withTempAstDir :: Config.BSV -> (Config.BSV -> IO a) -> IO a
+withTempAstDir cfg act =
+    withSystemTempDirectory "bsv-ast" $ \dirPath ->
+        act (cfg { Config.bsvInternalAstDir = T.pack dirPath })
+
+-- Fill in `bsvInternalBscFlags` with `bsvBscFlags` and `bsvBscConfigFlags`.
 withAllBscFlags :: Config.BSV -> (Config.BSV -> IO a) -> IO a
 withAllBscFlags cfg act =
     act (cfg { Config.bsvInternalBscFlags =
         Config.bsvBscFlags cfg <> Config.bsvBscConfigFlags cfg })
+
+-- Fill in `bsvInternalBscFlags` with `bsvBscFlags` and a custom set of config
+-- flags.
+withCustomBscConfigFlags :: Config.BSV -> [Text] -> (Config.BSV -> IO a) -> IO a
+withCustomBscConfigFlags cfg flags act =
+    act (cfg { Config.bsvInternalBscFlags = Config.bsvBscFlags cfg <> flags })
 
 withNormalConfig :: Config.BSV -> (Config.BSV -> IO a) -> IO a
 withNormalConfig cfg act =
@@ -255,6 +271,8 @@ runLoadM cfg act = withNormalConfig cfg $ \cfg' -> flip evalStateT M.empty $ do
     updateAstFiles cfg'
     act cfg'
 
+runLoadM' :: LoadM a -> IO a
+runLoadM' m = evalStateT m M.empty
 
 testAst :: Config.BSV -> IO ()
 testAst cfg = do
@@ -341,3 +359,21 @@ annotateNodes m x = everywhere (mkT goStmts `extT` goExpr) x
     goExpr e = e
 
     get nid = toList $ fromMaybe S.empty $ M.lookup nid m
+
+
+-- Try building BSV sources under a given configuration.  Returns the set of
+-- preprocessor flags that were used during the build.  Throws an exception if
+-- the build fails under the given configuration.
+checkConfig :: Config.BSV -> [Text] -> IO (Set Text)
+checkConfig cfg flags = do
+    let bscConfigFlags = concatMap (\f -> ["-D", f]) flags
+    srcsUsed <- withTempAstDir cfg $ \cfg ->
+        withCustomBscConfigFlags cfg bscConfigFlags $ \cfg -> runLoadM' $ do
+            updateAstFiles cfg
+            listSourcesUsedFromCache cfg
+
+    usedFlagSets <- forM srcsUsed $ \src -> do
+        evts <- VPP.readEvents src
+        return $ VPP.evalPpUsed (Set.fromList flags) evts
+
+    return $ Set.unions usedFlagSets
