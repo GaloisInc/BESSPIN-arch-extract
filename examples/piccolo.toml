@@ -37,36 +37,50 @@ shorten-net-names = true
 # Feature-model synthesis configuration
 [featuresynth]
 list-features-command = "./driver %c list-pp-flags"
-oracle-command = "examples/piccolo/check-config.sh %i"
-oracle-cache-file = "examples/piccolo/oracle.cache"
+oracle-command = "examples/piccolo/check-config.sh %c %i"
+#oracle-cache-file = "examples/piccolo/oracle.cache"
 init-tests-file = "examples/piccolo/init-tests.rktd"
-resume-tests-file = "examples/piccolo/resume-tests.rktd"
+#resume-tests-file = "examples/piccolo/resume-tests.rktd"
 max-groups = 3
 max-dependencies = 3
 out-file = "piccolo.cfr"
 
 hard-constraints = [
-    # These are MMU options.  Piccolo doesn't have an MMU, so we disable them.
-    "(! Sv32)",
-    "(! SV34)",
-    "(! SV39)",
-
-    # Piccolo is a 32-bit core, not 64 or 128
+    "(! CSR_REGFILE_MIN)",
+    "(! EXTERNAL_DEBUG_MODULE)",
+    "(! FABRIC32)",
+    "FABRIC64",
+    "(! HTIF_MEMORY)",
+    "(! INCLUDE_ACCEL0)",
+    "(! INCLUDE_CAMERA_MODEL)",
+    "(! INCLUDE_GDB_CONTROL)",
+    "(! INCLUDE_INITIAL_MEMZERO)",
+    "(! INCLUDE_TANDEM_VERIF)",
+#    "ISA_A",
+#    "ISA_C",
+    "(! ISA_D)",
+    "(! ISA_F)",
+    "(! ISA_FD)",
+    "(! ISA_FD_DIV)",
+    "(! ISA_F_OR_D)",
+#    "ISA_M",
+    "(! ISA_N)",
+    "(! ISA_PRIV_S)",
+#    "ISA_PRIV_U",
+    "(! IVERILOG)",
+#    "(! MULT_SERIAL)",
+#    "MULT_SYNTH",
+    "Near_Mem_Caches",
+    "(! Near_Mem_TCM)",
+    "(! RV128)",
     "RV32",
     "(! RV64)",
-    "(! RV128)",
+    "SHIFT_BARREL",
+    "(! SHIFT_MULT)",
+    "(! SHIFT_SERIAL)",
+    "(! SV34)",
+    "(! SV39)",
+    "(! Sv32)",
 
-    # MULT_* options are used only in `RISCV_MBox.bsv`, which is included only
-    # when ISA_M is enabled.  Without this constraint, the solver gets very
-    # confused about whether the MULT_* options are mutually exclusive or not.
-    "(=> (|| MULT_SERIAL MULT_SYNTH) ISA_M)",
-
-    # The rest of these we can hopefully get rid of soon.  These simply force
-    # certain flags to match the settings in the default configuration.  This
-    # helps us avoid tricky corners of the design that confuse the solver.
-    "(! CSR_REGFILE_MIN)",
-    "FABRIC64",
-    "(! (|| ISA_F ISA_D ISA_FD ISA_FD_DIV ISA_F_OR_D) )",
-    "(! (|| EXTERNAL_DEBUG_MODULE INCLUDE_GDB_CONTROL INCLUDE_TANDEM_VERIF) )",
 ]
 
