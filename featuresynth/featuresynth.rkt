@@ -12,6 +12,7 @@
 (require "config.rkt")
 (require "build.rkt")
 (require "unsatcore.rkt")
+(require "simplify.rkt")
 (current-bitwidth #f)
 
 
@@ -186,9 +187,91 @@
     (displayln (test-features t))))
 
 
+(define concrete-fm-vector
+  #(struct:feature-model
+  #(#(struct:feature 8 -1 5 #f #f)
+    #(struct:feature 20 -1 1 #f #f)
+    #(struct:feature 30 -1 15 #f #f)
+    #(struct:feature -1 -1 0 #f #f)
+    #(struct:feature 34 -1 7 #f #f)
+    #(struct:feature 6 -1 12 #f #f)
+    #(struct:feature 19 -1 11 #f #f)
+    #(struct:feature 19 -1 11 #f #f)
+    #(struct:feature 11 -1 4 #f #f)
+    #(struct:feature 28 -1 2 #f #f)
+    #(struct:feature 3 -1 1 #f #f)
+    #(struct:feature 24 -1 3 #f #f)
+    #(struct:feature 20 2 1 #f #f)
+    #(struct:feature 30 -1 15 #f #f)
+    #(struct:feature 33 -1 9 #f #f)
+    #(struct:feature 29 -1 2 #f #f)
+    #(struct:feature 28 -1 2 #f #f)
+    #(struct:feature 24 -1 3 #f #f)
+    #(struct:feature -1 -1 0 #f #f)
+    #(struct:feature 14 -1 10 #f #f)
+    #(struct:feature -1 -1 0 #f #f)
+    #(struct:feature 5 -1 13 #f #f)
+    #(struct:feature 3 1 1 #f #f)
+    #(struct:feature 3 1 1 #f #f)
+    #(struct:feature 29 -1 2 #f #f)
+    #(struct:feature 2 -1 16 #f #f)
+    #(struct:feature 15 -1 3 #f #f)
+    #(struct:feature 24 -1 3 #f #f)
+    #(struct:feature 20 2 1 #f #f)
+    #(struct:feature 3 -1 1 #f #f)
+    #(struct:feature 21 -1 14 #f #f)
+    #(struct:feature 23 -1 2 #f #f)
+    #(struct:feature 25 -1 17 #f #f)
+    #(struct:feature 4 -1 8 #f #f)
+    #(struct:feature 0 -1 6 #f #f))
+  #(#(struct:group 21 0 0) #(struct:group 3 0 1) #(struct:group 20 0 1))
+  #(#(struct:dependency 23 17 #t)
+    #(struct:dependency 29 11 #t)
+    #(struct:dependency 22 17 #t))
+  (&&
+   (! 0)
+   (! 1)
+   (! 2)
+   3
+   (! 4)
+   (! 5)
+   (! 6)
+   (! 7)
+   (! 8)
+   (! 9)
+   (! 12)
+   (! 13)
+   (! 14)
+   (! 15)
+   (! 16)
+   (! 18)
+   (! 19)
+   (! 21)
+   24
+   (! 25)
+   (! 26)
+   27
+   (! 28)
+   29
+   (! 30)
+   (! 31)
+   (! 32)
+   (! 33)
+   (! 34))))
+
+
+(define (do-test)
+  (define concrete-fm (vector->feature-model concrete-fm-vector))
+  (define symbolic-fm (make-symbolic-fm))
+
+  (output-feature-model
+    (simplify-feature-model symbolic-fm concrete-fm resume-tests)))
+
+
 (match subcommand
   ['() (do-synthesize)]
   ['("synthesize") (do-synthesize)]
   ['("unsat-core") (do-unsat-core)]
   ['("render-tests") (do-render-tests)]
+  ['("test") (do-test)]
   )
