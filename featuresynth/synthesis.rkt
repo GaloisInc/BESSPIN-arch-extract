@@ -115,6 +115,12 @@
       (distinguish concrete-fm)
       ; Didn't find a program
       #f))
+  (define (synthesize-with expr)
+    (solver-push solver)
+    (solver-assert solver (list expr))
+    (begin0
+      (synthesize)
+      (solver-pop solver)))
   (define (distinguish concrete-fm)
     (solver-push solver)
     (solver-assert solver
@@ -211,6 +217,7 @@
        (set! tests (cons (cons inp out) tests))
        (void)]
       [(list 'synthesize) (synthesize)]
+      [(list 'synthesize-with expr) (synthesize-with expr)]
       [(list 'distinguish fm) (distinguish-prog fm)]
       [(list 'get-tests) tests]
       [(list 'disprove claims) (disprove claims)]

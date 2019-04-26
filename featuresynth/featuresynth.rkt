@@ -264,8 +264,14 @@
   (define concrete-fm (vector->feature-model concrete-fm-vector))
   (define symbolic-fm (make-symbolic-fm))
 
-  (output-feature-model
-    (simplify-feature-model symbolic-fm concrete-fm resume-tests)))
+  (define simplified-fm
+    (simplify-feature-model symbolic-fm concrete-fm resume-tests))
+
+  (printf "simplified fm:~n")
+  (pretty-write simplified-fm)
+
+  (output-feature-model simplified-fm))
+
 
 
 (match subcommand

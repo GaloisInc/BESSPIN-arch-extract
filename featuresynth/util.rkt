@@ -10,6 +10,8 @@
   place-channel-get-chunk
   in-place-channel-chunks
 
+  test-parts
+
   solver-debug2
   )
 
@@ -71,6 +73,21 @@
 
 (define (in-place-channel-chunks chan)
   (in-producer (lambda () (place-channel-get-chunk chan))))
+
+
+(define (test-parts ts)
+  (make-do-sequence
+    (lambda ()
+      (values
+        (lambda (st)
+          (match-define `(,inp ,out ,meta) (stream-first st))
+          (values inp out meta))
+        stream-rest
+        (sequence->stream ts)
+        (lambda (st) (not (stream-empty? st)))
+        #f
+        #f
+        ))))
 
 
 ; solver-debug2 doesn't work properly when defined in `#lang rosette` context.
