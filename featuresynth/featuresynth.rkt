@@ -69,7 +69,7 @@
       (lambda () (map parse-test (read-many-from-file config-init-tests-file))))
     '()))
 
-(define resume-tests
+(define raw-resume-tests
   (if (and config-resume-tests-file (file-exists? config-resume-tests-file))
     (call-with-default-reading-parameterization
       (lambda () (read-many-from-file config-resume-tests-file)))
@@ -80,6 +80,19 @@
 (define hard-constraints
   (for/list ([c config-hard-constraints])
     (resolve-constraint name-map c)))
+
+(define resume-tests
+  (filter
+    (match-lambda
+      [`(,inp ,out ,meta)
+        (and
+          ; If it failed the old constraint, then we don't know whether it
+          ; would pass or fail under the current one.
+          (not (assoc 'fails-constraint meta))
+          ; Also filter out tests that fail the current constraint.  The solver
+          ; will already know from the constraint itself that these tests fail.
+          (=> out (eval-constraint (cons '&& hard-constraints) inp)))])
+    raw-resume-tests))
 
 (define symbolic-fm-args
   (list
