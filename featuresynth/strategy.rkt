@@ -141,6 +141,81 @@
     #:break done
     (void)))
 
+; Try to identify features that are fixed: the constraints and tests so far
+; prove that they are always #t or always #f.  Upon detecting a fixed feature,
+; this strategy immediately broadcasts a `fix-feature` message.
+;
+; It's not clear if this strategy is actually useful.  We are essentially only
+; telling the solver things it can already prove (unlike `boredom`, which makes
+; guesses at things the solver hasn't been able to prove yet).  It may be
+; useful in the future if we implement some non-solver-based reasoning over
+; claims.
+(define (strategy-find-fixed start-tests step-tests symbolic-fm chan)
+  (printf "strategy-find-fixed running~n")
+  (define started #f)
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define seen-enabled (mutable-set))
+  (define seen-disabled (mutable-set))
+  ; Features whose status is known (forced-on, forced-off, varying)
+  (define known-features (mutable-set))
+  (define need-tests start-tests)
+  (place-channel-put chan `(property reactive #t))
+
+  (define (try-prove idx val)
+    (when (synth 'prove-fixed idx val)
+      (printf "find-fixed: proved ~a = ~a~n" idx val)
+      (place-channel-put chan `(fix-feature ,idx ,val))
+      (synth 'fix-feature idx val)
+      (set-add! known-features idx)))
+
+  (for ([msgs (in-place-channel-chunks chan)])
+    (for ([msg msgs])
+      (match msg
+        [`(start)
+          (set! started #t)]
+        [`(test ,inp ,out ,meta)
+          (synth 'test `(,inp . ,out))
+          (set! need-tests (- need-tests 1))
+          (when out
+            (for ([(v i) (in-indexed inp)])
+              (when v (set-add! seen-enabled i))
+              (unless v (set-add! seen-disabled i))))
+          ]
+        [`(fix-feature ,idx ,val)
+          (synth 'fix-feature idx val)
+          (set-add! known-features idx)]
+        [else (void)]))
+
+    (when (and started (<= need-tests 0))
+      (printf "find-fixed: checking ~a features with ~a tests~n"
+              (- (feature-model-num-features symbolic-fm)
+                 (set-count known-features))
+              (length (synth 'get-tests)))
+      (for ([i (in-range (feature-model-num-features symbolic-fm))]
+            #:when (not (set-member? known-features i)))
+        (printf "find-fixed:   ~a~n" i)
+
+        ; If we've never seen it disabled, then maybe it's forced on.
+        (when (not (set-member? seen-disabled i))
+          (try-prove i #t))
+        (when (not (set-member? seen-enabled i))
+          (try-prove i #f))
+
+        ; If we've seen it both enabled and disabled, then we don't need to
+        ; check it any more.
+        (when (and (set-member? seen-enabled i) (set-member? seen-disabled i))
+          (set-add! known-features i))
+      )
+      (set! need-tests step-tests))
+
+    #:break (= (feature-model-num-features symbolic-fm)
+               (set-count known-features))
+    (void)
+  )
+
+  (printf "find-fixed: no more unknown features - terminating~n")
+)
+
 ; TODO strategy-quorum
 
 (define (run-strategy spec chan)
@@ -153,4 +228,6 @@
      (strategy-disprove (?*feature-model nf ng nd c) chan)]
     [(list 'boredom threshold nf ng nd c)
      (strategy-boredom threshold (?*feature-model nf ng nd c) chan)]
+    [(list 'find-fixed start step nf ng nd c)
+     (strategy-find-fixed start step (?*feature-model nf ng nd c) chan)]
     ))

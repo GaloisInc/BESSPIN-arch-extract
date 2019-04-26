@@ -182,6 +182,25 @@
     (for/list ([expr (core U)])
       (hash-ref test-map expr expr)))
 
+  ; Try to prove that for all feature models satisfying the current tests,
+  ; feature `idx` has value `val` in all configurations accepted by the feature
+  ; model.
+  (define (prove-fixed idx val)
+    (solver-push solver)
+    ; Assert that
+    ;  (1) There exists a feature model that passes all tests
+    ;  (2) There exists a configuration that satisfies the model
+    ;  (3) The configuration does not assign `val` to feature `idx`.
+    ; If this is UNSAT, then we have proved that the feature is fixed to `val`.
+    (solver-assert solver (list (eval-feature-model symbolic-fm symbolic-config)))
+    (begin0
+      ; If there are no valid feature models or no valid configurations, abort.
+      (if (not (sat? (solver-check solver))) #f
+        (begin
+          (solver-assert solver (list (! (<=> val (vector-ref symbolic-config idx)))))
+          (unsat? (solver-check solver))))
+      (solver-pop solver)))
+
   (solver-assert solver (list (valid-feature-model symbolic-fm)))
 
   (lambda args
@@ -205,6 +224,7 @@
          (solver-assert solver (list (feature-force-off f))))]
       [(list 'unsat-core tests) (unsat-core tests)]
       [(list 'check-sat) (sat? (solver-check solver))]
+      [`(prove-fixed ,idx ,val) (prove-fixed idx val)]
     )))
 
 (define (oracle-guided-synthesis symbolic-fm oracle init-tests)
