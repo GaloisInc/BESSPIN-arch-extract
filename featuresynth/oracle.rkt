@@ -32,11 +32,15 @@
   (define exp-cmd (expand-command cmd args))
   (for ([msg (in-place-channel chan)])
     (match-define `(,inp ,meta) msg)
-    (define out
+    (define-values (out new-meta)
       (if (eval-constraint constraint inp)
-        (run-oracle-command exp-cmd feature-names inp)
-        #f))
-    (place-channel-put chan `(,inp ,out ,meta))))
+        (values
+          (run-oracle-command exp-cmd feature-names inp)
+          meta)
+        (values
+          #f
+          (cons '(fails-constraint . #t) meta))))
+    (place-channel-put chan `(,inp ,out ,new-meta))))
 
 (define (oracle-multi-cached num-threads cache-file oracle-spec args chan)
   (define cache
