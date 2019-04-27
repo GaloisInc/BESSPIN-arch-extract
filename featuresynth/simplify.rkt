@@ -68,6 +68,7 @@
         (set! expr new-expr))
       ok]
 
+    [`(get-concrete-fm) concrete-fm]
     [`(get-new-concrete-fm)
       (find-equiv symbolic-fm expr)]
     ))
@@ -85,11 +86,27 @@
 (define (simplify-feature-model symbolic-fm concrete-fm tests)
   (define worker (make-worker symbolic-fm concrete-fm tests))
 
-  ;(simplify-constraint worker)
+  (force-features worker)
+  (simplify-constraint worker)
   (remove-deps worker)
+  (raise-features worker)
+  (remove-groups worker)
 
   (worker 'get-new-concrete-fm))
 
+
+; Set as many `feature-force-on`/`off` flags as possible.
+(define (force-features worker)
+  (define synth (oracle-guided-synthesis+ (worker 'get-concrete-fm)))
+
+  (for ([(f i) (in-indexed (feature-model-features (worker 'get-symbolic-fm)))])
+    (when (synth 'prove-fixed i #t)
+      (printf "simplify: proved feature ~a is always on~n" i)
+      (worker 'add-clause (feature-force-on f)))
+    (when (synth 'prove-fixed i #f)
+      (printf "simplify: proved feature ~a is always off~n" i)
+      (worker 'add-clause (feature-force-off f)))
+  ))
 
 ; Try removing each clause of `symbolic-fm`'s explicit constraint.  The result
 ; is a new symbolic feature model that captures at least one concrete feature
@@ -130,6 +147,32 @@
     (when (and ok (> n 0))
       (loop (- n 1)))))
 
+(define (raise-features worker)
+  (define symbolic-fs (feature-model-features (worker 'get-symbolic-fm)))
+  (define concrete-depth
+    (for/vector ([f (feature-model-features (worker 'get-new-concrete-fm))])
+      (feature-depth f)))
+
+  (for ([(f i) (in-indexed symbolic-fs)] [d concrete-depth])
+    (let loop ([d d])
+      (when (> d 0)
+        (printf "trying with feature ~a at depth < ~a~n" i d)
+        (define fm (worker 'check-clause (< (feature-depth f) d)))
+        (if fm
+          (loop (feature-depth (feature-model-feature fm i)))
+          (worker 'add-clause (<= (feature-depth f) d)))))
+  ))
+
+(define (remove-groups worker)
+  (match-define (feature-model fs gs ds c) (worker 'get-symbolic-fm))
+  (define (new-symbolic-fm n)
+    (feature-model fs (vector-take gs n) ds c))
+
+  (let loop ([n (- (vector-length gs) 1)])
+    (printf "trying with ~a groups~n" n)
+    (define ok (worker 'try-symbolic-fm (new-symbolic-fm n)))
+    (when (and ok (> n 0))
+      (loop (- n 1)))))
 
 ; Split a constraint into a list of clauses that are combined with `&&`.
 (define (constraint-clauses c)

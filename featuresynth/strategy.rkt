@@ -145,11 +145,10 @@
 ; prove that they are always #t or always #f.  Upon detecting a fixed feature,
 ; this strategy immediately broadcasts a `fix-feature` message.
 ;
-; It's not clear if this strategy is actually useful.  We are essentially only
-; telling the solver things it can already prove (unlike `boredom`, which makes
-; guesses at things the solver hasn't been able to prove yet).  It may be
-; useful in the future if we implement some non-solver-based reasoning over
-; claims.
+; This strategy doesn't tell the solver anything it can't already prove, but
+; does help it to produce nicer-looking feature models.  A feature that's
+; forced off by a constraint can appear anywhere in the feature model, whereas
+; a feature with `feature-force-off` set must appear at top level.
 (define (strategy-find-fixed start-tests step-tests symbolic-fm chan)
   (printf "strategy-find-fixed running~n")
   (define started #f)
