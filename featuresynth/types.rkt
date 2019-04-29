@@ -8,6 +8,7 @@
   (struct-out claim-fixed)
   (struct-out claim-dep)
   (struct-out claim-antidep)
+  (struct-out claim-needs-child)
   valid-feature-model
   all-claims
   all-fixed-claims
@@ -71,6 +72,14 @@
 ; Feature `a` depends on the absence of feature `b`, either through an explicit
 ; antidependency or membership in a common xor group.
 (struct claim-antidep (a b) #:transparent)
+; Feature `a` depends on at least one of its children being enabled.  In other
+; words, `a` contains an `or` or `xor` group.
+;
+; This one's a bit tricky to define and evaluate, since the actual children of
+; `a` are not known until synthesis is complete.  So we overapproximate: this
+; claim means that `a` depends on some `b` for which `(claim-dep b a)` has not
+; been disproven.
+(struct claim-needs-child (a) #:transparent)
 
 
 ; Feature model validity checks
@@ -203,12 +212,17 @@
              #:when (not (= i j)))
     (claim-antidep i j)))
 
+(define (all-claims-needs-child fm)
+  (for/list ([i (in-range (feature-model-num-features fm))])
+    (claim-needs-child i)))
+
 (define (all-claims fm)
   (append
     (all-claims-fixed fm #f)
     (all-claims-fixed fm #t)
     (all-claims-dep fm)
     (all-claims-antidep fm)
+    (all-claims-needs-child fm)
     ))
 
 (define (all-fixed-claims fm)

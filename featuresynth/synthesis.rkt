@@ -156,13 +156,11 @@
   ; Try to synthesize a program `P` and input `I` such that (1) `P` passes all
   ; current tests, (2) `eval(P, I)` returns true (i.e., `I` is a valid
   ; configuration of feature model `P`), and (3) `I` disproves at least one
-  ; claim in `claims`.
-  (define (disprove claims)
+  ; claim in `cset`.
+  (define (disprove cset)
     (define valid-constraint
       (eval-feature-model symbolic-fm symbolic-config))
-    (define disprove-constraint
-      (for/fold ([acc #f]) ([c claims])
-        (|| acc (! (eval-claim c symbolic-config)))))
+    (define disprove-constraint (! (claim-set-eval cset symbolic-config)))
     (solver-push solver)
     (solver-assert solver (list valid-constraint disprove-constraint))
     (begin0
@@ -220,10 +218,7 @@
       [(list 'synthesize-with expr) (synthesize-with expr)]
       [(list 'distinguish fm) (distinguish-prog fm)]
       [(list 'get-tests) tests]
-      [(list 'disprove claims) (disprove claims)]
-      [(list 'assert-claims claims)
-       (solver-assert solver
-         (for/list ([c claims]) (eval-claim c symbolic-config)))]
+      [(list 'disprove cset) (disprove cset)]
       [(list 'fix-feature idx val)
        (define f (feature-model-feature symbolic-fm idx))
        (if val

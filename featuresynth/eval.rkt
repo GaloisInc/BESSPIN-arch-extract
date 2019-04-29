@@ -1,12 +1,17 @@
 #lang rosette
 
 (provide
-  eval-claim
   eval-feature-model
   eval-constraint
+
+  (struct-out claim-set)
+  make-claim-set
+  claim-set-count claim-set-member?
+  claim-set-eval claim-set-update
   )
 
 (require "types.rkt")
+(require "util.rkt")
 
 
 ; Feature model evaluation
@@ -58,26 +63,128 @@
 
 ; Claim evaluation
 
-(define (eval-claim-fixed c cfg)
-  (<=> (vector-ref cfg (claim-fixed-a c))
-       (claim-fixed-val c)))
+(struct claim-set (
+  ; Set of claims that are not yet disproved
+  claims
+  ; Lookup table for potential children of a feature.  For each
+  ; `(claim-needs-child a)` in `claims`, `child-map` has an entry for `a`,
+  ; containing the set of all `b`s for which there is a `(claim-dep b a)` in
+  ; `claims`.  This is used for efficient evaluation of `claim-needs-child`
+  ; claims.
+  child-map
+  ; List of observed passing tests.  `test-child-counts` indexes into this
+  ; vector.
+  [passing-tests #:mutable]
+  ; Hash that maps features with `claim-needs-child` to lists of passing tests
+  ; where that feature is enabled.  When a `claim-dep` is disproved (so the set
+  ; of potential children shrinks), we re-scan the previous tests to check if
+  ; the `claim-needs-child` has been disproved.
+  needs-child-tests
+) #:transparent)
 
-(define (eval-claim-dep c cfg)
-  (=> (vector-ref cfg (claim-dep-a c))
-      (vector-ref cfg (claim-dep-b c))))
+(define (make-claim-set claims)
+  (define cs (for/mutable-set ([c claims]) c))
 
-(define (eval-claim-antidep c cfg)
-  (=> (vector-ref cfg (claim-antidep-a c))
-      (! (vector-ref cfg (claim-antidep-b c)))))
+  (define child-map (make-hash))
+  (for ([c cs] #:when (claim-needs-child? c))
+    (hash-set! child-map (claim-needs-child-a c) (mutable-set)))
+  (for ([c cs] #:when (claim-dep? c))
+    (match-define (claim-dep child parent) c)
+    (when-let ([children (hash-ref child-map parent #f)])
+      (set-add! children child)))
 
-; Evaluate a claim to determine if it is compatible with the valid
-; configuration `cfg`.  Returns `#f` if the validity of `cfg` disproves `c`,
-; and `#t` otherwise.
-(define (eval-claim c cfg)
-  (cond
-    [(claim-fixed? c) (eval-claim-fixed c cfg)]
-    [(claim-dep? c) (eval-claim-dep c cfg)]
-    [(claim-antidep? c) (eval-claim-antidep c cfg)]))
+  (define needs-child-tests (make-hash))
+  (for ([parent (in-hash-keys child-map)])
+    (hash-set! needs-child-tests parent '()))
+
+  (claim-set
+    cs
+    child-map
+    '()
+    needs-child-tests))
+
+(define (claim-set-count cset)
+  (set-count (claim-set-claims cset)))
+
+(define (claim-set-member? cset c)
+  (set-member? (claim-set-claims cset) c))
+
+(define (update-claim-set-passing-tests! cset upd)
+  (set-claim-set-passing-tests! cset (upd (claim-set-passing-tests cset))))
+
+; Remove each claim in `cs` from `cset`.  Returns a set of features for which
+; `claim-needs-child` need to be rechecked (because the set of children has
+; changed).
+(define (claim-set-remove-many! cset cs)
+  (match-define (claim-set claims child-map _ needs-child-tests) cset)
+  (define recheck (mutable-set))
+
+  (for ([c cs] #:when (set-member? claims c))
+    (set-remove! claims c)
+    (match c
+      [(claim-dep child parent)
+       (when-let ([children (hash-ref child-map parent #f)])
+         (set-remove! children child)
+         ; Parent has fewer children, so an old test might now be able to
+         ; disprove `claim-needs-child parent`.
+         (set-add! recheck parent))]
+      [(claim-needs-child parent)
+       (hash-remove! child-map parent)
+       (hash-remove! needs-child-tests parent)]
+      [else (void)]
+    ))
+
+  recheck)
+
+(define (claim-set-eval-claim cset c cfg)
+  (match c
+    [(claim-dep a b) (=> (vector-ref cfg a) (vector-ref cfg b))]
+    [(claim-antidep a b) (=> (vector-ref cfg a) (! (vector-ref cfg b)))]
+    [(claim-fixed a val) (<=> (vector-ref cfg a) val)]
+    [(claim-needs-child a)
+     (=> (vector-ref cfg a)
+         (apply ||
+           (for/list ([child (hash-ref (claim-set-child-map cset) a '())])
+             (vector-ref cfg child))))]
+  ))
+
+(define (claim-set-eval cset cfg)
+  (apply &&
+    (for/list ([c (claim-set-claims cset)])
+      (claim-set-eval-claim cset c cfg))))
+
+(define (claim-set-recheck-needs-child cset claim)
+  (match-define (claim-needs-child parent) claim)
+  (for/and ([cfg (hash-ref (claim-set-needs-child-tests cset) parent)])
+    (claim-set-eval-claim cset claim cfg)))
+
+(define (claim-set-update cset inp out)
+  (when out
+    (define disproved1
+      (for/list ([c (claim-set-claims cset)]
+                 #:when (not (claim-set-eval-claim cset c inp))) c))
+    (define recheck1 (claim-set-remove-many! cset disproved1))
+    (pretty-write `(disproved ,disproved1 recheck ,recheck1))
+
+    (when (not (set-empty? recheck1))
+      (define disproved2
+        (for/list ([parent recheck1]
+                   #:when #t
+                   [claim (in-value (claim-needs-child parent))]
+                   #:when (not (claim-set-recheck-needs-child cset claim)))
+          claim))
+      (define recheck2 (claim-set-remove-many! cset disproved2))
+      (pretty-write `(2 disproved ,disproved2 recheck ,recheck2))
+
+      (when (not (set-empty? recheck2))
+        (raise "impossible: got rechecks when processing only needs-child claims?")))
+
+    (define (add-inp ts) (cons inp ts))
+    (update-claim-set-passing-tests! cset add-inp)
+    (for ([parent (in-hash-keys (claim-set-child-map cset))]
+          #:when (vector-ref inp parent))
+      (hash-update! (claim-set-needs-child-tests cset) parent add-inp))
+    ))
 
 
 ; Constraint evaluation

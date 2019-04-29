@@ -72,8 +72,8 @@
   (define started #f)
   (define failed (fail-flag chan))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (define claims (all-claims symbolic-fm))
-  (printf "begin with ~a claims~n" (length claims))
+  (define cset (make-claim-set (all-claims symbolic-fm)))
+  (printf "begin with ~a claims~n" (claim-set-count cset))
   (for ([msgs (in-place-channel-chunks chan)])
     (define test-count 0)
     (define positive-count 0)
@@ -84,17 +84,16 @@
           (failed 'reset)]
         [`(test ,inp ,out ,meta)
           (synth 'test `(,inp . ,out))
+          (claim-set-update cset inp out)
           (set! test-count (+ 1 test-count))
-          (when out
-            (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
-            (set! positive-count (+ 1 positive-count)))]
+          (when out (set! positive-count (+ 1 positive-count)))]
         [`(fix-feature ,idx ,val)
           (synth 'fix-feature idx val)]
         [else (void)]))
     (when (and started (not (failed 'get)))
       (printf "~a/~a positive tests - ~a claims remain~n"
-              positive-count test-count (length claims))
-      (define result (synth 'disprove claims))
+              positive-count test-count (claim-set-count cset))
+      (define result (synth 'disprove cset))
       (cond
         [(vector? result) (place-channel-put chan `(input ,result ()))]
         [(false? result) (failed 'set)]))))
@@ -103,15 +102,15 @@
   (printf "strategy-boredom running~n")
   (place-channel-put chan `(property reactive #t))
   (place-channel-put chan `(property has-recovery #t))
-  (define claims (all-fixed-claims symbolic-fm))
-  (define prev-count (length claims))
+  (define cset (make-claim-set (all-fixed-claims symbolic-fm)))
+  (define prev-count (claim-set-count cset))
   (define counter threshold)
   (define done #f)
 
   (define (fire)
     (printf "strategy-boredom got bored!  broadcasting ~a claims~n"
-            (length claims))
-    (for ([c claims])
+            (claim-set-count cset))
+    (for ([c (claim-set-claims cset)])
       (displayln c)
       (place-channel-put chan
         `(fix-feature ,(claim-fixed-a c) ,(claim-fixed-val c))))
@@ -120,13 +119,13 @@
   (for ([msg (in-place-channel chan)])
     (match msg
       [`(test ,inp ,out ,meta)
+        (claim-set-update cset inp out)
         (when out
-          (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
-          (when (< (length claims) prev-count)
+          (when (< (claim-set-count cset) prev-count)
             (set! counter threshold)
             (printf "strategy-boredom: ~a claims remain; reset counter~n"
-                    (length claims)))
-          (set! prev-count (length claims)))
+                    (claim-set-count cset)))
+          (set! prev-count (claim-set-count cset)))
         (set! counter (- counter (if out 10 1)))]
       [`(recover)
         (fire)
