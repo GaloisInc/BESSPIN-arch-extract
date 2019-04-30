@@ -7,9 +7,11 @@
   (struct-out claim-set)
   make-claim-set
   claim-set-count claim-set-member?
-  claim-set-eval claim-set-eval-claim claim-set-update claim-set-filter!
+  claim-set-update claim-set-filter!
+  claim-set-eval claim-set-eval-claim claim-set-eval-claim-precise
   )
 
+(require bdd/robdd)
 (require "types.rkt")
 (require "util.rkt")
 
@@ -80,9 +82,12 @@
   ; of potential children shrinks), we re-scan the previous tests to check if
   ; the `claim-needs-child` has been disproved.
   needs-child-tests
+  ; A BDD that maps each known passing test to `#t`, and all other tests to
+  ; `#f`.
+  [passing-bdd #:mutable]
 ) #:transparent)
 
-(define (make-claim-set claims)
+(define (make-claim-set claims num-features)
   (define cs (for/mutable-set ([c claims]) c))
 
   (define child-map (make-hash))
@@ -101,7 +106,9 @@
     cs
     child-map
     '()
-    needs-child-tests))
+    needs-child-tests
+    (init-bdd num-features)
+    ))
 
 (define (claim-set-count cset)
   (set-count (claim-set-claims cset)))
@@ -112,11 +119,14 @@
 (define (update-claim-set-passing-tests! cset upd)
   (set-claim-set-passing-tests! cset (upd (claim-set-passing-tests cset))))
 
+(define (update-claim-set-passing-bdd! cset upd)
+  (set-claim-set-passing-bdd! cset (upd (claim-set-passing-bdd cset))))
+
 ; Remove each claim in `cs` from `cset`.  Returns a set of features for which
 ; `claim-needs-child` need to be rechecked (because the set of children has
 ; changed).
 (define (claim-set-remove-many! cset cs)
-  (match-define (claim-set claims child-map _ needs-child-tests) cset)
+  (match-define (claim-set claims child-map _ needs-child-tests _) cset)
   (define recheck (mutable-set))
 
   (for ([c cs] #:when (set-member? claims c))
@@ -136,6 +146,11 @@
 
   recheck)
 
+; Evaluate `c` (which should be present in `cset`) on `cfg`.  Returns `#t` if
+; the claim is possibly satisfied by `cfg`, and `#f` if it is definitely
+; unsatisfied.
+;
+; This function is suitable for use on symbolic `cfg`.
 (define (claim-set-eval-claim cset c cfg)
   (match c
     [(claim-dep a b) (=> (vector-ref cfg a) (vector-ref cfg b))]
@@ -148,22 +163,99 @@
              (vector-ref cfg child))))]
   ))
 
+; Evaluate all claims in `cfg`.  Returns `#t` if each claim is possibly
+; satisfied, and `#f` if at least one claim is definitely unsatisfied.
+;
+; This function is suitable for use on symbolic `cfg`.
 (define (claim-set-eval cset cfg)
   (apply &&
     (for/list ([c (claim-set-claims cset)])
       (claim-set-eval-claim cset c cfg))))
+
+(define (bdd-has-sat? bdd nvars)
+  (> (robdd-sat-count bdd nvars) 0))
+
+(define (bdd-restrict-multi bdd ts fs)
+  (define bdd1
+    (for/fold ([bdd bdd]) ([i ts])
+      (robdd-restrict bdd i #t)))
+  (define bdd2
+    (for/fold ([bdd bdd1]) ([i fs])
+      (robdd-restrict bdd i #f)))
+  bdd2)
+
+; Evaluate `c` (which should be present in `cset`) on `cfg`.  Returns `#t` if
+; the claim is definitely satisfied by `cfg`, and `#f` if it is definitely
+; unsatisfied, and `'unknown` otherwise.
+;
+; This function is *not* suitable for use on symbolic `cfg`.
+(define (claim-set-eval-claim-precise cset c cfg)
+  (match c
+    ; `needs-child` needs special handling - it relies on an approximation of
+    ; the children of the feature.
+    [(claim-needs-child a)
+     (cond
+       ; If `a` is disabled, we don't care about its children.
+       [(not (vector-ref cfg a)) #t]
+       ; If all children are disabled, definitely fail.
+       [(apply &&
+          (for/list ([child (hash-ref (claim-set-child-map cset) a '())])
+            (not (vector-ref cfg child))))
+        #f]
+       ; If a previous passing test revealed that `a` needs only a subset of
+       ; the currently enabled children, definitely pass.
+       [(bdd-has-sat?
+          (robdd-and
+            (claim-set-passing-bdd cset)
+            (make-filter-bdd
+              (list a)
+              (for/list ([child (hash-ref (claim-set-child-map cset) a '())]
+                         #:when (not (vector-ref cfg child))) child)
+              (vector-length cfg)))
+          (vector-length cfg))
+        #t]
+       [else 'unknown])]
+    ; All other claims are evaluated precisely by ordinary `eval-claim`.
+    [_ (claim-set-eval-claim cset c cfg)]
+  ))
 
 (define (claim-set-recheck-needs-child cset claim)
   (match-define (claim-needs-child parent) claim)
   (for/and ([cfg (hash-ref (claim-set-needs-child-tests cset) parent)])
     (claim-set-eval-claim cset claim cfg)))
 
+(define (init-bdd num-features)
+  (make-robdd
+    #f
+    (for/list ([i (in-range num-features)])
+      (string->symbol (format "f~a" i)))))
+
+(define (config->bdd cfg)
+  (make-robdd
+    (cons 'and
+      (for/list ([(v i) (in-indexed cfg)])
+        (define sym (string->symbol (format "f~a" i)))
+        (if v sym `(not ,sym))))
+    (for/list ([i (in-range (vector-length cfg))])
+      (string->symbol (format "f~a" i)))))
+
+(define (make-filter-bdd ts fs num-features)
+  (make-robdd
+    (cons 'and
+      (append
+        (for/list ([i ts]) (string->symbol (format "f~a" i)))
+        (for/list ([i fs]) `(not ,(string->symbol (format "f~a" i))))))
+    (for/list ([i (in-range num-features)])
+      (string->symbol (format "f~a" i)))))
+
 (define (claim-set-update cset inp out)
   (when out
     (claim-set-filter! cset (lambda (c) (claim-set-eval-claim cset c inp)))
 
     (define (add-inp ts) (cons inp ts))
+    (define (add-inp-bdd bdd) (robdd-or bdd (config->bdd inp)))
     (update-claim-set-passing-tests! cset add-inp)
+    (update-claim-set-passing-bdd! cset add-inp-bdd)
     (for ([parent (in-hash-keys (claim-set-child-map cset))]
           #:when (vector-ref inp parent))
       (hash-update! (claim-set-needs-child-tests cset) parent add-inp))

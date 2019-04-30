@@ -222,7 +222,8 @@
 (define (do-claims2)
   (define symbolic-fm (make-symbolic-fm))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (define cset (make-claim-set (all-claims symbolic-fm)))
+  (define cset (make-claim-set (all-claims symbolic-fm)
+                               (feature-model-num-features symbolic-fm)))
 
   (printf "initial: ~a claims~n" (claim-set-count cset))
 
@@ -262,7 +263,8 @@
 (define (do-claims3)
   (define symbolic-fm (make-symbolic-fm))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (define cset (make-claim-set (all-claims symbolic-fm)))
+  (define cset (make-claim-set (all-claims symbolic-fm)
+                               (feature-model-num-features symbolic-fm)))
 
   (printf "initial: ~a claims~n" (claim-set-count cset))
 
@@ -276,13 +278,34 @@
       (begin
         (define reasons
           (for/list ([c (claim-set-claims cset)]
-                     #:when (not (claim-set-eval-claim cset c inp))) c))
+                     #:when (not (eq? #t (claim-set-eval-claim-precise cset c inp))))
+            c))
         (printf "-: ~a possible failure reasons~n" (length reasons))
         (when #t ;(<= (length reasons) 10)
           (for ([r (sort reasons claim-<)])
             (printf "  ~a~n" r)))
         )))
   )
+
+(define (do-claims4)
+  (define symbolic-fm (make-symbolic-fm))
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define cset (make-claim-set (all-claims symbolic-fm)
+                               (feature-model-num-features symbolic-fm)))
+
+  (printf "initial: ~a claims~n" (claim-set-count cset))
+
+  (for ([(inp out meta) (test-parts resume-tests)])
+    (printf "checking needs-child claims on new input:~n")
+    (for ([a (in-range (feature-model-num-features symbolic-fm))])
+      (when (hash-has-key? (claim-set-child-map cset) a)
+        (printf
+          "  needs-child ~a: ~a / ~a~n"
+          a
+          (claim-set-eval-claim-precise cset (claim-needs-child a) inp)
+          (claim-set-eval-claim cset (claim-needs-child a) inp))))
+    (claim-set-update cset inp out)
+  ))
 
 
 
@@ -382,4 +405,5 @@
   ['("test") (do-test)]
   ['("test-claims2") (do-claims2)]
   ['("test-claims3") (do-claims3)]
+  ['("test-claims4") (do-claims4)]
   )
