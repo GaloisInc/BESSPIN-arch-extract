@@ -187,6 +187,106 @@
     (displayln (test-features t))))
 
 
+(define (claim-uses i c)
+  (match c
+    [(claim-dep a b) (or (= a i) (= b i))]
+    [(claim-antidep a b) (or (= a i) (= b i))]
+    [(claim-fixed a _) (= a i)]
+    [(claim-needs-child a) (= a i)]
+  ))
+
+(define (claim-< c1 c2)
+  (match/values (values c1 c2)
+    [((claim-dep a1 b1) (claim-dep a2 b2))
+     (if (not (= a1 a2)) (< a1 a2) (< b1 b2))]
+    [((claim-dep _ _) _) #t]
+    [(_ (claim-dep _ _)) #f]
+
+    [((claim-antidep a1 b1) (claim-antidep a2 b2))
+     (if (not (= a1 a2)) (< a1 a2) (< b1 b2))]
+    [((claim-antidep _ _) _) #t]
+    [(_ (claim-antidep _ _)) #f]
+
+    [((claim-fixed a1 val1) (claim-fixed a2 val2))
+     (if (not (= a1 a2)) (< a1 a2) (and (not val1) val2))]
+    [((claim-fixed _ _) _) #t]
+    [(_ (claim-fixed _ _)) #f]
+
+    [((claim-needs-child a1) (claim-needs-child a2))
+     (< a1 a2)]
+    [((claim-needs-child _) _) #t]
+    [(_ (claim-needs-child _)) #f]
+    ))
+
+
+(define (do-claims2)
+  (define symbolic-fm (make-symbolic-fm))
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define cset (make-claim-set (all-claims symbolic-fm)))
+
+  (printf "initial: ~a claims~n" (claim-set-count cset))
+
+  (for ([(inp out meta) (test-parts resume-tests)])
+    (claim-set-update cset inp out)
+    (synth 'test (cons inp out)))
+
+  (printf "after tests: ~a claims~n" (claim-set-count cset))
+
+;  (for ([i (in-range (feature-model-num-features symbolic-fm))])
+;    (when (or (synth 'prove-fixed i #t)
+;              (synth 'prove-fixed i #f))
+;      (printf "  * found fixed feature: ~a~n" i)
+;      (claim-set-filter! cset (lambda (c) (not (claim-uses i c))))))
+;
+;  (printf "filtered: ~a claims~n" (claim-set-count cset))
+
+  (define nc-list '())
+  (for ([c (claim-set-claims cset)])
+    (match c
+      [(claim-needs-child a) (set! nc-list (cons a nc-list))]
+      [else (void)]))
+  (for ([i (sort nc-list <)])
+    (printf "needs-child: ~a~n" (vector-ref feature-names i)))
+
+
+  (for ([(inp out meta) (test-parts resume-tests)] #:when (not out))
+    (define reasons
+      (for/list ([c (claim-set-claims cset)]
+                 #:when (not (claim-set-eval-claim cset c inp))) c))
+    (printf "test has ~a failure reasons~n" (length reasons))
+    (for ([r (sort reasons claim-<)])
+      (printf "  ~a~n" r)))
+  (printf "~a tests total~n" (length resume-tests))
+  )
+
+(define (do-claims3)
+  (define symbolic-fm (make-symbolic-fm))
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define cset (make-claim-set (all-claims symbolic-fm)))
+
+  (printf "initial: ~a claims~n" (claim-set-count cset))
+
+  (for ([(inp out meta) (test-parts resume-tests)])
+    (if out
+      (begin
+        (define old-count (claim-set-count cset))
+        (claim-set-update cset inp out)
+        (printf "+: disproved ~a claims~n" (- old-count (claim-set-count cset)))
+        )
+      (begin
+        (define reasons
+          (for/list ([c (claim-set-claims cset)]
+                     #:when (not (claim-set-eval-claim cset c inp))) c))
+        (printf "-: ~a possible failure reasons~n" (length reasons))
+        (when #t ;(<= (length reasons) 10)
+          (for ([r (sort reasons claim-<)])
+            (printf "  ~a~n" r)))
+        )))
+  )
+
+
+
+
 (define concrete-fm-vector
   #(struct:feature-model
   #(#(struct:feature 8 -1 5 #f #f)
@@ -280,4 +380,6 @@
   ['("unsat-core") (do-unsat-core)]
   ['("render-tests") (do-render-tests)]
   ['("test") (do-test)]
+  ['("test-claims2") (do-claims2)]
+  ['("test-claims3") (do-claims3)]
   )

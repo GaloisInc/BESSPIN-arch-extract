@@ -6,6 +6,7 @@
 (require toml)
 (require racket/random)
 (require racket/place)
+(require bdd/robdd)
 (require "synthesis.rkt")
 (require "build.rkt")
 (require "types.rkt")
@@ -363,20 +364,27 @@
     (define inp-names (for/list ([i vs]) (vector-ref feature-names i)))
     (printf "  ~a ~a~n" (if out "ok: " "bad:") inp-names)))
 
-(define (do-threaded)
-  (define symbolic-fm-args
-    (list
-      (feature-model-num-features symbolic-fm)
-      (feature-model-num-groups symbolic-fm)
-      (feature-model-num-dependencies symbolic-fm)
-      #t))
-
+(define (read-resume-tests)
   (define resume-tests
     (if (file-exists? "resume-tests.rktd")
       (call-with-default-reading-parameterization
         (lambda () (read-many-from-file "resume-tests.rktd")))
       '()))
   (displayln `(read ,(length resume-tests) resume tests))
+  resume-tests)
+
+(define symbolic-fm-args
+  (list
+    (feature-model-num-features symbolic-fm)
+    (feature-model-num-groups symbolic-fm)
+    (feature-model-num-dependencies symbolic-fm)
+    #t))
+
+(define (make-symbolic-fm)
+  (apply ?*feature-model symbolic-fm-args))
+
+(define (do-threaded)
+  (define resume-tests (read-resume-tests))
 
   (define fm
     (run-manager
@@ -399,7 +407,9 @@
                   (read-many-from-file "test-log.rktd")))
   )
 
-(do-threaded)
+
+(do-claims2)
+;(do-threaded)
 ;(do-claims)
 ;(do-synthesize2)
 ;(do-minimize)

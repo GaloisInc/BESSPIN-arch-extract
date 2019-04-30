@@ -7,7 +7,7 @@
   (struct-out claim-set)
   make-claim-set
   claim-set-count claim-set-member?
-  claim-set-eval claim-set-update
+  claim-set-eval claim-set-eval-claim claim-set-update claim-set-filter!
   )
 
 (require "types.rkt")
@@ -160,24 +160,7 @@
 
 (define (claim-set-update cset inp out)
   (when out
-    (define disproved1
-      (for/list ([c (claim-set-claims cset)]
-                 #:when (not (claim-set-eval-claim cset c inp))) c))
-    (define recheck1 (claim-set-remove-many! cset disproved1))
-    (pretty-write `(disproved ,disproved1 recheck ,recheck1))
-
-    (when (not (set-empty? recheck1))
-      (define disproved2
-        (for/list ([parent recheck1]
-                   #:when #t
-                   [claim (in-value (claim-needs-child parent))]
-                   #:when (not (claim-set-recheck-needs-child cset claim)))
-          claim))
-      (define recheck2 (claim-set-remove-many! cset disproved2))
-      (pretty-write `(2 disproved ,disproved2 recheck ,recheck2))
-
-      (when (not (set-empty? recheck2))
-        (raise "impossible: got rechecks when processing only needs-child claims?")))
+    (claim-set-filter! cset (lambda (c) (claim-set-eval-claim cset c inp)))
 
     (define (add-inp ts) (cons inp ts))
     (update-claim-set-passing-tests! cset add-inp)
@@ -185,6 +168,25 @@
           #:when (vector-ref inp parent))
       (hash-update! (claim-set-needs-child-tests cset) parent add-inp))
     ))
+
+(define (claim-set-filter! cset f)
+  (define disproved1
+    (for/list ([c (claim-set-claims cset)] #:when (not (f c))) c))
+  (define recheck1 (claim-set-remove-many! cset disproved1))
+
+  (when (not (set-empty? recheck1))
+    (define disproved2
+      (for/list ([parent recheck1]
+                 #:when (hash-has-key? (claim-set-child-map cset) parent)
+                 [claim (in-value (claim-needs-child parent))]
+                 #:when (not (claim-set-recheck-needs-child cset claim)))
+        claim))
+    (define recheck2 (claim-set-remove-many! cset disproved2))
+
+    (when (not (set-empty? recheck2))
+      (raise "impossible: got rechecks when processing only needs-child claims?"))))
+
+
 
 
 ; Constraint evaluation
