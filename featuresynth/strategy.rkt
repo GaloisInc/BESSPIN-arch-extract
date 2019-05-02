@@ -89,6 +89,7 @@
           (set! test-count (+ 1 test-count))
           (when out (set! positive-count (+ 1 positive-count)))]
         [`(fix-feature ,idx ,val)
+          (claim-set-remove-feature! cset idx)
           (synth 'fix-feature idx val)]
         [else (void)]))
     (when (and started (not (failed 'get)))
@@ -99,6 +100,11 @@
         [(vector? result) (place-channel-put chan `(input ,result ()))]
         [(false? result) (failed 'set)]))))
 
+; Simple strategy for identifying features that have fixed values (always #t /
+; always #f).  This strategy keeps track of the set of remaining `claim-fixed`
+; claims as claims are disproved by new passing tests.  When the number of
+; `claim-fixed` claims hasn't decreased in a while (controlled by `threshold`),
+; we assume the remaining claims are all true, and assert them for all threads.
 (define (strategy-boredom threshold symbolic-fm chan)
   (printf "strategy-boredom running~n")
   (place-channel-put chan `(property reactive #t))
@@ -129,6 +135,8 @@
                     (claim-set-count cset)))
           (set! prev-count (claim-set-count cset)))
         (set! counter (- counter (if out 10 1)))]
+      [`(fix-feature ,idx ,_)
+        (claim-set-remove-feature! cset idx)]
       [`(recover)
         (fire)
         (set! done #t)
@@ -141,6 +149,58 @@
 
     #:break done
     (void)))
+
+; Find the one feature whose setting caused the test to fail.  This looks for a
+; feature for which `(claim-fixed f (not (vector-ref cfg f)))` is present, and
+; all other claims would pass if `f` was flipped.
+(define (lone-fixed-failure-reason cset cfg [lenient #f])
+  (for/or ([i (in-range (vector-length cfg))])
+    (define val (vector-ref cfg i))
+    (define flipped-cfg (vector-copy cfg))
+    (vector-set! flipped-cfg i (not val))
+    (and
+      (or lenient (set-member? (claim-set-claims cset) (claim-fixed i (not val))))
+      (for/and ([c (claim-set-claims cset)])
+        (eq? #t (claim-set-eval-claim-precise cset c flipped-cfg)))
+      ; When the two above cases are #t, we return `i`.  Otherwise, #f.
+      i)))
+
+; Slightly smarter strategy for identifying features that have fixed values
+; (always #t / always #f).  This strategy keeps track of the set of remaining
+; claims as they are disproved by passing tests.  Then, for each failing test,
+; it tries to identify a single feature whose value is opposite of a remaining
+; `claim-fixed` claim and which is the "sole reason" why the test failed.  If
+; the same feature shows up enough times as the sole reason for failure, then
+; we assert its `claim-fixed`.
+(define (strategy-reason threshold symbolic-fm chan)
+  (printf "strategy-reason running~n")
+  (place-channel-put chan `(property reactive #t))
+  (define cset (make-claim-set (all-claims symbolic-fm)
+                               (feature-model-num-features symbolic-fm)))
+  (define counters (make-hash))
+  (define done #f)
+
+  ; "Test failed because feature `i` had value `val`"
+  (define (failed-because i val)
+    (define cur (hash-ref counters i 0))
+    (define next (+ 1 cur))
+    (printf "reason: failed because ~a had value ~a (~a times)~n" i val next)
+    (hash-set! counters i next)
+    (when (>= next threshold)
+      (printf "reason: BROADCAST: fix ~a as ~a~n" i (not val))
+      (claim-set-remove-feature! cset i)
+      (place-channel-put chan `(fix-feature ,i ,(not val)))))
+
+  (for ([msg (in-place-channel chan)])
+    (match msg
+      [`(test ,inp ,out ,meta)
+        (claim-set-update cset inp out)
+        (when (not out)
+          (when-let ([idx (lone-fixed-failure-reason cset inp)])
+            (failed-because idx (vector-ref inp idx))))]
+      [`(fix-feature ,idx ,_)
+        (claim-set-remove-feature! cset idx)]
+      [else (void)])))
 
 ; Try to identify features that are fixed: the constraints and tests so far
 ; prove that they are always #t or always #f.  Upon detecting a fixed feature,
@@ -228,6 +288,8 @@
      (strategy-disprove (?*feature-model nf ng nd c) chan)]
     [(list 'boredom threshold nf ng nd c)
      (strategy-boredom threshold (?*feature-model nf ng nd c) chan)]
+    [(list 'reason threshold nf ng nd c)
+     (strategy-reason threshold (?*feature-model nf ng nd c) chan)]
     [(list 'find-fixed start step nf ng nd c)
      (strategy-find-fixed start step (?*feature-model nf ng nd c) chan)]
     ))
