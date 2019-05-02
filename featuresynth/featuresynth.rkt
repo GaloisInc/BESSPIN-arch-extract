@@ -132,14 +132,16 @@
 (define (do-synthesize)
   (random-seed 12345)
   (define fm (synthesize))
+  (define symbolic-fm (apply ?*feature-model symbolic-fm-args))
   (if fm
-    (output-feature-model fm)
-    (output-unsat (apply ?*feature-model symbolic-fm-args)
+    (output-feature-model symbolic-fm fm)
+    (output-unsat symbolic-fm
                   ; TODO - more principled way to get tests out of the manager
                   (read-many-from-file "test-log.rktd")))
   )
 
-(define (output-feature-model fm)
+(define (output-feature-model symbolic-fm concrete-fm)
+  (define fm (simplify-feature-model symbolic-fm concrete-fm '()))
   (pretty-write fm)
   (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
   (displayln clafer-str)

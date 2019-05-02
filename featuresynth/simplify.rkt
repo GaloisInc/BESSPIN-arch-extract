@@ -26,9 +26,9 @@
       (match (synth 'synthesize-with expr)
         [(? feature-model? fm) fm]
         [(? vector? new-inp)
-         (define t (eval-feature-model concrete-fm new-inp))
-         (synth 'test (cons new-inp t))
-         (set! tests (cons tests t))
+         (define t (cons new-inp (eval-feature-model concrete-fm new-inp)))
+         (synth 'test t)
+         (set! tests (cons t tests))
          (loop)]
         [#f #f])))
 
