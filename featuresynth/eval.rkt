@@ -7,7 +7,7 @@
   (struct-out claim-set)
   make-claim-set
   claim-set-count claim-set-member?
-  claim-set-update claim-set-filter!
+  claim-set-update claim-set-filter! claim-set-remove-feature!
   claim-set-eval claim-set-eval-claim claim-set-eval-claim-precise
   )
 
@@ -278,7 +278,18 @@
     (when (not (set-empty? recheck2))
       (raise "impossible: got rechecks when processing only needs-child claims?"))))
 
+(define (claim-uses i c)
+  (match c
+    [(claim-dep a b) (or (= a i) (= b i))]
+    [(claim-antidep a b) (or (= a i) (= b i))]
+    [(claim-fixed a _) (= a i)]
+    [(claim-needs-child a) (= a i)]
+  ))
 
+(define (claim-set-remove-feature! cset i)
+  (claim-set-filter!
+    cset
+    (lambda (c) (not (claim-uses i c)))))
 
 
 ; Constraint evaluation

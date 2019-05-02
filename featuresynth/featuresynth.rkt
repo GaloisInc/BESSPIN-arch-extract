@@ -260,6 +260,21 @@
   (printf "~a tests total~n" (length resume-tests))
   )
 
+; Find the one feature whose setting caused the test to fail.  This looks for a
+; feature for which `(claim-fixed f (not (vector-ref cfg f)))` is present, and
+; all other claims would pass if `f` was flipped.
+(define (lone-fixed-failure-reason cset cfg [lenient #f])
+  (for/or ([i (in-range (vector-length cfg))])
+    (define val (vector-ref cfg i))
+    (define flipped-cfg (vector-copy cfg))
+    (vector-set! flipped-cfg i (not val))
+    (and
+      (or lenient (set-member? (claim-set-claims cset) (claim-fixed i (not val))))
+      (for/and ([c (claim-set-claims cset)])
+        (eq? #t (claim-set-eval-claim-precise cset c flipped-cfg)))
+      ; When the two above cases are #t, we return `i`.  Otherwise, #f.
+      i)))
+
 (define (do-claims3)
   (define symbolic-fm (make-symbolic-fm))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
@@ -267,6 +282,7 @@
                                (feature-model-num-features symbolic-fm)))
 
   (printf "initial: ~a claims~n" (claim-set-count cset))
+  (printf "~a tests~n" (length resume-tests))
 
   (for ([(inp out meta) (test-parts resume-tests)])
     (if out
@@ -276,15 +292,21 @@
         (printf "+: disproved ~a claims~n" (- old-count (claim-set-count cset)))
         )
       (begin
-        (define reasons
-          (for/list ([c (claim-set-claims cset)]
-                     #:when (not (eq? #t (claim-set-eval-claim-precise cset c inp))))
-            c))
-        (printf "-: ~a possible failure reasons~n" (length reasons))
-        (when #t ;(<= (length reasons) 10)
-          (for ([r (sort reasons claim-<)])
-            (printf "  ~a~n" r)))
-        )))
+        ;(when #t ;(<= (length reasons) 10)
+        ;  (for ([r (sort reasons claim-<)])
+        ;    (printf "  ~a~n" r)))
+        (if-let ([i (lone-fixed-failure-reason cset inp)])
+          (printf "-:   failed ONLY because ~a was ~a~n"
+                  i (vector-ref inp i))
+          (begin
+            (define reasons
+              (for/list ([c (claim-set-claims cset)]
+                         #:when (not (eq? #t (claim-set-eval-claim-precise cset c inp))))
+                c))
+            (printf "-: ~a possible failure reasons (lenient: ~a)~n"
+                    (length reasons)
+                    (lone-fixed-failure-reason cset inp)))))
+      ))
   )
 
 (define (do-claims4)
