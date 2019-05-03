@@ -35,15 +35,19 @@ raiseRaw x =
     preSimplify $
     reconstructAllLets $
     --cleanDefs $
+    convertTypedefs $
     prefixNames $
     x
 
 prefixNames :: Data a => a -> a
 prefixNames x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i imps ds ss) =
+    goPackage (Package i imps ds ss ts) =
         let pkgName = idName i in
-        Package i imps (fmap (goDef pkgName) ds) (fmap (goStruct pkgName) ss)
+        Package i imps
+            (fmap (goDef pkgName) ds)
+            (fmap (goStruct pkgName) ss)
+            (fmap (goTypedef pkgName) ts)
 
     goDef pkgName d@(Def { defId = Id name l c })
       | (pkgName <> ".") `T.isPrefixOf` name && "~" `T.isInfixOf` name = d
@@ -52,10 +56,13 @@ prefixNames x = everywhere (mkT goPackage) x
     goStruct pkgName s@(Struct { structId = Id name l c })
       | otherwise = s { structId = Id (pkgName <> "." <> name) l c }
 
+    goTypedef pkgName t@(Typedef { typedefId = Id name l c })
+      | otherwise = t { typedefId = Id (pkgName <> "." <> name) l c }
+
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i imps ds ss) = Package i imps (S.filter checkDef ds) ss
+    goPackage (Package i imps ds ss ts) = Package i imps (S.filter checkDef ds) ss ts
     checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
 
 -- At the level where we're operating, typeclass definitions have already been
@@ -297,6 +304,18 @@ reconstructLet dsList body =
         dIdxs = sccs `S.index` scc
         dIdx = Set.findMin dIdxs
         selfRec = Set.member scc $ sccEdges `S.index` scc
+
+
+convertTypedefs :: Data a => a -> a
+convertTypedefs x = everywhere (mkT go) x
+  where
+    tdMap = everything (<>) (M.empty `mkQ` go) x
+      where
+        go (Typedef i [] body) = M.singleton (idName i) body
+        go (Typedef i params body) = M.singleton (idName i) (TLam params body)
+
+    go (TCon i) | Just def <- M.lookup (idName i) tdMap = TAlias i def
+    go t = t
 
 
 lastMaybe [] = Nothing

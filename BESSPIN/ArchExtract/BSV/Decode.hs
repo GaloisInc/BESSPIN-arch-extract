@@ -54,7 +54,7 @@ getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
 getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
 getPackages x = bad' "Packages" x $ []
 
-data AnyDefn = AdDef Def | AdStruct Struct | AdError
+data AnyDefn = AdDef Def | AdStruct Struct | AdTypedef Typedef | AdError
 
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, List imports, List defns]) = do
@@ -63,18 +63,21 @@ getPackage (tag "Package" -> [i, List imports, List defns]) = do
     anys <- mapM getDefnAny defns
     let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
     let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
+    let typedefs = mapMaybe (\ad -> case ad of AdTypedef x -> Just x; _ -> Nothing) anys
     Package
         <$> pure i
         <*> mapM getImportId imports
         <*> pure (S.fromList defs)
         <*> pure (S.fromList structs)
+        <*> pure (S.fromList typedefs)
 getPackage x = bad' "Package" x $
-    Package (badId "package") [] S.empty S.empty
+    Package (badId "package") [] S.empty S.empty S.empty
 
 getDefnAny :: CBOR.Term -> DecodeM AnyDefn
 getDefnAny x@(tag "Defn_Struct" -> (_ : _)) = AdStruct <$> getDefnStruct x
 getDefnAny x@(tag "Defn_Class" -> (_ : _)) = AdStruct <$> getDefnStruct x
 getDefnAny x@(tag "Defn_ValueSign" -> (_ : _)) = AdDef <$> getDefnDef x
+getDefnAny x@(tag "Defn_Type" -> (_ : _)) = AdTypedef <$> getDefnTypedef x
 getDefnAny x = bad' "Defn" x AdError
 
 getDefnStruct :: CBOR.Term -> DecodeM Struct
@@ -95,6 +98,14 @@ getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [] False)
 getStructIsIfc :: CBOR.Term -> DecodeM Bool
 getStructIsIfc (tag0 "StructKind_Ifc" -> True) = return True
 getStructIsIfc _ = return False
+
+getDefnTypedef :: CBOR.Term -> DecodeM Typedef
+getDefnTypedef (tag "Defn_Type" -> [name, List tyParams, ty]) =
+    Typedef
+        <$> getId name
+        <*> mapM getId tyParams
+        <*> getTy  ty
+getDefnTypedef x = bad' "Defn_Type" x (Typedef (badId "struct") [] badTy)
 
 getImportId (tag "Import_Sign" -> [sig]) = getSignatureId sig
 getImportId x = return $ badId "import"

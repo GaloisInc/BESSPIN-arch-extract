@@ -207,7 +207,7 @@ returnedIfcName ty
   | (_, _, ret) <- splitFnTy ty
   , traceShow ("rifcname", ret) True
   , TModule tIfc <- ret
-  , (TIfc (Id name _ _), _) <- splitAppTy tIfc
+  , (TIfc (Id name _ _), _) <- splitAppTy $ resolveTy tIfc
   = Just name
   | otherwise = Nothing
 

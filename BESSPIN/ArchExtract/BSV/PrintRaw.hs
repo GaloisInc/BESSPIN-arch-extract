@@ -11,9 +11,12 @@ import Data.Text.Prettyprint.Doc.Render.Text
 import BESSPIN.ArchExtract.BSV.Raw
 
 instance Pretty Package where
-    pretty (Package name imports defs structs) =
+    pretty (Package name imports defs structs typedefs) =
         vsep $ punctuate line $
-            map prettyImport imports <> map pretty (toList defs) <> map pretty (toList structs)
+            map prettyImport imports
+            <> map pretty (toList defs)
+            <> map pretty (toList structs)
+            <> map pretty (toList typedefs)
 
 prettyImport name = "import" <+> pretty name
 
@@ -28,6 +31,10 @@ instance Pretty Struct where
 
 instance Pretty Field where
     pretty (Field name ty _) = pretty name <+> colon <> colon <+> pretty ty
+
+instance Pretty Typedef where
+    pretty (Typedef i tyParams ty) =
+        "type" <+> hsep (map pretty $ i : tyParams) <+> equals <+> pretty ty <> semi
 
 instance Pretty Def where
     pretty (Def id ty clauses) =
@@ -123,6 +130,9 @@ instance Pretty Ty where
     pretty (TReg t) = parens $ "Reg" <+> pretty t
     pretty (TBit t) = parens $ "Bit" <+> pretty t
     pretty (TModule t) = parens $ "Module" <+> pretty t
+
+    pretty (TAlias i ty) = pretty i <> "@" <> pretty ty
+    pretty (TLam is body) = parens $ "\\" <> hsep (map pretty is) <+> "->" <+> pretty body
 
     pretty t = viaShow t
 

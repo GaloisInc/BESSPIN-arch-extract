@@ -5,6 +5,10 @@ module BESSPIN.ArchExtract.BSV.Raw where
 import Control.DeepSeq
 import Control.Monad
 import Data.Data
+import Data.Generics hiding (Generic)
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Maybe
 import Data.Sequence (Seq)
 import Data.Text (Text)
 import GHC.Generics
@@ -21,6 +25,7 @@ data Package = Package
     , packageImports :: [Id]
     , packageDefs :: Seq Def
     , packageStructs :: Seq Struct
+    , packageTypedefs :: Seq Typedef
     }
     deriving (Show, Data, Typeable, Generic, NFData)
 
@@ -35,6 +40,13 @@ data Struct = Struct
 -- A field that contains a function may have a list of default arg names
 -- associated with it.
 data Field = Field Id Ty (Maybe [Id])
+    deriving (Show, Data, Typeable, Generic, NFData)
+
+data Typedef = Typedef
+    { typedefId :: Id
+    , typedefTyParams :: [Id]
+    , typedefTy :: Ty
+    }
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data Def = Def
@@ -154,6 +166,16 @@ data Ty =
     | TAction Ty
     | TIsModule Ty Ty
 
+    -- A reference to a type alias, which resolves to the second field.
+    | TAlias Id Ty
+    -- A type-level lambda.  These appear when resolving typedefs that have
+    -- type parameters.
+    --
+    -- NB: Correctness of `betaReduceTy` below depends on the body of `TLam`
+    -- having no free variables beyond those listed in the first argument.
+    -- That is, `\x -> x` is okay, but `\x -> y` is not.
+    | TLam [Id] Ty
+
     | TUnknown CBOR.Term
     deriving (Show, Data, Typeable, Generic, NFData)
 
@@ -206,3 +228,40 @@ splitAppTy t = go [] t
   where
     go args (TApp a b) = go (b ++ args) a
     go args t = (t, args)
+
+
+-- Compute the most-resolved version of a type, by expanding all type aliases
+-- and beta-reducing.
+resolveTy :: Ty -> Ty
+resolveTy t = betaReduceTy $ everywhere (mkT go) t
+  where
+    go (TAlias _ t) = t
+    go t = t
+
+betaReduceTy :: Ty -> Ty
+betaReduceTy t = everywhere (mkT go) t
+  where
+    go (TApp (TLam is body) ts) | length is == length ts =
+        let m = M.fromList (zip (map idName is) ts) in
+        substTy m body
+    go t = t
+
+-- Substitute according to `m` in `t`.
+--
+-- NB: It's okay if there are free variables in the RHSs of `m`, and it's okay
+-- if there are free variables in `t` (beyond the vars in the LHSs of `m`), but
+-- it is NOT okay if both are true at the same time.  Consider:
+--      m: [a -> x]
+--      t: \x y -> a
+-- The two `x`s are distinct, but will be mixed up if you perform this
+-- substitution.
+--
+-- We further assume that `TLam` bodies don't have free variables (beyond the
+-- lambda's arguments), which means we don't need to do anything special at all
+-- for binders.
+substTy :: Map Text Ty -> Ty -> Ty
+substTy m t = everywhere (mkT go) t
+  where
+    go (TVar i) = fromMaybe (error $ "no binding for ty var " ++ show i) $
+        M.lookup (idName i) m
+    go t = t
