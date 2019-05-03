@@ -97,13 +97,13 @@ data Prim =
     | PMkRegU -- forall ty width. m Reg  -- width is the total width in bits
     | PPack   -- bits -> a
     | PUnpack -- a -> bits
-    | PTruncate
     | PIndex    -- args: array, index
     | PSlice    -- args: array, high index, low index
     | PRegRead  -- reg -> value
     | PRegWrite -- reg -> value -> Action
     | PUnOp Text
     | PBinOp Text
+    | PResize Text  -- Takes a `TNat` parameter to indicate output width
     | PIf       -- forall a. Bool -> a -> a -> a
     | PSetName Text -- Module a -> Module a
     deriving (Show, Data, Typeable, Generic, NFData)

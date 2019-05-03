@@ -114,8 +114,14 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
         EApp (EPrim PPack) [] [e]
     goExpr (EApp (EVar (Id "Prelude.unpack" _ _)) [_, _] [_d1, e]) =
         EApp (EPrim PUnpack) [] [e]
-    goExpr (EApp (EVar (Id "Prelude.truncate" _ _)) [_, _, _] [_d1, e]) =
-        EApp (EPrim PTruncate) [] [e]
+    goExpr (EApp (EVar (Id "Prelude.truncate" _ _)) [m, _n, _] [_d1, e]) =
+        EApp (EPrim $ PResize "truncate") [m] [e]
+    goExpr (EApp (EVar (Id "Prelude.extend" _ _)) [_m, n, _] [_d1, e]) =
+        EApp (EPrim $ PResize "extend") [n] [e]
+    goExpr (EApp (EVar (Id "Prelude.signExtend" _ _)) [_m, n, _] [_d1, e]) =
+        EApp (EPrim $ PResize "signExtend") [n] [e]
+    goExpr (EApp (EVar (Id "Prelude.zeroExtend" _ _)) [_m, n, _] [_d1, e]) =
+        EApp (EPrim $ PResize "zeroExtend") [n] [e]
     goExpr (EApp (EVar (Id "Prelude.primSelectFn" _ _))
             [_tIn, _tOut, _tIdx, _tUnk] [_d1, _d2, _pos, e, idx]) =
         EApp (EPrim PIndex) [] [e, idx]
@@ -152,9 +158,21 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.&" _ _)) [_] [_d1, l, r]) = binOp "&" l r
     goExpr (EApp (EVar (Id "Prelude.|" _ _)) [_] [_d1, l, r]) = binOp "|" l r
     goExpr (EApp (EVar (Id "Prelude.^" _ _)) [_] [_d1, l, r]) = binOp "^" l r
+    goExpr (EApp (EVar (Id "Prelude.~^" _ _)) [_] [_d1, l, r]) = binOp "~^" l r
+    -- NB: ~^ and ^~ are synonyms - we normalize to ~^
+    goExpr (EApp (EVar (Id "Prelude.^~" _ _)) [_] [_d1, l, r]) = binOp "~^" l r
     goExpr (EApp (EVar (Id "Prelude.invert" _ _)) [_] [_d1, e]) = unOp "invert" e
     goExpr (EApp (EVar (Id "Prelude.<<" _ _)) [_, _, _] [_d1, _d2, l, r]) = binOp "<<" l r
     goExpr (EApp (EVar (Id "Prelude.>>" _ _)) [_, _, _] [_d1, _d2, l, r]) = binOp ">>" l r
+    goExpr (EApp (EVar (Id "Prelude.msb" _ _)) [_] [_d1, e]) = unOp "msb" e
+    goExpr (EApp (EVar (Id "Prelude.lsb" _ _)) [_] [_d1, e]) = unOp "lsb" e
+
+    goExpr (EApp (EVar (Id "Prelude.reduceAnd" _ _)) [_, _] [_d1, e]) = unOp "reduceAnd" e
+    goExpr (EApp (EVar (Id "Prelude.reduceOr" _ _)) [_, _] [_d1, e]) = unOp "reduceOr" e
+    goExpr (EApp (EVar (Id "Prelude.reduceXor" _ _)) [_, _] [_d1, e]) = unOp "reduceXor" e
+    goExpr (EApp (EVar (Id "Prelude.reduceNand" _ _)) [_, _] [_d1, e]) = unOp "reduceNand" e
+    goExpr (EApp (EVar (Id "Prelude.reduceNor" _ _)) [_, _] [_d1, e]) = unOp "reduceNor" e
+    goExpr (EApp (EVar (Id "Prelude.reduceXnor" _ _)) [_, _] [_d1, e]) = unOp "reduceXnor" e
 
     goExpr (EApp (EVar (Id "Prelude.&&" _ _)) [] [l, r]) = binOp "&&" l r
     goExpr (EApp (EVar (Id "Prelude.||" _ _)) [] [l, r]) = binOp "||" l r

@@ -646,7 +646,7 @@ countArgsPrim p = case p of
     PMkRegU -> (2, 0)
     PPack -> (0, 1)
     PUnpack -> (0, 1)
-    PTruncate -> (0, 1)
+    PResize _ -> (1, 1)
     PIndex -> (0, 2)
     PSlice -> (0, 3)
     PRegRead -> (0, 1)
@@ -663,7 +663,6 @@ appPrim PMkReg [ty, _width] [_init] = return $ VMkReg ty
 appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
-appPrim PTruncate [] [v] = return v
 appPrim PIndex [] vs@[v, i] | Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim PSlice [] vs@[v, hi, lo] | Just inps <- collectNets vs =
@@ -674,6 +673,7 @@ appPrim (PUnOp _) [] vs | Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
+appPrim (PResize _) [_] [v] = return v
 -- `if` in monadic code is NYI.  Non-monadic `if` generates a mux.
 appPrim PIf [ty] vs
   | not $ isComputationType ty, Just inps <- collectNets vs =
