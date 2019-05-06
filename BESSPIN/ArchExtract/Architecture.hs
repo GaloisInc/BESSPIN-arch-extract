@@ -124,6 +124,23 @@ data LogicKind =
         , lkRamReadPorts :: Int
         , lkRamWritePorts :: Int
         } |
+    -- Ordinary multiplexer.  The first input pin is the select; the remaining
+    -- `N * M` inputs are the values, where `N` is `S.length pinNames` and `M`
+    -- is `numInputs`.  One set of `N` inputs gets mapped through to the `N`
+    -- output pins, depending on the current value of the select pin.
+    LkMux
+        { lkMuxPinNames :: Seq Text
+        , lkMuxNumInputs :: Int
+        } |
+    -- Priority multiplexer.  Has `(1 + N) * M` input pins, where `N` is
+    -- `S.length pinNames` and `M` is `numInputs`.  The first pin in each group
+    -- is the select for that group; the remaining `N` are input values.  The
+    -- first group with its select pin asserted will have its `N` input values
+    -- passed through to the `N` output pins.
+    LkPriorityMux
+        { lkPrioMuxPinNames :: Seq Text
+        , lkPrioMuxNumInputs :: Int
+        } |
     -- Multiplexer used to represent multiple BSV rules accessing the same
     -- register or inst method.  This mux has `numRules * numPins` inputs and
     -- `numPins` outputs, and passes one set of inputs to the outputs depending
@@ -143,6 +160,16 @@ data LogicKind =
         { lkRuleMuxRuleNames :: Seq Text
         , lkRuleMuxPinNames :: Seq Text
         } |
+    -- Combinational logic element for performing pattern matching.  Takes `N`
+    -- inputs (where `N` is `numInputs`), which it matches internally against
+    -- some kind of pattern or filter.  Produces `1 + M` outputs (where `M` is
+    -- `S.length outNames`): the first output, called `match_ok`, indicates
+    -- whether the match succeeded, and the rest carry the values of any
+    -- variables bound by the pattern (and are only valid `match_ok` is true).
+    LkMatch
+        { lkMatchNumInputs :: Int
+        , lkMatchOutNames :: Seq Text
+        } |
     -- Simple 1-input 0-output logic element used to represent the condition of
     -- a BSV rule.
     LkRuleEnable
@@ -153,7 +180,7 @@ data LogicKind =
     LkOther
     deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
-data Inst = Inst 
+data Inst = Inst
     { instModId :: ModId
     , instName :: Text
     , instParams :: Seq (Maybe ConstExpr)

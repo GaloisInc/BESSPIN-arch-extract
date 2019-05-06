@@ -118,7 +118,10 @@ logicShowsPorts cfg l =
         LkRegister _ -> True
         LkDFlipFlop _ _ -> True
         LkRam _ _ _ _ _ -> True
+        LkMux _ _ -> True
+        LkPriorityMux _ _ -> True
         LkRuleMux _ _ -> True
+        LkMatch _ _ -> True
         LkRuleEnable _ -> False
         _ -> False
 
@@ -225,7 +228,10 @@ drawLogicNode cfg logic =
         LkRegister _ -> True
         LkDFlipFlop _ _ -> True
         LkRam _ _ _ _ _ -> True
+        LkMux _ _ -> True
+        LkPriorityMux _ _ -> True
         LkRuleMux _ _ -> True
+        LkMatch _ _ -> True
         LkRuleEnable _ -> True
         _ -> False
 
@@ -331,7 +337,10 @@ logicLabel LkExpr = T.pack "(expr)"
 logicLabel (LkRegister name) = "(register " <> name <> ")"
 logicLabel (LkDFlipFlop name _) = "(dff " <> name <> ")"
 logicLabel (LkRam name _ _ _ _) = "(ram " <> name <> ")"
+logicLabel (LkMux _ _) = "(mux)"
+logicLabel (LkPriorityMux _ _) = "(priority mux)"
 logicLabel (LkRuleMux _ _) = "(rule mux)"
+logicLabel (LkMatch _ _) = "(match)"
 logicLabel (LkRuleEnable name) = "(rule enable " <> name <> ")"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst inst) = "(inst " <> instName inst <> ")"
@@ -370,9 +379,20 @@ logicPortNames d l@(Logic { logicKind = LkRam _ _ resets readPorts writePorts })
     , "RAM"
         <| S.fromList ["rd" <> T.pack (show i) | i <- [0 .. readPorts - 1]]
         )
+logicPortNames d l@(Logic { logicKind = LkMux names numInputs }) =
+    ( "SEL"
+        <| mconcat [fmap (\n -> n <> T.pack (show i)) names | i <- [0 .. numInputs - 1]]
+    , names )
+logicPortNames d l@(Logic { logicKind = LkPriorityMux names numInputs }) =
+    let names' = "SEL" <| names in
+    ( mconcat [fmap (\n -> n <> T.pack (show i)) names' | i <- [0 .. numInputs - 1]]
+    , names )
 logicPortNames d l@(Logic { logicKind = LkRuleMux rules pins }) =
     ( do { r <- rules; p <- pins; return $ r <> "." <> p }
     , pins )
+logicPortNames d l@(Logic { logicKind = LkMatch numInputs outNames }) =
+    ( S.fromList ["IN" <> T.pack (show i) | i <- [0 .. numInputs - 1]]
+    , "MATCH_OK" <| outNames )
 logicPortNames d l@(Logic { logicKind = LkRuleEnable name }) =
     ( "enable" <| S.empty, S.empty )
 logicPortNames d l =
@@ -383,23 +403,17 @@ logicPortNames d l =
     maxOutput = S.length (logicOutputs l) - 1
 
 logicName :: Design a -> Logic b -> H.Text
+-- A few special cases have multi-line or other complex names.
 logicName d l@(Logic { logicKind = LkInst inst }) =
     [H.Str $ TL.fromStrict $ moduleName $ d `designMod` instModId inst,
         H.Newline [],
         H.Str $ TL.fromStrict $ instName inst]
-logicName d l@(Logic { logicKind = LkRegister name }) =
-    [H.Str $ TL.fromStrict $ "(register " <> name <> ")"]
-logicName d l@(Logic { logicKind = LkDFlipFlop name _ }) =
-    [H.Str $ TL.fromStrict $ "(dff " <> name <> ")"]
 logicName d l@(Logic { logicKind = LkRam name depth _ _ _ }) =
     [H.Str $ TL.fromStrict $ "(ram " <> name <> ")",
         H.Newline [],
         H.Str $ TL.fromStrict $ "x" <> printConstExpr (\_ _ -> "?") depth]
-logicName d l@(Logic { logicKind = LkRuleMux _ _ }) =
-    [H.Str $ TL.fromStrict $ "(rule mux)"]
-logicName d l@(Logic { logicKind = LkRuleEnable name }) =
-    [H.Str $ TL.fromStrict $ "(rule enable " <> name <> ")"]
-logicName _ _ = [H.Str $ TL.fromStrict "(logic)"]
+-- The default case just calls `logicLabel`, defined above.
+logicName _ l = [H.Str $ TL.fromStrict $ logicLabel $ logicKind l]
 
 printVar :: Design a -> Module b -> [Int] -> Int -> Text
 printVar d m insts param | traceShow ("printvar", fmap logicKind $ moduleLogics m, moduleParams m, insts, param) False = undefined

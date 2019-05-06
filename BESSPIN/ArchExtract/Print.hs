@@ -49,7 +49,10 @@ instance Pretty (Logic x) where
                 LkRegister name -> "reg" <+> pretty name
                 LkDFlipFlop name _ -> "dff" <+> pretty name
                 LkRam name _ _ _ _ -> "ram" <+> pretty name
+                LkMux _ _ -> "mux"
+                LkPriorityMux _ _ -> "prioMux"
                 LkRuleMux _ _ -> "ruleMux"
+                LkMatch _ _ -> "match"
                 LkRuleEnable name -> "ruleEnable" <+> pretty name
                 LkExpr -> "expr"
                 LkOther -> emptyDoc
@@ -62,9 +65,21 @@ instance Pretty (Logic x) where
                         Just x -> pretty x) $ instParams inst)
                 LkDFlipFlop _ numResets ->
                     [ "numResets" <+> pretty numResets ]
+                LkMux names numInputs ->
+                    [ "pinNames" <+> pretty (toList names)
+                    , "numInputs" <+> pretty numInputs
+                    ]
+                LkPriorityMux names numInputs ->
+                    [ "pinNames" <+> pretty (toList names)
+                    , "numInputs" <+> pretty numInputs
+                    ]
                 LkRuleMux rules pins ->
                     [ "ruleNames" <+> pretty (toList rules)
                     , "pinNames" <+> pretty (toList pins)
+                    ]
+                LkMatch numInputs outNames ->
+                    [ "numInputs" <+> pretty numInputs
+                    , "outNames" <+> pretty (toList outNames)
                     ]
                 LkRam _ depth resets readPorts writePorts ->
                     [ "depth" <+> pretty depth

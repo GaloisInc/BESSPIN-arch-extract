@@ -642,14 +642,14 @@ appClosure ps vs sc body = do
 
 appCaseClosure :: Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
 appCaseClosure ty vs sc cs = do
-    parts <- forM cs $ \(Clause ps gs body) -> do
+    cases <- forM cs $ \(Clause ps gs body) -> do
         (good, sc') <- genPatternMatch sc vs ps gs
         v <- eval sc' body
         return (good, v)
     if isComputationType ty then
-        return $ VCompute (VMCase parts) [] []
+        return $ VCompute (VMCase cases) [] []
     else
-        badEval ("case mux NYI", ty, parts)
+        genPriorityMux cases
 
 bindPats :: [(Pat, Value)] -> Scope -> ExtractM Scope
 bindPats pvs sc = foldM (\sc (p, v) -> bindPat p v sc) sc pvs
@@ -767,21 +767,31 @@ combineNets ns = do
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
 genCombLogic :: Seq A.NetId -> ExtractM A.NetId
-genCombLogic inps = do
-    out <- addNet $ A.Net "comb" 0 S.empty S.empty A.TUnknown ()
-    addLogic $ A.Logic A.LkExpr
+genCombLogic inps = genCombLogic' A.LkExpr "comb" inps
+
+genCombLogic' :: A.LogicKind -> Text -> Seq A.NetId -> ExtractM A.NetId
+genCombLogic' lk name inps = do
+    out <- addNet $ A.Net name 0 S.empty S.empty A.TUnknown ()
+    addLogic $ A.Logic lk
         (fmap (\n -> A.Pin n A.TUnknown) inps)
         (S.singleton $ A.Pin out A.TUnknown)
         ()
     return out
 
 genMux :: Value -> [Value] -> ExtractM Value
-genMux sel vs
-  | Just ns <- collectNets vs = do
+genMux sel vs = do
     selNet <- asNet sel
     vNets <- mapM asNet vs
-    VNet <$> genCombLogic (S.fromList $ selNet : vNets)
-  | otherwise = badEval ("bad inputs to mux", sel, vs)
+    let lk = A.LkMux (S.singleton "val") (length vNets)
+    VNet <$> genCombLogic' lk "choice" (S.fromList $ selNet : vNets)
+
+genPriorityMux :: [(A.NetId, Value)] -> ExtractM Value
+genPriorityMux cases = do
+    nets <- concat <$> mapM (\(selNet, val) -> do
+        valNet <- asNet val
+        return [selNet, valNet]) cases
+    let lk = A.LkPriorityMux (S.singleton "val") (length cases)
+    VNet <$> genCombLogic' lk "choice" (S.fromList nets)
 
 -- Match values `vs` against patterns `ps` and check guards `gs`.  This
 -- generates a new combinational logic node representing the match operation,
@@ -815,7 +825,7 @@ genPatternMatchOnly sc vs ps = do
     bnds <- forM bndNames $ \name -> do
         net <- addNet $ A.Net name 0 S.empty S.empty A.TUnknown ()
         return (name, net)
-    addLogic $ A.Logic A.LkExpr
+    addLogic $ A.Logic (A.LkMatch (length vs) (S.fromList bndNames))
         (fmap (\n -> A.Pin n A.TUnknown) inps)
         (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList (good : map snd bnds))
         ()
@@ -826,7 +836,6 @@ genPatternMatchOnly sc vs ps = do
       where
         go (PVar (Id name _ _)) = [name]
         go _ = []
-
 
 
 -- Add a new rule access to `muxIdx`, with `nets` as its input nets.  The rule
@@ -1050,8 +1059,10 @@ handleAction c = go c
         val2 <- runAction t
         genMux c [val1, val2]
     go v@(VCompute (VMCase cases) [] []) = do
-        vs <- mapM runAction $ map snd cases
-        badEval ("case mux NYI", cases, vs)
+        cases' <- forM cases $ \(n, m) -> do
+            v <- runAction m
+            return (n, v)
+        genPriorityMux cases'
     go c = badEval ("unsupported Action computation", c)
 
 
