@@ -674,12 +674,13 @@ appPrim (PUnOp _) [] vs | Just inps <- collectNets vs =
 appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
     if S.null inps then return VConst else VNet <$> genCombLogic inps
 appPrim (PResize _) [_] [v] = return v
--- `if` in monadic code is NYI.  Non-monadic `if` generates a mux.
-appPrim PIf [ty] vs
-  | not $ isComputationType ty, Just inps <- collectNets vs =
-    if S.null inps then return VConst else VNet <$> genCombLogic inps
-  | isComputationType ty =
-    return $ VCompute (VPrim PIf) [ty] vs
+-- Non-monadic `if` generates a mux.  Monadic `if` is left intact to be handled
+-- by the monad evaluator.
+appPrim PIf [ty] [c, t, e] =
+    if isComputationType ty then
+        return $ VCompute (VPrim PIf) [ty] [c, t, e]
+    else
+        genMux c [t, e]
 appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
@@ -745,6 +746,15 @@ genCombLogic inps = do
         (S.singleton $ A.Pin out A.TUnknown)
         ()
     return out
+
+genMux :: Value -> [Value] -> ExtractM Value
+genMux sel vs
+  | Just ns <- collectNets vs = do
+    selNet <- asNet sel
+    vNets <- mapM asNet vs
+    VNet <$> genCombLogic (S.fromList $ selNet : vNets)
+  | otherwise = badEval ("bad inputs to mux", sel, vs)
+
 
 -- Add a new rule access to `muxIdx`, with `nets` as its input nets.  The rule
 -- name is taken from `esCurRuleName`.
@@ -962,9 +972,10 @@ handleAction c = go c
             else (:[]) <$> asNet VConst     -- Token value
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
-    go (VCompute (VPrim PIf) [_ty] [_c, t, e]) = do
-        _ <- runAction e
-        runAction t
+    go v@(VCompute (VPrim PIf) [_ty] [c, t, e]) = do
+        val1 <- runAction e
+        val2 <- runAction t
+        genMux c [val1, val2]
     go c = badEval ("unsupported Action computation", c)
 
 

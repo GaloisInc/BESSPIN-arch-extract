@@ -105,7 +105,7 @@ getDefnTypedef (tag "Defn_Type" -> [name, List tyParams, ty]) =
         <$> getId name
         <*> mapM getId tyParams
         <*> getTy  ty
-getDefnTypedef x = bad' "Defn_Type" x (Typedef (badId "struct") [] badTy)
+getDefnTypedef x = bad' "Defn_Type" x (Typedef (badId "typedef") [] badTy)
 
 getImportId (tag "Import_Sign" -> [sig]) = getSignatureId sig
 getImportId x = return $ badId "import"
