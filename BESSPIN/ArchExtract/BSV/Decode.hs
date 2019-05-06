@@ -146,8 +146,9 @@ badTy = TUnknown CBOR.TNull
 badDef = Def (badId "def") badTy []
 
 getClause :: CBOR.Term -> DecodeM Clause
-getClause (tag "Clause" -> [List pats, body]) =
-    Clause <$> mapM getPat pats <*> getExpr body
+getClause (tag "Clause" -> [List pats, List guards, body]) =
+    Clause <$> mapM getPat pats <*> mapM getGuard guards <*> getExpr body
+getClause x = bad' "Clause" x (Clause [] [] $ EUnknown CBOR.TNull)
 
 getDeflDef :: CBOR.Term -> DecodeM Def
 getDeflDef (tag "Defl_ValueSign" -> [def]) = getDef def
@@ -194,6 +195,7 @@ getLit x = bad' "Lit" x $ LInt 0
 
 getPat :: CBOR.Term -> DecodeM Pat
 getPat (tag "Pat_Var" -> [i]) = PVar <$> getId i
+getPat (tag0 "Pat_Any" -> True) = return PWild
 getPat x = bad' "Pat" x $ PUnknown x
 
 getTy :: CBOR.Term -> DecodeM Ty

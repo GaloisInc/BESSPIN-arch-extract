@@ -58,6 +58,7 @@ data Def = Def
 
 data Clause = Clause
     { clausePats :: [Pat]
+    , clauseGuards :: [Guard]
     , clauseBody :: Expr
     }
     deriving (Show, Data, Typeable, Generic, NFData)
@@ -104,7 +105,7 @@ data Prim =
     | PUnOp Text
     | PBinOp Text
     | PResize Text  -- Takes a `TNat` parameter to indicate output width
-    | PIf       -- forall a. Bool -> a -> a -> a
+    | PIf           -- forall a. Bool -> a -> a -> a
     | PSetName Text -- Module a -> Module a
     deriving (Show, Data, Typeable, Generic, NFData)
 

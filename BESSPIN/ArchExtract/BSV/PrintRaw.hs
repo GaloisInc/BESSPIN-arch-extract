@@ -44,11 +44,21 @@ instance Pretty Def where
             ]
 
 instance Pretty Clause where
-    pretty (Clause pats body) =
+    pretty (Clause pats [] body) =
         vsep
             [ hsep ("__" : map pretty pats) <+> equals
             , indent 4 $ pretty body
             ]
+    pretty (Clause pats guards body) =
+        vsep
+            [ hsep ("__" : map pretty pats)
+            , indent 2 $ vsep $ zipWith (<+>) ("|" : repeat ",") (map pretty guards)
+            , indent 2 $ equals <+> pretty body
+            ]
+
+instance Pretty Guard where
+    pretty (GPat pat ty expr) = pretty pat <+> "<-" <+> pretty expr
+    pretty (GCond expr) = pretty expr
 
 instance Pretty Id where
     pretty (Id name line col) = pretty name <> brackets (pretty line <> colon <> pretty col)

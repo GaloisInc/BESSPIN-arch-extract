@@ -156,10 +156,10 @@ convertModule :: Bool -> Def -> Maybe BSVModule
 -- Synthesized module case.  This case is looking at the `mkFoo-` definition,
 -- which needs adjustments to its type and value to get into the standard form.
 convertModule isLib (Def i0 ty cs)
-  | [Clause [] body] <- cs
+  | [Clause [] [] body] <- cs
   , (_, body') <- splitLambda body
   , (ds@(_:_), _) <- splitLet body'
-  , Def i ty' [Clause [] body''] <- last ds
+  , Def i ty' [Clause [] [] body''] <- last ds
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
   = Just $ BSVModule (addPkgName i)
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
@@ -176,13 +176,13 @@ convertModule isLib (Def i0 ty cs)
 -- definition is an `EApp` (for full non-synthesized modules, the body is
 -- usually an `ELet` or `ELam` instead).
 convertModule isLib (Def i ty cs)
-  | [Clause dcts body] <- cs
+  | [Clause dcts [] body] <- cs
   , EApp _ _ _ <- body
   = Nothing
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
 convertModule isLib (Def i ty cs)
-  | [Clause dcts body] <- cs
+  | [Clause dcts [] body] <- cs
   --, all (\p -> case p of PTcDict -> True; _ -> False) dcts
   , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
   , any (isModDict iM) argTys
@@ -334,6 +334,11 @@ data Value =
     -- they expect, but we don't have a way to pass types in at the moment, so
     -- they just get dropped at application time instead.
     | VClosure Int [Pat] Scope Expr
+    -- "Case closures", for handling multi-clause `ELet`s and `Def`s.  Roughly
+    -- equivalent to `\xs... -> case (xs...) of <<clauses...>>`.  This keeps
+    -- track of how many type arguments the closure expects, like `VClosure`
+    -- does.  We also record the result type of the `case`,
+    | VCaseClosure Int Ty Scope [Clause]
     -- Partial application.  Much easier to have one unified way of handling
     -- partial applications, instead of making every single callable type
     -- handle it separately.
@@ -382,6 +387,10 @@ data Value =
     | VNamed Text Value
     | VMkReg Ty
     | VAddRules [RuleVal]
+    -- Monadic case.  In a concrete execution, a `VMCase` computation would
+    -- look up the first entry whose `fst` component is `True` and run the
+    -- `snd` component (another computation) of that entry.
+    | VMCase [(A.NetId, Value)]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -452,17 +461,18 @@ eval sc (EApp f tys args) = do
     appValue fv tys argvs
 -- TODO: handling multi-clause defs will require multi-clause VClosure, and
 -- associated changes to application & pattern matching.
-eval sc (ELet (Def (Id name _ _) _ [Clause [] body]) e nid _) = do
+eval sc (ELet (Def (Id name _ _) _ [Clause [] [] body]) e nid _) = do
     v <- eval sc body
     saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) ty [Clause ps body]) e nid _) = do
+eval sc (ELet (Def (Id name _ _) ty [Clause ps [] body]) e nid _) = do
     let (tyVars, _, _) = splitFnTy ty
     let v = VClosure (length tyVars) ps sc body
     saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) _ cs) e nid _) = do
-    v <- badEval ("multi-clause let binding NYI", name)
+eval sc (ELet (Def (Id name _ _) ty cs) e nid _) = do
+    let (tyVars, _, retTy) = splitFnTy ty
+    let v = VCaseClosure (length tyVars) retTy sc cs
     saveErrors nid v
     eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
@@ -512,11 +522,13 @@ eval sc EUndef = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
 evalDef name d = case d of
-    Def _ _ [Clause [] e] -> eval M.empty e
-    Def _ ty [Clause ps e] ->
+    Def _ _ [Clause [] [] e] -> eval M.empty e
+    Def _ ty [Clause ps [] e] ->
         let (tyVars, _, _) = splitFnTy ty in
         return $ VClosure (length tyVars) ps M.empty e
-    Def _ _ _ -> badEval ("reference to multi-clause def (NYI)", name)
+    Def _ ty cs ->
+        let (tyVars, _, retTy) = splitFnTy ty in
+        return $ VCaseClosure (length tyVars) retTy M.empty cs
 
 evalRule sc (Rule name conds body) = do
     idx <- nextRuleIdx
@@ -572,6 +584,7 @@ appValue f tys vals = do
 -- `tys` and `vals`.
 appExact f tys vals = case f of
     VClosure _ ps sc' body -> appClosure ps vals sc' body
+    VCaseClosure _ ty sc' cs -> appCaseClosure ty vals sc' cs
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
@@ -596,6 +609,7 @@ mkPartApp f tys vals =
     VPartApp f tys vals
 
 isFunc (VClosure _ _ _ _) = True
+isFunc (VCaseClosure _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
@@ -608,6 +622,9 @@ isFunc _ = False
 -- Returns (0,0) for non-functions.
 countArgs :: Value -> ExtractM (Int, Int)
 countArgs (VClosure numTys ps _ _) = return (numTys, length ps)
+countArgs (VCaseClosure numTys _ _ (Clause ps _ _ : _)) = return (numTys, length ps)
+countArgs v@(VCaseClosure numTys _ _ []) =
+    badEval' ("VCaseClosure has no clauses", v) (numTys, 0)
 countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
     return (numTys - length tys, numVals - length vals)
@@ -622,6 +639,17 @@ appClosure :: [Pat] -> [Value] -> Scope -> Expr -> ExtractM Value
 appClosure ps vs sc body = do
     sc' <- bindPats (zip ps vs) sc
     eval sc' body
+
+appCaseClosure :: Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
+appCaseClosure ty vs sc cs = do
+    parts <- forM cs $ \(Clause ps gs body) -> do
+        (good, sc') <- genPatternMatch sc vs ps gs
+        v <- eval sc' body
+        return (good, v)
+    if isComputationType ty then
+        return $ VCompute (VMCase parts) [] []
+    else
+        badEval ("case mux NYI", ty, parts)
 
 bindPats :: [(Pat, Value)] -> Scope -> ExtractM Scope
 bindPats pvs sc = foldM (\sc (p, v) -> bindPat p v sc) sc pvs
@@ -754,6 +782,51 @@ genMux sel vs
     vNets <- mapM asNet vs
     VNet <$> genCombLogic (S.fromList $ selNet : vNets)
   | otherwise = badEval ("bad inputs to mux", sel, vs)
+
+-- Match values `vs` against patterns `ps` and check guards `gs`.  This
+-- generates a new combinational logic node representing the match operation,
+-- with an input for each of the `vs`, an output for each bound variable in the
+-- `ps`, and an additional output indicating whether the pattern match
+-- succeeded overall.  The `gs` are implemented with additional combinational
+-- logic that gets ANDed together with the pattern match success output.
+--
+-- The first return value is the overall success output (the match success AND
+-- all guards).  The second return value is a new scope, extended with the
+-- variables bound in `ps` and `gs` this match.
+genPatternMatch :: Scope -> [Value] -> [Pat] -> [Guard] -> ExtractM (A.NetId, Scope)
+genPatternMatch sc vs ps gs = do
+    (good, sc') <- genPatternMatchOnly sc vs ps
+    (nets, sc'') <- foldM go (S.singleton good, sc') gs
+    good' <- combineNets $ toList nets
+    return (good', sc'')
+  where
+    go (nets, sc) (GCond e) = do
+        good <- asNet =<< eval sc e
+        return (nets |> good, sc)
+    go (nets, sc) (GPat p _ e) = do
+        v <- eval sc e
+        (good, sc') <- genPatternMatchOnly sc [v] [p]
+        return (nets |> good, sc')
+
+genPatternMatchOnly :: Scope -> [Value] -> [Pat] -> ExtractM (A.NetId, Scope)
+genPatternMatchOnly sc vs ps = do
+    inps <- S.fromList <$> mapM asNet vs
+    good <- addNet $ A.Net "match_ok" 0 S.empty S.empty (A.TWire [] []) ()
+    bnds <- forM bndNames $ \name -> do
+        net <- addNet $ A.Net name 0 S.empty S.empty A.TUnknown ()
+        return (name, net)
+    addLogic $ A.Logic A.LkExpr
+        (fmap (\n -> A.Pin n A.TUnknown) inps)
+        (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList (good : map snd bnds))
+        ()
+    let bndsMap = M.fromList $ map (\(name, net) -> (name, VNet net)) bnds
+    return (good, bndsMap <> sc)
+  where
+    bndNames = everything (<>) ([] `mkQ` go) ps
+      where
+        go (PVar (Id name _ _)) = [name]
+        go _ = []
+
 
 
 -- Add a new rule access to `muxIdx`, with `nets` as its input nets.  The rule
@@ -976,6 +1049,9 @@ handleAction c = go c
         val1 <- runAction e
         val2 <- runAction t
         genMux c [val1, val2]
+    go v@(VCompute (VMCase cases) [] []) = do
+        vs <- mapM runAction $ map snd cases
+        badEval ("case mux NYI", cases, vs)
     go c = badEval ("unsupported Action computation", c)
 
 

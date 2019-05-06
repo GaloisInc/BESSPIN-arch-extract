@@ -219,9 +219,9 @@ preSimplify x = everywhere (mkT goExpr `extT` goTy) x
     goTy t = t
 
     goExpr (EApp (EApp f tys1 args1) [] args2) = goExpr $ EApp f tys1 (args1 ++ args2)
-    goExpr (ELet (Def i ty [Clause [] body]) (EVar i') _ _)
+    goExpr (ELet (Def i ty [Clause [] [] body]) (EVar i') _ _)
       | i == i' = goExpr $ body
-    goExpr (ELet (Def i ty [Clause pats body]) (EVar i') _ _)
+    goExpr (ELet (Def i ty [Clause pats [] body]) (EVar i') _ _)
       | not $ null pats, i == i' = goExpr $ ELam pats body
     goExpr e = e
 
