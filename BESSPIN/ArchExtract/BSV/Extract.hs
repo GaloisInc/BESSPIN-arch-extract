@@ -390,7 +390,7 @@ data Value =
     -- Monadic case.  In a concrete execution, a `VMCase` computation would
     -- look up the first entry whose `fst` component is `True` and run the
     -- `snd` component (another computation) of that entry.
-    | VMCase [(A.NetId, Value)]
+    | VMCase [(Value, Value)]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -764,6 +764,15 @@ combineNets ns = do
         ()
     return n'
 
+combineValues :: [Value] -> ExtractM Value
+combineValues vs
+  | Just inps <- collectNets vs = case toList inps of
+    [] -> return VConst
+    [n] -> return $ VNet n
+    ns -> VNet <$> combineNets ns
+  | otherwise =
+    badEval ("expected only nets and consts", vs)
+
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
 genCombLogic :: Seq A.NetId -> ExtractM A.NetId
@@ -785,9 +794,10 @@ genMux sel vs = do
     let lk = A.LkMux (S.singleton "val") (length vNets)
     VNet <$> genCombLogic' lk "choice" (S.fromList $ selNet : vNets)
 
-genPriorityMux :: [(A.NetId, Value)] -> ExtractM Value
+genPriorityMux :: [(Value, Value)] -> ExtractM Value
 genPriorityMux cases = do
-    nets <- concat <$> mapM (\(selNet, val) -> do
+    nets <- concat <$> mapM (\(sel, val) -> do
+        selNet <- asNet sel
         valNet <- asNet val
         return [selNet, valNet]) cases
     let lk = A.LkPriorityMux (S.singleton "val") (length cases)
@@ -803,23 +813,25 @@ genPriorityMux cases = do
 -- The first return value is the overall success output (the match success AND
 -- all guards).  The second return value is a new scope, extended with the
 -- variables bound in `ps` and `gs` this match.
-genPatternMatch :: Scope -> [Value] -> [Pat] -> [Guard] -> ExtractM (A.NetId, Scope)
+genPatternMatch :: Scope -> [Value] -> [Pat] -> [Guard] -> ExtractM (Value, Scope)
 genPatternMatch sc vs ps gs = do
     (good, sc') <- genPatternMatchOnly sc vs ps
     (nets, sc'') <- foldM go (S.singleton good, sc') gs
-    good' <- combineNets $ toList nets
+    good' <- combineValues $ toList nets
     return (good', sc'')
   where
     go (nets, sc) (GCond e) = do
-        good <- asNet =<< eval sc e
+        good <- eval sc e
         return (nets |> good, sc)
     go (nets, sc) (GPat p _ e) = do
         v <- eval sc e
         (good, sc') <- genPatternMatchOnly sc [v] [p]
         return (nets |> good, sc')
 
-genPatternMatchOnly :: Scope -> [Value] -> [Pat] -> ExtractM (A.NetId, Scope)
-genPatternMatchOnly sc vs ps = do
+genPatternMatchOnly :: Scope -> [Value] -> [Pat] -> ExtractM (Value, Scope)
+genPatternMatchOnly sc vs ps
+  | all (\p -> case p of PWild -> True; _ -> False) ps = return (VConst, sc)
+  | otherwise = do
     inps <- S.fromList <$> mapM asNet vs
     good <- addNet $ A.Net "match_ok" 0 S.empty S.empty (A.TWire [] []) ()
     bnds <- forM bndNames $ \name -> do
@@ -830,7 +842,7 @@ genPatternMatchOnly sc vs ps = do
         (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList (good : map snd bnds))
         ()
     let bndsMap = M.fromList $ map (\(name, net) -> (name, VNet net)) bnds
-    return (good, bndsMap <> sc)
+    return (VNet good, bndsMap <> sc)
   where
     bndNames = everything (<>) ([] `mkQ` go) ps
       where
