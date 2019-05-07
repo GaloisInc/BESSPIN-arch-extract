@@ -2,6 +2,7 @@
    DeriveGeneric, DeriveAnyClass #-}
 module BESSPIN.ArchExtract.BSV.Extract where
 
+import Control.Applicative
 import Control.DeepSeq (deepseq, NFData)
 import Control.Monad
 import Control.Monad.ST
@@ -387,10 +388,16 @@ data Value =
     | VNamed Text Value
     | VMkReg Ty
     | VAddRules [RuleVal]
-    -- Monadic case.  In a concrete execution, a `VMCase` computation would
-    -- look up the first entry whose `fst` component is `True` and run the
-    -- `snd` component (another computation) of that entry.
-    | VMCase [(Value, Value)]
+    -- Monadic switch.  In a concrete execution, a `VMMatch` computation would
+    -- look up the first entry whose `fst` component is equal to the argument
+    -- value and run the `snd` component (another computation) of that entry.
+    | VMSwitch [(Value, Value)] (Maybe Value)
+    -- Monadic pattern match.  In a concrete execution, a `VMMatch` computation
+    -- would look up the first entry whose `fst` component is `True` and run
+    -- the `snd` component (another computation) of that entry.  (The `fst`
+    -- component is expected to be the `match_ok` output of a pattern match
+    -- node.)
+    | VMMatch [(Value, Value)]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -641,13 +648,71 @@ appClosure ps vs sc body = do
     eval sc' body
 
 appCaseClosure :: Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
+-- Try first to parse this pattern match as a BSV `case` expression.  This
+-- shows up as a pattern match of the form
+--
+--      case () of
+--          _ | x == 1 -> ...
+--          _ | x == 2 -> ...
+--          _ | x == 3 || x == 4 -> ...
+--          _ -> ...    -- default case
+appCaseClosure ty [_] sc cs
+  | (cs', defC) <- takeDefaultClause cs
+  , Just (as, bs, bodies) <- unzip3 <$> mapM parseClause cs'
+  , Just (var, consts) <- checkShape as bs <|> checkShape bs as
+  = do
+    val <- eval sc var
+    cases <- forM (zip consts bodies) $ \(const, body) -> do
+        constVal <- eval sc const
+        result <- eval sc body
+        return (constVal, result)
+    defVal <- mapM (eval sc) defC
+    if isComputationType ty then
+        return $ VCompute (VMSwitch cases defVal) [] [val]
+    else
+        genMux val (map snd cases ++ maybeToList defVal)
+  where
+    -- Try to parse a clause as `_ | a == b -> body`.
+    parseClause :: Clause -> Maybe (Expr, Expr, Expr)
+    parseClause (Clause [PWild] [GCond (EApp (EPrim (PBinOp "==")) [] [a, b])] body) =
+        Just (a, b, body)
+    parseClause _ = Nothing
+
+    parseDefaultClause :: Clause -> Maybe Expr
+    parseDefaultClause (Clause [PWild] [] body) = Just body
+    parseDefaultClause _ = Nothing
+
+    takeDefaultClause :: [Clause] -> ([Clause], Maybe Expr)
+    takeDefaultClause [] = ([], Nothing)
+    takeDefaultClause cs
+      | Just defC <- parseDefaultClause $ last cs = (init cs, Just defC)
+      | otherwise = (cs, Nothing)
+
+    isConst (ELit _) = True
+    isConst (EStatic _ _) = True
+    isConst (EPrim _) = True
+    isConst (EConst _) = True
+    isConst (EVar id) = not $ M.member (idName id) sc
+    isConst _ = False
+
+    asVar (EVar (Id name _ _)) = Just name
+    asVar _ = Nothing
+
+    -- Check if all `vs` are identical and all `cs` are constants.  If so,
+    -- returns `(v, cs)`; otherwise, returns `Nothing`.
+    checkShape :: [Expr] -> [Expr] -> Maybe (Expr, [Expr])
+    checkShape (v : vs) cs
+      | Just (n : ns) <- mapM asVar (v : vs)
+      , all (== n) ns
+      , all isConst cs = Just (v, cs)
+    checkShape _ _ = Nothing
 appCaseClosure ty vs sc cs = do
     cases <- forM cs $ \(Clause ps gs body) -> do
         (good, sc') <- genPatternMatch sc vs ps gs
         v <- eval sc' body
         return (good, v)
     if isComputationType ty then
-        return $ VCompute (VMCase cases) [] []
+        return $ VCompute (VMMatch cases) [] []
     else
         genPriorityMux cases
 
@@ -1175,7 +1240,11 @@ handleAction c = go c
         val1 <- runAction e
         val2 <- runAction t
         genMux c [val1, val2]
-    go v@(VCompute (VMCase cases) [] []) = do
+    go v@(VCompute (VMSwitch cases def) [] [x]) = do
+        cases' <- forM cases $ \(_n, m) -> runAction m
+        def' <- mapM runAction def
+        genMux x (cases' ++ maybeToList def')
+    go v@(VCompute (VMMatch cases) [] []) = do
         cases' <- forM cases $ \(n, m) -> do
             v <- runAction m
             return (n, v)
