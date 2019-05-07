@@ -89,6 +89,14 @@ withModule' x m = withThing' _esCurModule x m
 withRuleName  :: Text -> ExtractM a -> ExtractM a
 withRuleName x m = fst <$> withThing' _esCurRuleName x m
 
+withRuleNameSuffix  :: Text -> ExtractM a -> ExtractM a
+withRuleNameSuffix x m = do
+    old <- use _esCurRuleName
+    _esCurRuleName .= T.takeWhile (/= '/') old <> "/" <> x
+    r <- m
+    _esCurRuleName .= old
+    return r
+
 nextRuleIdx :: ExtractM Int
 nextRuleIdx = do
     idx <- use _esRuleCounter
@@ -339,7 +347,9 @@ data Value =
     -- equivalent to `\xs... -> case (xs...) of <<clauses...>>`.  This keeps
     -- track of how many type arguments the closure expects, like `VClosure`
     -- does.  We also record the result type of the `case`,
-    | VCaseClosure Int Ty Scope [Clause]
+    --
+    -- The first `Int` is the line number, used for monadic `case` expressions.
+    | VCaseClosure Int Int Ty Scope [Clause]
     -- Partial application.  Much easier to have one unified way of handling
     -- partial applications, instead of making every single callable type
     -- handle it separately.
@@ -388,16 +398,18 @@ data Value =
     | VNamed Text Value
     | VMkReg Ty
     | VAddRules [RuleVal]
-    -- Monadic switch.  In a concrete execution, a `VMMatch` computation would
+    -- Monadic switch.  In a concrete execution, a `VMSwitch` computation would
     -- look up the first entry whose `fst` component is equal to the argument
     -- value and run the `snd` component (another computation) of that entry.
-    | VMSwitch [(Value, Value)] (Maybe Value)
+    -- The `Int` is the line number, used to distinguish different `case`
+    -- expressions in rule names.
+    | VMSwitch Int [(Value, Value)] (Maybe Value)
     -- Monadic pattern match.  In a concrete execution, a `VMMatch` computation
     -- would look up the first entry whose `fst` component is `True` and run
     -- the `snd` component (another computation) of that entry.  (The `fst`
     -- component is expected to be the `match_ok` output of a pattern match
     -- node.)
-    | VMMatch [(Value, Value)]
+    | VMMatch Int [(Value, Value)]
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -477,9 +489,9 @@ eval sc (ELet (Def (Id name _ _) ty [Clause ps [] body]) e nid _) = do
     let v = VClosure (length tyVars) ps sc body
     saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) ty cs) e nid _) = do
+eval sc (ELet (Def (Id name l _) ty cs) e nid _) = do
     let (tyVars, _, retTy) = splitFnTy ty
-    let v = VCaseClosure (length tyVars) retTy sc cs
+    let v = VCaseClosure l (length tyVars) retTy sc cs
     saveErrors nid v
     eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
@@ -533,9 +545,9 @@ evalDef name d = case d of
     Def _ ty [Clause ps [] e] ->
         let (tyVars, _, _) = splitFnTy ty in
         return $ VClosure (length tyVars) ps M.empty e
-    Def _ ty cs ->
+    Def (Id _ l _) ty cs ->
         let (tyVars, _, retTy) = splitFnTy ty in
-        return $ VCaseClosure (length tyVars) retTy M.empty cs
+        return $ VCaseClosure l (length tyVars) retTy M.empty cs
 
 evalRule sc (Rule name conds body) = do
     idx <- nextRuleIdx
@@ -591,7 +603,7 @@ appValue f tys vals = do
 -- `tys` and `vals`.
 appExact f tys vals = case f of
     VClosure _ ps sc' body -> appClosure ps vals sc' body
-    VCaseClosure _ ty sc' cs -> appCaseClosure ty vals sc' cs
+    VCaseClosure l _ ty sc' cs -> appCaseClosure l ty vals sc' cs
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
@@ -616,7 +628,7 @@ mkPartApp f tys vals =
     VPartApp f tys vals
 
 isFunc (VClosure _ _ _ _) = True
-isFunc (VCaseClosure _ _ _ _) = True
+isFunc (VCaseClosure _ _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
@@ -629,8 +641,8 @@ isFunc _ = False
 -- Returns (0,0) for non-functions.
 countArgs :: Value -> ExtractM (Int, Int)
 countArgs (VClosure numTys ps _ _) = return (numTys, length ps)
-countArgs (VCaseClosure numTys _ _ (Clause ps _ _ : _)) = return (numTys, length ps)
-countArgs v@(VCaseClosure numTys _ _ []) =
+countArgs (VCaseClosure _ numTys _ _ (Clause ps _ _ : _)) = return (numTys, length ps)
+countArgs v@(VCaseClosure _ numTys _ _ []) =
     badEval' ("VCaseClosure has no clauses", v) (numTys, 0)
 countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
@@ -647,7 +659,7 @@ appClosure ps vs sc body = do
     sc' <- bindPats (zip ps vs) sc
     eval sc' body
 
-appCaseClosure :: Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
+appCaseClosure :: Int -> Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
 -- Try first to parse this pattern match as a BSV `case` expression.  This
 -- shows up as a pattern match of the form
 --
@@ -656,7 +668,7 @@ appCaseClosure :: Ty -> [Value] -> Scope -> [Clause] -> ExtractM Value
 --          _ | x == 2 -> ...
 --          _ | x == 3 || x == 4 -> ...
 --          _ -> ...    -- default case
-appCaseClosure ty [_] sc cs
+appCaseClosure line ty [_] sc cs
   | (cs', defC) <- takeDefaultClause cs
   , Just (as, bs, bodies) <- unzip3 <$> mapM parseClause cs'
   , Just (var, consts) <- checkShape as bs <|> checkShape bs as
@@ -668,7 +680,7 @@ appCaseClosure ty [_] sc cs
         return (constVal, result)
     defVal <- mapM (eval sc) defC
     if isComputationType ty then
-        return $ VCompute (VMSwitch cases defVal) [] [val]
+        return $ VCompute (VMSwitch line cases defVal) [] [val]
     else
         genMux val (map snd cases ++ maybeToList defVal)
   where
@@ -706,13 +718,13 @@ appCaseClosure ty [_] sc cs
       , all (== n) ns
       , all isConst cs = Just (v, cs)
     checkShape _ _ = Nothing
-appCaseClosure ty vs sc cs = do
+appCaseClosure line ty vs sc cs = do
     cases <- forM cs $ \(Clause ps gs body) -> do
         (good, sc') <- genPatternMatch sc vs ps gs
         v <- eval sc' body
         return (good, v)
     if isComputationType ty then
-        return $ VCompute (VMMatch cases) [] []
+        return $ VCompute (VMMatch line cases) [] []
     else
         genPriorityMux cases
 
@@ -747,7 +759,7 @@ countArgsPrim p = case p of
     PUnOp _ -> (0, 1)
     PBinOp _ -> (0, 2)
     PSetName _ -> (0, 1)
-    PIf -> (1, 3)
+    PIf _ -> (1, 3)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
@@ -769,9 +781,9 @@ appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
 appPrim (PResize _) [_] [v] = return v
 -- Non-monadic `if` generates a mux.  Monadic `if` is left intact to be handled
 -- by the monad evaluator.
-appPrim PIf [ty] [c, t, e] =
+appPrim (PIf line) [ty] [c, t, e] =
     if isComputationType ty then
-        return $ VCompute (VPrim PIf) [ty] [c, t, e]
+        return $ VCompute (VPrim $ PIf line) [ty] [c, t, e]
     else
         genMux c [t, e]
 appPrim (PSetName name) [] [c] = return $ VNamed name c
@@ -1236,18 +1248,21 @@ handleAction c = go c
             else (:[]) <$> asNet VConst     -- Token value
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
-    go v@(VCompute (VPrim PIf) [_ty] [c, t, e]) = do
-        val1 <- runAction e
-        val2 <- runAction t
+    go v@(VCompute (VPrim (PIf line)) [_ty] [c, t, e]) = do
+        val1 <- withRuleNameSuffix ("i" <> T.pack (show line) <> "-t") $ runAction t
+        val2 <- withRuleNameSuffix ("i" <> T.pack (show line) <> "-e") $ runAction e
         genMux c [val1, val2]
-    go v@(VCompute (VMSwitch cases def) [] [x]) = do
-        cases' <- forM cases $ \(_n, m) -> runAction m
+    go v@(VCompute (VMSwitch line cases def) [] [x]) = do
+        cases' <- forM (zip [0..] cases) $ \(i, (_n, m)) ->
+            withRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $
+                runAction m
         def' <- mapM runAction def
         genMux x (cases' ++ maybeToList def')
-    go v@(VCompute (VMMatch cases) [] []) = do
-        cases' <- forM cases $ \(n, m) -> do
-            v <- runAction m
-            return (n, v)
+    go v@(VCompute (VMMatch line cases) [] []) = do
+        cases' <- forM (zip [0..] cases) $ \(i, (n, m)) ->
+            withRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $ do
+                v <- runAction m
+                return (n, v)
         genPriorityMux cases'
     go c = badEval ("unsupported Action computation", c)
 

@@ -105,7 +105,9 @@ data Prim =
     | PUnOp Text
     | PBinOp Text
     | PResize Text  -- Takes a `TNat` parameter to indicate output width
-    | PIf           -- forall a. Bool -> a -> a -> a
+    -- forall a. Bool -> a -> a -> a
+    -- The `Int` is the line number, used for rule names of monadic `if`s.
+    | PIf Int
     | PSetName Text -- Module a -> Module a
     deriving (Show, Data, Typeable, Generic, NFData)
 

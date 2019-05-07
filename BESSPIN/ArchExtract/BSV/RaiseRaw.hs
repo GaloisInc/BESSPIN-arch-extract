@@ -128,8 +128,8 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Prelude.primExtract" _ _))
             [_tIdx, _tIn, _tArr, _tOut] [_dct, _pos, e, hi, lo]) =
         EApp (EPrim PSlice) [] [e, hi, lo]
-    goExpr (EApp (EVar (Id "Prelude._if" _ _)) [ty] [c, t, e]) =
-        EApp (EPrim PIf) [ty] [c, t, e]
+    goExpr (EApp (EVar (Id "Prelude._if" l _)) [ty] [c, t, e]) =
+        EApp (EPrim $ PIf l) [ty] [c, t, e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._read" _ _)) [_] [e]) =
         EApp (EPrim PRegRead) [] [e]
     goExpr (EApp (EStatic (Id "Prelude.Reg" _ _) (Id "Prelude._write" _ _)) [_] [l, r]) =
