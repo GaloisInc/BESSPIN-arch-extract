@@ -787,21 +787,123 @@ genCombLogic' lk name inps = do
         ()
     return out
 
+-- Helper function for muxing VStructs.  If all the `vs` have parallel
+-- structure (they are `VStruct`s with identical sets of fields), then it
+-- flattens them out: `[{x: a, y: b}, {x: c, y: d}] -> [[a,c], [b,d]]`.  The
+-- second return values is a function to repack a list of values into the
+-- original `VStruct` structure: `repack [ac, bd] -> {x: ac, y: bd}`.  Given
+-- the result `(flatVals, repack)`, the list passed to `repack` should have the
+-- same length as `flatVals`.
+--
+-- The intended use case is a mux function, which should flatten its `VStruct`
+-- inputs into individual fields, mux together all the `x` field values, mux
+-- together all the `y` field values, and finally pack the `x` and `y` results
+-- back into a single `VStruct`.
+muxStructs :: [Value] -> ([(Text, [Value])], [Value] -> Value)
+-- Arbitrarily declare that the result of muxing 0 values is unit.
+muxStructs [] = ([], \_ -> VConst)
+muxStructs vs =
+    let (flatVals, repackM) = muxStructs' Nothing vs in
+    ( flatVals
+    , \vs' -> case runState repackM vs' of
+        (v, []) -> v
+        (_, rest) -> error "muxStructs: too many values for repack"
+    )
+
+-- The signature here is slightly different because in recursive calls,
+-- `repack` needs to report to the caller how many values it consumed.
+muxStructs' :: Maybe Text -> [Value] -> ([(Text, [Value])], State [Value] Value)
+muxStructs' name vs
+  | Just ks <- commonKeys vs =
+    let (flatVals, repackKvs) = go $ toList ks in
+    (flatVals, VStruct (structType $ head vs) <$> repackKvs)
+  | otherwise =
+    ( [(fromMaybe "val" name, vs)]
+    , state $ \vs -> case vs of
+        v : rest -> (v, rest)
+        _ -> error "muxStructs: not enough values for repack"
+    )
+
+  where
+    valKeys (VStruct _ kvs) = Just $ M.keysSet kvs
+    valKeys _ = Nothing
+
+    commonKeys :: [Value] -> Maybe (Set Text)
+    commonKeys [] = Nothing
+    commonKeys (v : vs) = do
+        ks <- valKeys v
+        forM_ vs $ \v -> do
+            ks' <- valKeys v
+            guard $ ks' == ks
+        return ks
+
+    structType (VStruct ty _) = ty
+    structType _ = error $ "structType: not a struct"
+
+    getField k (VStruct _ kvs) =
+        fromMaybe (error $ "getField: no such key " ++ show k) $ M.lookup k kvs
+    getField _ _ = error $ "getField: not a struct"
+
+    go :: [Text] -> ([(Text, [Value])], State [Value] (Map Text Value))
+    go [] =
+        ( []
+        , return M.empty
+        )
+
+    go (k : ks) =
+        let subName = maybe k (<> "." <> k) name in
+        let (flatVals0, repack0) = muxStructs' (Just subName) (map (getField k) vs) in
+        let (flatVals, repackKvs) = go ks in
+        ( flatVals0 ++ flatVals
+        , do
+            v <- repack0
+            m <- repackKvs
+            return (M.insert k v m)
+        )
+
 genMux :: Value -> [Value] -> ExtractM Value
 genMux sel vs = do
+    let (flatVals, repack) = muxStructs vs
+    let names = map fst flatVals
+    let inpValLists = transpose $ map snd flatVals
+
     selNet <- asNet sel
-    vNets <- mapM asNet vs
-    let lk = A.LkMux (S.singleton "val") (length vNets)
-    VNet <$> genCombLogic' lk "choice" (S.fromList $ selNet : vNets)
+    inpNets <- liftM concat $ forM inpValLists $ \inpVals ->
+        mapM asNet inpVals
+    let nets = selNet : inpNets
+
+    outNets <- forM names $ \name ->
+        addNet $ A.Net name 0 S.empty S.empty A.TUnknown ()
+
+    addLogic $ A.Logic (A.LkMux (S.fromList names) (length vs))
+        (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList nets)
+        (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList outNets)
+        ()
+
+    return $ repack $ map VNet outNets
+
 
 genPriorityMux :: [(Value, Value)] -> ExtractM Value
 genPriorityMux cases = do
-    nets <- concat <$> mapM (\(sel, val) -> do
-        selNet <- asNet sel
-        valNet <- asNet val
-        return [selNet, valNet]) cases
-    let lk = A.LkPriorityMux (S.singleton "val") (length cases)
-    VNet <$> genCombLogic' lk "choice" (S.fromList nets)
+    let selVals = map fst cases
+    let (flatVals, repack) = muxStructs $ map snd cases
+    let names = map fst flatVals
+    let inpValLists = transpose $ map snd flatVals
+
+    nets <- liftM concat $ forM (zip selVals inpValLists) $ \(selVal, inpVals) -> do
+        selNet <- asNet selVal
+        inpNets <- mapM asNet inpVals
+        return $ selNet : inpNets
+
+    outNets <- forM names $ \name ->
+        addNet $ A.Net name 0 S.empty S.empty A.TUnknown ()
+
+    addLogic $ A.Logic (A.LkPriorityMux (S.fromList names) (length cases))
+        (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList nets)
+        (fmap (\n -> A.Pin n A.TUnknown) $ S.fromList outNets)
+        ()
+
+    return $ repack $ map VNet outNets
 
 -- Match values `vs` against patterns `ps` and check guards `gs`.  This
 -- generates a new combinational logic node representing the match operation,
