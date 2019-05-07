@@ -749,6 +749,7 @@ collectNets vs = go vs
 asNet :: Value -> ExtractM A.NetId
 asNet (VNet n) = return n
 asNet VConst = addNet $ A.mkNet "const" (-1) A.TUnknown
+asNet v | isThunk v = force v >>= asNet
 asNet v = do
     badEval_ ("expected a net or const", v)
     asNet VConst
@@ -765,13 +766,15 @@ combineNets ns = do
     return n'
 
 combineValues :: [Value] -> ExtractM Value
-combineValues vs
-  | Just inps <- collectNets vs = case toList inps of
-    [] -> return VConst
-    [n] -> return $ VNet n
-    ns -> VNet <$> combineNets ns
-  | otherwise =
-    badEval ("expected only nets and consts", vs)
+combineValues vs = mapM force vs >>= go
+  where
+    go vs
+      | Just inps <- collectNets vs = case toList inps of
+        [] -> return VConst
+        [n] -> return $ VNet n
+        ns -> VNet <$> combineNets ns
+      | otherwise =
+        badEval ("expected only nets and consts", vs)
 
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
