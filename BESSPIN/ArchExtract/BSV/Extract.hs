@@ -1154,15 +1154,10 @@ handleModule c = go Nothing c
         buildModule name modId ifc
     go _ (VAddRules rs) = do
         forM_ rs $ \(RuleVal name conds body) -> do
-            condNets <- mapM asNet conds
-            condNet' <- combineNets condNets
-            addLogic $ A.Logic
-                (A.LkRuleEnable name)
-                (S.singleton $ A.Pin condNet' A.TUnknown)
-                S.empty
-                ()
-
-            withRuleName name $ runAction body
+            cond <- combineValues conds
+            withRuleName name $ do
+                genRuleEnable cond
+                runAction body
         return VConst   -- returns unit
     go _ c = badEval ("unsupported Module computation", c)
 
@@ -1245,6 +1240,17 @@ mkNetAlias' a b = do
     b' <- netPin b
     return $ A.mkNetAlias a' b'
 
+genRuleEnable :: Value -> ExtractM ()
+genRuleEnable VConst = return ()
+genRuleEnable v = do
+    net <- asNet v
+    name <- use _esCurRuleName
+    void $ addLogic $ A.Logic
+        (A.LkRuleEnable name)
+        (S.singleton $ A.Pin net A.TUnknown)
+        S.empty
+        ()
+
 handleAction :: Value -> ExtractM Value
 handleAction c = go c
   where
@@ -1270,10 +1276,12 @@ handleAction c = go c
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
     go (VCompute (VPrim (PIf line)) [_ty] [c, t, e]) = do
+        withTempRuleNameSuffix ("i" <> T.pack (show line)) $ genRuleEnable c
         val1 <- withTempRuleNameSuffix ("i" <> T.pack (show line) <> "-t") $ runAction t
         val2 <- withTempRuleNameSuffix ("i" <> T.pack (show line) <> "-e") $ runAction e
         genMux c [val1, val2]
     go (VCompute (VMSwitch line cases def) [] [x]) = do
+        withTempRuleNameSuffix ("c" <> T.pack (show line)) $ genRuleEnable x
         cases' <- forM (zip [0..] cases) $ \(i, (_n, m)) ->
             withTempRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $
                 runAction m
@@ -1282,6 +1290,7 @@ handleAction c = go c
     go (VCompute (VMMatch line cases) [] []) = do
         cases' <- forM (zip [0..] cases) $ \(i, (n, m)) ->
             withTempRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $ do
+                genRuleEnable n
                 v <- runAction m
                 return (n, v)
         genPriorityMux cases'
