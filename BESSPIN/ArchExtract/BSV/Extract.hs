@@ -43,6 +43,8 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esCurRuleName :: Text
+    -- Current rule name, minus any temporary suffixes.
+    , esRuleBaseName :: Text
     , esRuleCounter :: Int
     , esStructs :: Map Text Struct
     , esDefs :: Map Text Def
@@ -87,12 +89,24 @@ withModule' :: A.Module () -> ExtractM a -> ExtractM (a, A.Module ())
 withModule' x m = withThing' _esCurModule x m
 
 withRuleName  :: Text -> ExtractM a -> ExtractM a
-withRuleName x m = fst <$> withThing' _esCurRuleName x m
+withRuleName x m = do
+    old <- _esCurRuleName <<.= x
+    oldBase <- _esRuleBaseName <<.= x
+    r <- m
+    _esCurRuleName .= old
+    _esRuleBaseName .= oldBase
+    return r
 
 withRuleNameSuffix  :: Text -> ExtractM a -> ExtractM a
 withRuleNameSuffix x m = do
+    base <- use _esRuleBaseName
+    withRuleName (base <> "/" <> x) m
+
+withTempRuleNameSuffix  :: Text -> ExtractM a -> ExtractM a
+withTempRuleNameSuffix x m = do
     old <- use _esCurRuleName
-    _esCurRuleName .= T.takeWhile (/= '/') old <> "/" <> x
+    base <- use _esRuleBaseName
+    _esCurRuleName .= base <> "/" <> x
     r <- m
     _esCurRuleName .= old
     return r
@@ -266,6 +280,9 @@ extractDesign' cfg ps =
         ExtractState
         { esCurModule = error "no current module"
         , esCurRuleName =
+            badCall' "ran Action not in any rule" $
+            "[[error: no rule]]"
+        , esRuleBaseName =
             badCall' "ran Action not in any rule" $
             "[[error: no rule]]"
         , esRuleCounter = 0
@@ -759,6 +776,7 @@ countArgsPrim p = case p of
     PUnOp _ -> (0, 1)
     PBinOp _ -> (0, 2)
     PSetName _ -> (0, 1)
+    PSetRuleName _ -> (0, 1)
     PIf _ -> (1, 3)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
@@ -787,6 +805,8 @@ appPrim (PIf line) [ty] [c, t, e] =
     else
         genMux c [t, e]
 appPrim (PSetName name) [] [c] = return $ VNamed name c
+appPrim (PSetRuleName name) [] [c] =
+    return $ VCompute (VPrim $ PSetRuleName name) [] [c]
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 
@@ -1248,22 +1268,24 @@ handleAction c = go c
             else (:[]) <$> asNet VConst     -- Token value
         accessRuleMux muxIdx argNets
         return $ maybe VConst VNet optOutNet
-    go v@(VCompute (VPrim (PIf line)) [_ty] [c, t, e]) = do
-        val1 <- withRuleNameSuffix ("i" <> T.pack (show line) <> "-t") $ runAction t
-        val2 <- withRuleNameSuffix ("i" <> T.pack (show line) <> "-e") $ runAction e
+    go (VCompute (VPrim (PIf line)) [_ty] [c, t, e]) = do
+        val1 <- withTempRuleNameSuffix ("i" <> T.pack (show line) <> "-t") $ runAction t
+        val2 <- withTempRuleNameSuffix ("i" <> T.pack (show line) <> "-e") $ runAction e
         genMux c [val1, val2]
-    go v@(VCompute (VMSwitch line cases def) [] [x]) = do
+    go (VCompute (VMSwitch line cases def) [] [x]) = do
         cases' <- forM (zip [0..] cases) $ \(i, (_n, m)) ->
-            withRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $
+            withTempRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $
                 runAction m
         def' <- mapM runAction def
         genMux x (cases' ++ maybeToList def')
-    go v@(VCompute (VMMatch line cases) [] []) = do
+    go (VCompute (VMMatch line cases) [] []) = do
         cases' <- forM (zip [0..] cases) $ \(i, (n, m)) ->
-            withRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $ do
+            withTempRuleNameSuffix ("c" <> T.pack (show line) <> "-" <> T.pack (show i)) $ do
                 v <- runAction m
                 return (n, v)
         genPriorityMux cases'
+    go (VCompute (VPrim (PSetRuleName name)) [] [m]) = do
+        withRuleNameSuffix name $ runAction m
     go c = badEval ("unsupported Action computation", c)
 
 

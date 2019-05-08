@@ -109,6 +109,7 @@ data Prim =
     -- The `Int` is the line number, used for rule names of monadic `if`s.
     | PIf Int
     | PSetName Text -- Module a -> Module a
+    | PSetRuleName Text -- Action a -> Action a
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data RawRule =
