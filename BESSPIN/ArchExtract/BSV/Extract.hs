@@ -42,6 +42,7 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV
 
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
+    -- Current rule name.  Only available while running Action computations.
     , esCurRuleName :: Text
     -- Current rule name, minus any temporary suffixes.
     , esRuleBaseName :: Text
@@ -1285,7 +1286,15 @@ handleAction c = go c
                 return (n, v)
         genPriorityMux cases'
     go (VCompute (VPrim (PSetRuleName name)) [] [m]) = do
-        withRuleNameSuffix name $ runAction m
+        let baseName = T.takeWhileEnd (/= '.') name
+        let wrap = case baseName of
+                "" -> id
+                -- `case` expressions generate a helper function named `_case`,
+                -- which should be hidden in rule names (we add our own custom
+                -- name suffix instead).
+                "_case" -> id
+                _ -> withRuleNameSuffix baseName
+        wrap $ runAction m
     go c = badEval ("unsupported Action computation", c)
 
 

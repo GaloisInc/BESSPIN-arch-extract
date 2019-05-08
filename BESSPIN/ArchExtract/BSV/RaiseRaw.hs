@@ -28,6 +28,7 @@ import Debug.Trace
 -- other parts of the AST, but functionality may be limited.
 raiseRaw :: Data a => a -> a
 raiseRaw x =
+    recordActionDefNames $
     convertTypeclassAccessors $
     postSimplify $
     --removeTcDicts $
@@ -334,6 +335,65 @@ convertTypedefs x = everywhere (mkT go) x
 
     go (TCon i) | Just def <- M.lookup (idName i) tdMap = TAlias i def
     go t = t
+
+
+data RADNCtx = RADNCtx
+    { radnCtxName :: [Text]
+    , radnCtxNumArgs :: Int
+    , radnCtxReturnType :: Maybe Ty     -- nothing = unknown
+    }
+    deriving (Show)
+
+-- For any `Def` (including in `ELet`) that produces a `TAction` computation,
+-- wrap the computation body in a call to `PSetRuleName defName`, where
+-- `defName` is the name of the enclosing def.  This lets the evaluator record
+-- more information about the origins of method invocations.
+recordActionDefNames :: Data a => a -> a
+recordActionDefNames x = go initCtx x
+  where
+    go :: Data a => RADNCtx -> a -> a
+    go ctx x = goDefault ctx `extT` goDef ctx `extT` goClause ctx `extT` goExpr ctx $ x
+
+    goDefault ctx x = gmapT (go ctx) x
+
+    goDef ctx (Def i@(Id name _ _) ty cs) =
+        Def i ty (map (goClause ctx') cs)
+      where
+        (_, argTys, retTy) = splitFnTy ty
+        ctx' = RADNCtx
+            { radnCtxName = name : radnCtxName ctx
+            , radnCtxNumArgs = length argTys
+            , radnCtxReturnType = Just retTy
+            }
+
+    goClause ctx (Clause ps gs body) =
+        Clause ps gs (goExpr ctx' body)
+      where
+        ctx' = dropArgs (length ps) ctx
+
+    goExpr ctx (ELam ps body) =
+        ELam ps (goExpr ctx' body)
+      where
+        ctx' = dropArgs (length ps) ctx
+    goExpr ctx e
+      | radnCtxNumArgs ctx == 0
+      , Just (TAction _) <- radnCtxReturnType ctx
+      = EApp (EPrim $ PSetRuleName name) [] [goDefault (clearArgs ctx) e]
+      | otherwise = goDefault ctx e
+      where
+        name = T.intercalate "." $ reverse $ radnCtxName ctx
+
+    initCtx = RADNCtx [] 0 Nothing
+
+    dropArgs n ctx
+      | n <= radnCtxNumArgs ctx = ctx
+        { radnCtxNumArgs = radnCtxNumArgs ctx - n }
+      | otherwise = clearArgs ctx
+
+    clearArgs ctx = ctx
+        { radnCtxNumArgs = 0
+        , radnCtxReturnType = Nothing
+        }
 
 
 lastMaybe [] = Nothing
