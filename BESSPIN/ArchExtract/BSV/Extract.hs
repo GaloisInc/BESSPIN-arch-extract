@@ -40,6 +40,122 @@ import BESSPIN.ArchExtract.Simplify (reconnectNets)
 TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Extract"
 
 
+-- Run-time values for our BSV interpreter.  Different kinds of values are
+-- represented more or less abstractly.  For example, `VNet` is abstract: we
+-- don't track concrete run-time values, but rather the IDs of architecture
+-- nets that would contain the values (if we ever ran the architecture).
+-- `VPrim` is concrete: it represents a single known primitive operation.
+data Value =
+    -- Run-time values are carried on nets.  Evaluating `ERegRead r` produces a
+    -- `VNet` referencing `r`'s output (`Q`) net, while evaluating `a & b`
+    -- generates a `Logic` and returns its output net.
+      VNet A.NetId
+    -- Compile-time constants, such as integer literals.  These can be used
+    -- anywhere in place of a `VNet`.
+    | VConst
+
+    -- Delayed access to a global definition.  If a global refers to itself,
+    -- the recursive reference evaluates to one of these.
+    | VThunkGlobal Text
+    -- Delayed function application.  Constructed by `appValue` when at least
+    -- one input is a thunk.  The `Int` is an ID used to cache the result, so
+    -- we don't repeat evaluation if the thunk is forced multiple times.
+    | VThunk Int Value [Ty] [Value]
+
+    -- Function-like values.  Closures keep track of how many type arguments
+    -- they expect, but we don't have a way to pass types in at the moment, so
+    -- they just get dropped at application time instead.
+    | VClosure Int [Pat] Scope Expr
+    -- "Case closures", for handling multi-clause `ELet`s and `Def`s.  Roughly
+    -- equivalent to `\xs... -> case (xs...) of <<clauses...>>`.  This keeps
+    -- track of how many type arguments the closure expects, like `VClosure`
+    -- does.  We also record the result type of the `case`,
+    --
+    -- The first `Int` is the line number, used for monadic `case` expressions.
+    | VCaseClosure Int Int Ty Scope [Clause]
+    -- Partial application.  Much easier to have one unified way of handling
+    -- partial applications, instead of making every single callable type
+    -- handle it separately.
+    | VPartApp Value [Ty] [Value]
+    | VPrim Prim
+
+    -- First arg is the index of the register's associated `LkRuleMux` in
+    -- `moduleLogics`.  Second arg is the ID of its output net.
+    | VDff Int A.NetId
+
+    | VModuleCtor A.ModId (Int, Int) IfcSpec
+    | VMethod
+        (Int, Int)      -- number of type and value arguments
+        Bool            -- rule mux has an extra `token`/`_go` input
+        -- NB: The token (if present) is not included in the previous argument
+        -- count field.
+        Int             -- logic ID of the rule mux for the method's inputs
+        (Maybe A.NetId) -- the output net, if any
+    -- Combinational method.  Similar to `VMethod`, except combinational
+    -- methods don't have rule muxes on their inputs.  Args: LkInst index,
+    -- index of the first input port, index of the output port.
+    | VCombMethod
+        (Int, Int)      -- number of type and value arguments
+        (Seq A.NetId)   -- input nets
+        A.NetId         -- output net
+
+    -- Structs are used to represent whole modules: a module definition in the
+    -- source turns into a monadic computation returning a struct.
+    | VStruct Ty (Map Text Value)
+    -- Struct field accessor function.  We store only the field name
+    -- (unqualified), to match the keys in `VStruct`.  The Int is the number of
+    -- type arguments the accessor expects.
+    | VFieldAcc Text Int
+
+    -- Monadic computations.  These are processed by `runModule` and
+    -- `runAction`.
+    | VReturn Value
+    | VBind Value Value Int
+    -- Generic wrapper for monadic computations, represented as a function
+    -- (whose final return type is `m a`) applied to type and value arguments.
+    -- This lets us avoid having separate representations of, say, module
+    -- constructors and the computations that they produce.
+    | VCompute Value [Ty] [Value]
+    -- Module monad primitives.  These are for special cases that don't fit
+    -- into `VCompute`.
+    | VNamed Text Value
+    | VMkReg Ty
+    | VAddRules [RuleVal]
+    -- Monadic switch.  In a concrete execution, a `VMSwitch` computation would
+    -- look up the first entry whose `fst` component is equal to the argument
+    -- value and run the `snd` component (another computation) of that entry.
+    -- The `Int` is the line number, used to distinguish different `case`
+    -- expressions in rule names.
+    | VMSwitch Int [(Value, Value)] (Maybe Value)
+    -- Monadic pattern match.  In a concrete execution, a `VMMatch` computation
+    -- would look up the first entry whose `fst` component is `True` and run
+    -- the `snd` component (another computation) of that entry.  (The `fst`
+    -- component is expected to be the `match_ok` output of a pattern match
+    -- node.)
+    | VMMatch Int [(Value, Value)]
+    -- Action monad primitives.
+    -- First arg is the index of the target register's rule mux; second arg is
+    -- the value to write.  The effect of the write is to connect the value's
+    -- output net to a fresh input of the rule mux for the current rule.
+    | VRegWrite Int Value
+    -- TODO: method call
+
+    -- Produced by ETcDict, and matched by VTcDict.  Should be unused
+    -- otherwise.
+    | VTcDict
+    | VUnknown
+    deriving (Show)
+
+isThunk (VThunkGlobal _) = True
+isThunk (VThunk _ _ _ _) = True
+isThunk _ = False
+
+data RuleVal = RuleVal Text [Value] Value
+    deriving (Show)
+
+type Scope = Map Text Value
+
+
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     -- Current rule name.  Only available while running Action computations.
@@ -55,8 +171,12 @@ data ExtractState = ExtractState
     , esErrors :: Seq Text
     , esNodeErrors :: Map Int (Seq Text)
     , esModuleErrors :: Seq Text
+    -- ID to assign to the next VThunk.
+    , esNextThunkId :: Int
+    -- Results of previous `force` operations.  This avoids redoing work when a
+    -- thunk is used in multiple places.
+    , esThunkResults :: Map Int Value
     }
-    deriving (Generic, NFData)
 
 makeLenses' ''ExtractState
 
@@ -143,6 +263,9 @@ takeModuleErrors = do
     errs <- use _esModuleErrors
     _esModuleErrors .= S.empty
     return errs
+
+nextThunkId :: ExtractM Int
+nextThunkId = _esNextThunkId <<%= (+1)
 
 
 -- The Bool is True if this module came from a library package.
@@ -298,6 +421,8 @@ extractDesign' cfg ps =
         , esErrors = S.empty
         , esNodeErrors = M.empty
         , esModuleErrors = S.empty
+        , esNextThunkId = 0
+        , esThunkResults = M.empty
         }
     (extractedMods, finalState) =
         seq initState $
@@ -339,116 +464,6 @@ extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
     return $
         reconnectNets $
         m
-
-
-data Value =
-    -- Run-time values are carried on nets.  Evaluating `ERegRead r` produces a
-    -- `VNet` referencing `r`'s output (`Q`) net, while evaluating `a & b`
-    -- generates a `Logic` and returns its output net.
-      VNet A.NetId
-    -- Compile-time constants, such as integer literals.  These can be used
-    -- anywhere in place of a `VNet`.
-    | VConst
-
-    -- Delayed access to a global definition.  If a global refers to itself,
-    -- the recursive reference evaluates to one of these.
-    | VThunkGlobal Text
-    -- Delayed function application.  Constructed by `appValue` when at least
-    -- one input is a thunk.
-    | VThunk Value [Ty] [Value]
-
-    -- Function-like values.  Closures keep track of how many type arguments
-    -- they expect, but we don't have a way to pass types in at the moment, so
-    -- they just get dropped at application time instead.
-    | VClosure Int [Pat] Scope Expr
-    -- "Case closures", for handling multi-clause `ELet`s and `Def`s.  Roughly
-    -- equivalent to `\xs... -> case (xs...) of <<clauses...>>`.  This keeps
-    -- track of how many type arguments the closure expects, like `VClosure`
-    -- does.  We also record the result type of the `case`,
-    --
-    -- The first `Int` is the line number, used for monadic `case` expressions.
-    | VCaseClosure Int Int Ty Scope [Clause]
-    -- Partial application.  Much easier to have one unified way of handling
-    -- partial applications, instead of making every single callable type
-    -- handle it separately.
-    | VPartApp Value [Ty] [Value]
-    | VPrim Prim
-
-    -- First arg is the index of the register's associated `LkRuleMux` in
-    -- `moduleLogics`.  Second arg is the ID of its output net.
-    | VDff Int A.NetId
-
-    | VModuleCtor A.ModId (Int, Int) IfcSpec
-    | VMethod
-        (Int, Int)      -- number of type and value arguments
-        Bool            -- rule mux has an extra `token`/`_go` input
-        -- NB: The token (if present) is not included in the previous argument
-        -- count field.
-        Int             -- logic ID of the rule mux for the method's inputs
-        (Maybe A.NetId) -- the output net, if any
-    -- Combinational method.  Similar to `VMethod`, except combinational
-    -- methods don't have rule muxes on their inputs.  Args: LkInst index,
-    -- index of the first input port, index of the output port.
-    | VCombMethod
-        (Int, Int)      -- number of type and value arguments
-        (Seq A.NetId)   -- input nets
-        A.NetId         -- output net
-
-    -- Structs are used to represent whole modules: a module definition in the
-    -- source turns into a monadic computation returning a struct.
-    | VStruct Ty (Map Text Value)
-    -- Struct field accessor function.  We store only the field name
-    -- (unqualified), to match the keys in `VStruct`.  The Int is the number of
-    -- type arguments the accessor expects.
-    | VFieldAcc Text Int
-
-    -- Monadic computations.  These are processed by `runModule` and
-    -- `runAction`.
-    | VReturn Value
-    | VBind Value Value Int
-    -- Generic wrapper for monadic computations, represented as a function
-    -- (whose final return type is `m a`) applied to type and value arguments.
-    -- This lets us avoid having separate representations of, say, module
-    -- constructors and the computations that they produce.
-    | VCompute Value [Ty] [Value]
-    -- Module monad primitives.  These are for special cases that don't fit
-    -- into `VCompute`.
-    | VNamed Text Value
-    | VMkReg Ty
-    | VAddRules [RuleVal]
-    -- Monadic switch.  In a concrete execution, a `VMSwitch` computation would
-    -- look up the first entry whose `fst` component is equal to the argument
-    -- value and run the `snd` component (another computation) of that entry.
-    -- The `Int` is the line number, used to distinguish different `case`
-    -- expressions in rule names.
-    | VMSwitch Int [(Value, Value)] (Maybe Value)
-    -- Monadic pattern match.  In a concrete execution, a `VMMatch` computation
-    -- would look up the first entry whose `fst` component is `True` and run
-    -- the `snd` component (another computation) of that entry.  (The `fst`
-    -- component is expected to be the `match_ok` output of a pattern match
-    -- node.)
-    | VMMatch Int [(Value, Value)]
-    -- Action monad primitives.
-    -- First arg is the index of the target register's rule mux; second arg is
-    -- the value to write.  The effect of the write is to connect the value's
-    -- output net to a fresh input of the rule mux for the current rule.
-    | VRegWrite Int Value
-    -- TODO: method call
-
-    -- Produced by ETcDict, and matched by VTcDict.  Should be unused
-    -- otherwise.
-    | VTcDict
-    | VUnknown
-    deriving (Show)
-
-isThunk (VThunkGlobal _) = True
-isThunk (VThunk _ _ _) = True
-isThunk _ = False
-
-data RuleVal = RuleVal Text [Value] Value
-    deriving (Show)
-
-type Scope = Map Text Value
 
 badEval :: Show a => a -> ExtractM Value
 badEval msg = badEval' msg VUnknown
@@ -579,8 +594,9 @@ evalRule sc (Rule name conds body) = do
 
 -- Apply a value to (type and value) arguments.
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
-appValue f tys vals | isThunk f || any isThunk vals =
-    return $ VThunk f tys vals
+appValue f tys vals | isThunk f || any isThunk vals = do
+    thunkId <- nextThunkId
+    return $ VThunk thunkId f tys vals
 -- Should probably investigate *why* we're seeing `EApp`s with no arguments,
 -- but it's easy enough to ignore for now...
 appValue f [] [] | not $ isFunc f = return f
@@ -820,14 +836,25 @@ appPrim p tys vals =
 
 
 force :: Value -> ExtractM Value
-force v = do
+force v = tryCache v $ do
     traceM $ "BEGIN forcing " ++ show v
     v' <- force' v
     traceM $ "END forcing " ++ show v
     return v'
+  where
+    tryCache :: Value -> ExtractM Value -> ExtractM Value
+    tryCache (VThunk i _ _ _) m = do
+        cached <- use $ _esThunkResults . at i
+        case cached of
+            Just x -> return x
+            Nothing -> do
+                x <- m
+                _esThunkResults %= M.insert i x
+                return x
+    tryCache _ m = m
 
 force' :: Value -> ExtractM Value
-force' (VThunk f ty args) = do
+force' (VThunk _ f ty args) = do
     f <- force f
     args <- mapM force args
     v <- appValue f ty args
