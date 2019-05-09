@@ -263,12 +263,12 @@ reconstructAllLets :: Data a => a -> a
 reconstructAllLets x = everywhere (mkT go) x
   where
     go :: Expr -> Expr
-    go (ELetRec ds body) = reconstructLet ds body
-    go (ELet d body _ _) = reconstructLet [d] body
+    go (ELetRec ds body) = reconstructLet True ds body
+    go (ELet d body _ _) = reconstructLet False [d] body
     go e = e
 
-reconstructLet :: [Def] -> Expr -> Expr
-reconstructLet dsList body =
+reconstructLet :: Bool -> [Def] -> Expr -> Expr
+reconstructLet isRec dsList body =
     -- `tail` skips over the `sccOrder` entry that represents the root/body.
     foldl (flip buildScc) body (tail $ toList sccOrder)
   where
@@ -278,21 +278,43 @@ reconstructLet dsList body =
     idDef :: Map Text Int
     idDef = S.foldMapWithIndex (\idx d -> M.singleton (idName $ defId d) idx) ds
 
-    idsToDefs :: Set Text -> Set Int
-    idsToDefs is = Set.map (\i -> idDef M.! i) $
-        Set.filter (\i -> M.member i idDef) is
+    collectDefs :: Data a => Map Text Int -> a -> Set Int
+    collectDefs sc x = go sc x
+      where
+        go :: Data a => Map Text Int -> a -> Set Int
+        go sc x = goDefault sc `extQ` goExpr sc $ x
 
-    collectIds :: Data a => a -> Set Text
-    collectIds x = everything (<>) (Set.empty `mkQ` go) x
-      where go (Id name _ _) = Set.singleton name
+        goDefault sc x = gmapQl (<>) Set.empty (go sc) x
+
+        goExpr sc (EVar (Id name _ _)) | Just defId <- M.lookup name sc = Set.singleton defId
+        goExpr sc (ELam ps body) = goExpr (dropVars (mconcat $ map patVars ps) sc) body
+        goExpr sc (ELet d body _ _) =
+            -- Defs are visible in the body, but not in the defs themselves.
+            go sc d <>
+            goExpr (dropVars (Set.singleton $ idName $ defId d) sc) body
+        goExpr sc (ELetRec ds body) =
+            -- Defs are visible in both the body and the defs themselves.
+            let sc' = dropVars (Set.fromList $ map (idName . defId) ds) sc in
+            go sc' ds <> goExpr sc' body
+        goExpr sc e = goDefault sc e
+
+        dropVars vs sc = sc M.\\ M.fromSet (const ()) vs
+
+        patVars p = everything (<>) (Set.empty `mkQ` go) p
+          where
+            go (PVar (Id name _ _)) = Set.singleton name
+            go _ = Set.empty
 
     -- For each def, the indices of other defs referenced from this one.
     defEdges :: Seq (Set Int)
-    defEdges = fmap (idsToDefs . collectIds . defClauses) ds
+    defEdges
+      | isRec = fmap (collectDefs idDef . defClauses) ds
+      -- `ELet`'s `Def`s can't refer to each other.
+      | otherwise = fmap (const Set.empty) ds
 
     -- The indices of all defs referenced by the body.
     bodyEdges :: Set Int
-    bodyEdges = idsToDefs $ collectIds body
+    bodyEdges = collectDefs idDef body
 
     -- Strongly-connected components of the def graph, represented as sets
     -- of vertex indices.  The first SCC is empty, representing the body.
