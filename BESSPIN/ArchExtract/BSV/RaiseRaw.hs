@@ -21,7 +21,10 @@ import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.GraphOps
 
-import Debug.Trace
+import Debug.FilterTrace
+import qualified Debug.Trace
+
+TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.RaiseRaw"
 
 
 -- This is generally meant to be used on the full [Package].  It will run on
@@ -29,6 +32,7 @@ import Debug.Trace
 raiseRaw :: Data a => a -> a
 raiseRaw x =
     recordActionDefNames $
+    setUnionCtorArgCounts $
     convertTypeclassAccessors $
     postSimplify $
     --removeTcDicts $
@@ -43,11 +47,12 @@ raiseRaw x =
 prefixNames :: Data a => a -> a
 prefixNames x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i imps ds ss ts) =
+    goPackage (Package i imps ds ss us ts) =
         let pkgName = idName i in
         Package i imps
             (fmap (goDef pkgName) ds)
             (fmap (goStruct pkgName) ss)
+            (fmap (goUnion pkgName) us)
             (fmap (goTypedef pkgName) ts)
 
     goDef pkgName d@(Def { defId = Id name l c })
@@ -57,13 +62,17 @@ prefixNames x = everywhere (mkT goPackage) x
     goStruct pkgName s@(Struct { structId = Id name l c })
       | otherwise = s { structId = Id (pkgName <> "." <> name) l c }
 
+    goUnion pkgName u@(Union { unionId = Id name l c })
+      | otherwise = u { unionId = Id (pkgName <> "." <> name) l c }
+
     goTypedef pkgName t@(Typedef { typedefId = Id name l c })
       | otherwise = t { typedefId = Id (pkgName <> "." <> name) l c }
 
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x
   where
-    goPackage (Package i imps ds ss ts) = Package i imps (S.filter checkDef ds) ss ts
+    goPackage (Package i imps ds ss us ts) =
+        Package i imps (S.filter checkDef ds) ss us ts
     checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
 
 -- At the level where we're operating, typeclass definitions have already been
@@ -394,6 +403,24 @@ recordActionDefNames x = go initCtx x
         { radnCtxNumArgs = 0
         , radnCtxReturnType = Nothing
         }
+
+-- Resolve union constructor references (`PCtor`), and update their arg-count
+-- position with the correct numbers.
+setUnionCtorArgCounts :: Data a => a -> a
+setUnionCtorArgCounts x = everywhere (mkT go) x
+  where
+    unionMap :: Map Text Int
+    unionMap = everything (<>) (M.empty `mkQ` go) x
+      where
+        go u@(Union (Id name _ _) tyArgs vs) = M.singleton name $ length tyArgs
+
+    getNumTys tyName
+      | Just numTys <- M.lookup tyName unionMap = numTys
+      | otherwise = traceShow ("failed to resolve union", tyName) 0
+
+    go (PCtor tyName ctorName _) =
+        PCtor tyName ctorName $ getNumTys (idName tyName)
+    go p = p
 
 
 lastMaybe [] = Nothing

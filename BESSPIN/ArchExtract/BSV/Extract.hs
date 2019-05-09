@@ -758,6 +758,8 @@ bindPat p v sc = case p of
     PTcDict -> case v of
         VTcDict -> return sc
         _ -> badEval' ("passed non-VTcDict", v, "to PTcDict argument", p) sc
+    PCtorPat _ _ _ ->
+        badEval' ("static matching of PCtorPat is NYI", p, v) sc
     PUnknown _ ->
         badEval' ("tried to match", v, "against unknown pattern") sc
 
@@ -779,6 +781,7 @@ countArgsPrim p = case p of
     PSetName _ -> (0, 1)
     PSetRuleName _ -> (0, 1)
     PIf _ -> (1, 3)
+    PCtor _ _ numTys -> (numTys, 1)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
@@ -808,6 +811,10 @@ appPrim (PIf line) [ty] [c, t, e] =
 appPrim (PSetName name) [] [c] = return $ VNamed name c
 appPrim (PSetRuleName name) [] [c] =
     return $ VCompute (VPrim $ PSetRuleName name) [] [c]
+appPrim (PCtor tyId ctorId _) _ [VConst] = return VConst
+appPrim (PCtor tyId ctorId _) _ [x] = do
+    net <- asNet x
+    VNet <$> genCombLogic (S.singleton net)
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 

@@ -54,7 +54,7 @@ getPackages (tag "Packages" -> [List ps]) = mapM getPackage ps
 getPackages x@(tag "Package" -> (_:_)) = (:[]) <$> getPackage x
 getPackages x = bad' "Packages" x $ []
 
-data AnyDefn = AdDef Def | AdStruct Struct | AdTypedef Typedef | AdError
+data AnyDefn = AdDef Def | AdStruct Struct | AdTypedef Typedef | AdUnion Union | AdError
 
 getPackage :: CBOR.Term -> DecodeM Package
 getPackage (tag "Package" -> [i, List imports, List defns]) = do
@@ -63,21 +63,24 @@ getPackage (tag "Package" -> [i, List imports, List defns]) = do
     anys <- mapM getDefnAny defns
     let defs = mapMaybe (\ad -> case ad of AdDef x -> Just x; _ -> Nothing) anys
     let structs = mapMaybe (\ad -> case ad of AdStruct x -> Just x; _ -> Nothing) anys
+    let unions = mapMaybe (\ad -> case ad of AdUnion x -> Just x; _ -> Nothing) anys
     let typedefs = mapMaybe (\ad -> case ad of AdTypedef x -> Just x; _ -> Nothing) anys
     Package
         <$> pure i
         <*> mapM getImportId imports
         <*> pure (S.fromList defs)
         <*> pure (S.fromList structs)
+        <*> pure (S.fromList unions)
         <*> pure (S.fromList typedefs)
 getPackage x = bad' "Package" x $
-    Package (badId "package") [] S.empty S.empty S.empty
+    Package (badId "package") [] S.empty S.empty S.empty S.empty
 
 getDefnAny :: CBOR.Term -> DecodeM AnyDefn
 getDefnAny x@(tag "Defn_Struct" -> (_ : _)) = AdStruct <$> getDefnStruct x
 getDefnAny x@(tag "Defn_Class" -> (_ : _)) = AdStruct <$> getDefnStruct x
 getDefnAny x@(tag "Defn_ValueSign" -> (_ : _)) = AdDef <$> getDefnDef x
 getDefnAny x@(tag "Defn_Type" -> (_ : _)) = AdTypedef <$> getDefnTypedef x
+getDefnAny x@(tag "Defn_Data" -> (_ : _)) = AdUnion <$> getDefnUnion x
 getDefnAny x = bad' "Defn" x AdError
 
 getDefnStruct :: CBOR.Term -> DecodeM Struct
@@ -98,6 +101,21 @@ getDefnStruct x = bad' "Defn_Struct" x (Struct (badId "struct") [] [] False)
 getStructIsIfc :: CBOR.Term -> DecodeM Bool
 getStructIsIfc (tag0 "StructKind_Ifc" -> True) = return True
 getStructIsIfc _ = return False
+
+getDefnUnion :: CBOR.Term -> DecodeM Union
+getDefnUnion (tag "Defn_Data" -> [name, List tyParams, List variants]) =
+    Union
+        <$> getId name
+        <*> mapM getId tyParams
+        <*> mapM getVariant variants
+getDefnUnion x = bad' "Defn_Data" x (Union (badId "union") [] [])
+
+getVariant :: CBOR.Term -> DecodeM Variant
+getVariant (tag "Variant" -> [List (name : _), ty, _tag]) =
+    Variant
+        <$> getId name
+        <*> getTy ty
+getVariant x = bad' "Variant" x (Variant (badId "variant") badTy)
 
 getDefnTypedef :: CBOR.Term -> DecodeM Typedef
 getDefnTypedef (tag "Defn_Type" -> [name, List tyParams, ty]) =
@@ -176,7 +194,9 @@ getExpr (tag "Expr_StructT" -> [ty, List fs]) =
     go (List [f, e]) = (,) <$> getId f <*> getExpr e
     go x = bad' "struct entry" x (Id "<bad-struct-entry>" 0 0, EUnknown CBOR.TNull)
 getExpr (tag "Expr_AnyT" -> [_ty]) = return EUndef
---getExpr x = bad' "Expr" x $ EUnknown x
+getExpr x@(tag "Expr_ConT" -> [tyId, ctorId, List args]) = do
+    ctor <- PCtor <$> getId tyId <*> getId ctorId <*> pure (-1)
+    EApp (EPrim ctor) [] <$> mapM getExpr args
 getExpr x = bad' "Expr" x $ EUnknown (maybe CBOR.TNull CBOR.TString $ getTag x)
 
 getRawRule :: CBOR.Term -> DecodeM RawRule
@@ -196,6 +216,8 @@ getLit x = bad' "Lit" x $ LInt 0
 getPat :: CBOR.Term -> DecodeM Pat
 getPat (tag "Pat_Var" -> [i]) = PVar <$> getId i
 getPat (tag0 "Pat_Any" -> True) = return PWild
+getPat (tag "Pat_ConTs" -> [tyName, ctorName, _, List args]) =
+    PCtorPat <$> getId tyName <*> getId ctorName <*> mapM getPat args
 getPat x = bad' "Pat" x $ PUnknown x
 
 getTy :: CBOR.Term -> DecodeM Ty

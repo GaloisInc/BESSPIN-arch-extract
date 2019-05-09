@@ -25,6 +25,7 @@ data Package = Package
     , packageImports :: [Id]
     , packageDefs :: Seq Def
     , packageStructs :: Seq Struct
+    , packageUnions :: Seq Union
     , packageTypedefs :: Seq Typedef
     }
     deriving (Show, Data, Typeable, Generic, NFData)
@@ -40,6 +41,21 @@ data Struct = Struct
 -- A field that contains a function may have a list of default arg names
 -- associated with it.
 data Field = Field Id Ty (Maybe [Id])
+    deriving (Show, Data, Typeable, Generic, NFData)
+
+data Union = Union
+    { unionId :: Id
+    , unionTyParams :: [Id]
+    , unionVariants :: [Variant]
+    }
+    deriving (Show, Data, Typeable, Generic, NFData)
+
+data Variant = Variant
+    { variantId :: Id
+    -- The type of the variant constructor, as in `Invalid :: () -> Maybe a` or
+    -- `Valid :: a -> Maybe a`.
+    , variantTy :: Ty
+    }
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data Typedef = Typedef
@@ -110,6 +126,8 @@ data Prim =
     | PIf Int
     | PSetName Text -- Module a -> Module a
     | PSetRuleName Text -- Action a -> Action a
+
+    | PCtor Id Id Int   -- type name, ctor name, number of ty args
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data RawRule =
@@ -148,6 +166,8 @@ data Pat =
       PWild
     | PVar Id
     | PTcDict   -- Replacement for elided `_tcdict` `PVar`s
+    -- Avoid name collision with Prim PCtor
+    | PCtorPat Id Id [Pat]
     | PUnknown CBOR.Term
     deriving (Show, Data, Typeable, Generic, NFData)
 
