@@ -86,6 +86,10 @@ data BSV = BSV
     -- packages will have only ports (no internal structures) and will be
     -- marked as `MkExtern`
     , bsvLibraryPackages :: Set Text
+    -- Qualified names of functions to blackbox.  Instead of inlining calls to
+    -- these functions, extraction will represent them as combinational logic
+    -- elements.
+    , bsvBlackboxFunctions :: Set Text
     -- Qualified name (`Pkg.mkFoo`) of the root module of the design.  The
     -- package containing this module is always imported; other packages are
     -- imported only when required due to an `import` statement in the BSV.
@@ -114,6 +118,7 @@ defaultBSV = BSV
     { bsvSrcFiles = []
     , bsvAstDir = Nothing
     , bsvLibraryPackages = Set.empty
+    , bsvBlackboxFunctions = Set.empty
     , bsvRootModule = ""
     , bsvBscFlags = []
     , bsvBscConfigFlags = []
@@ -443,6 +448,7 @@ bsv x = tableFold defaultBSV x
     , ("src-files", \c x -> c { bsvSrcFiles = listOf str x })
     , ("ast-dir", \c x -> c { bsvAstDir = Just $ str x })
     , ("library-packages", \c x -> c { bsvLibraryPackages = setOf str x })
+    , ("blackbox-functions", \c x -> c { bsvBlackboxFunctions = setOf str x })
     , ("root-module", \c x -> c { bsvRootModule = str x })
     , ("bsc-flags", \c x -> c { bsvBscFlags = listOf str x })
     , ("bsc-config-flags", \c x -> c { bsvBscConfigFlags = listOf str x })

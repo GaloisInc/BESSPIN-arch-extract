@@ -79,6 +79,10 @@ data Value =
     | VPartApp Value [Ty] [Value]
     | VPrim Prim
 
+    -- Blackboxed definition.  When applied to the given number of arguments,
+    -- it produces a combinational logic element with a single output.
+    | VBlackbox (Int, Int)
+
     -- First arg is the index of the register's associated `LkRuleMux` in
     -- `moduleLogics`.  Second arg is the ID of its output net.
     | VDff Int A.NetId
@@ -176,6 +180,13 @@ data ExtractState = ExtractState
     -- Results of previous `force` operations.  This avoids redoing work when a
     -- thunk is used in multiple places.
     , esThunkResults :: Map Int Value
+    -- Names of functions to blackbox.  A call to one of these functions will
+    -- produce a single combinational logic node, instead of running the actual
+    -- function body.
+    --
+    -- Note this currently works for top-level definitions only, not ones that
+    -- are local to a module.
+    , esBlackboxFunctions :: Set Text
     }
 
 makeLenses' ''ExtractState
@@ -423,6 +434,7 @@ extractDesign' cfg ps =
         , esModuleErrors = S.empty
         , esNextThunkId = 0
         , esThunkResults = M.empty
+        , esBlackboxFunctions = Config.bsvBlackboxFunctions cfg
         }
     (extractedMods, finalState) =
         seq initState $
@@ -573,14 +585,20 @@ eval sc (EConst _) = return VConst
 eval sc EUndef = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
 
-evalDef name d = case d of
-    Def _ _ [Clause [] [] e] -> eval M.empty e
-    Def _ ty [Clause ps [] e] ->
-        let (tyVars, _, _) = splitFnTy ty in
-        return $ VClosure (length tyVars) ps M.empty e
-    Def (Id _ l _) ty cs ->
-        let (tyVars, _, retTy) = splitFnTy ty in
-        return $ VCaseClosure l (length tyVars) retTy M.empty cs
+evalDef name d = do
+    bbox <- Set.member name <$> use _esBlackboxFunctions
+    if bbox then
+        let (tyVars, argTys, _) = splitFnTy $ defTy d in
+        return $ VBlackbox (length tyVars, length argTys)
+    else
+        case d of
+            Def _ _ [Clause [] [] e] -> eval M.empty e
+            Def _ ty [Clause ps [] e] ->
+                let (tyVars, _, _) = splitFnTy ty in
+                return $ VClosure (length tyVars) ps M.empty e
+            Def (Id _ l _) ty cs ->
+                let (tyVars, _, retTy) = splitFnTy ty in
+                return $ VCaseClosure l (length tyVars) retTy M.empty cs
 
 evalRule sc (Rule name conds body) = do
     idx <- nextRuleIdx
@@ -640,6 +658,7 @@ appExact f tys vals = case f of
     VCaseClosure l _ ty sc' cs -> appCaseClosure l ty vals sc' cs
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
+    VBlackbox _ -> combineValues vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
     VFieldAcc name _ -> case vals of
         [VStruct _ fs]
@@ -666,6 +685,7 @@ isFunc (VCaseClosure _ _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
+isFunc (VBlackbox _) = True
 isFunc (VFieldAcc _ _) = True
 isFunc (VMethod _ _ _ _) = True
 isFunc (VCombMethod _ _ _) = True
@@ -682,6 +702,7 @@ countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
     return (numTys - length tys, numVals - length vals)
 countArgs (VPrim p) = return $ countArgsPrim p
+countArgs (VBlackbox nums) = return nums
 countArgs (VModuleCtor _ numArgs _) = return numArgs
 countArgs (VFieldAcc _ numTys) = return (numTys, 1)
 countArgs (VMethod numArgs _ _ _) = return numArgs
