@@ -34,7 +34,7 @@ import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.BSV.Raw
 import BESSPIN.ArchExtract.BSV.PrintRaw
 import BESSPIN.ArchExtract.BSV.Interface
-import BESSPIN.ArchExtract.Simplify (reconnectNets)
+import BESSPIN.ArchExtract.Simplify (reconnectNets, mergeAliasedNets)
 
 
 TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Extract"
@@ -474,6 +474,7 @@ extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
         else do
             buildIfcPorts_ "" ifc
     return $
+        mergeAliasedNets $
         reconnectNets $
         m
 
@@ -528,6 +529,7 @@ eval sc (EApp f tys args) = do
 eval sc (ELet (Def (Id name _ _) _ [Clause [] [] body]) e nid _) = do
     v <- eval sc body
     saveErrors nid v
+    v <- nameNet name v
     eval (M.insert name v sc) e
 eval sc (ELet (Def (Id name _ _) ty [Clause ps [] body]) e nid _) = do
     let (tyVars, _, _) = splitFnTy ty
@@ -1106,6 +1108,18 @@ genPatternMatchOnly sc vs ps
       where
         go (PVar (Id name _ _)) = [name]
         go _ = []
+
+-- If `v` is a `VNet`, connect it through an `LkNetAlias` to a net with the
+-- given `name`.
+nameNet name (VNet n) = do
+    let prio = if "_" `T.isPrefixOf` name then 1 else 2
+    n' <- addNet $ A.Net name prio S.empty S.empty A.TUnknown ()
+    addLogic $ A.Logic A.LkNetAlias
+        (A.Pin n A.TUnknown <| S.empty)
+        (A.Pin n' A.TUnknown <| S.empty)
+        ()
+    return $ VNet n'
+nameNet _ v = return v
 
 
 -- Add a new rule access to `muxIdx`, with `nets` as its input nets.  The rule
