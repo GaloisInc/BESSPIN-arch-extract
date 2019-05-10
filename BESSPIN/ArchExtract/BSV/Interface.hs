@@ -115,9 +115,12 @@ translateIfcStructs ss = case fixMap go (M.keys ss') of
   where
     ss' = M.filter structIsIfc ss
 
-    go get k = case M.lookup k ss' of
-        Nothing -> traceShow ("unknown ifc", k) $ return dummyIfc
-        Just s -> layoutIfc <$> mapM (goField get) (structFields s)
+    go get k = do
+        ifc <- case M.lookup k ss' of
+            Nothing -> traceShow ("unknown ifc", k) $ return dummyIfc
+            Just s -> layoutIfc <$> mapM (goField get) (structFields s)
+        traceM $ T.unpack $ "interface " <> k <> ":\n" <> T.unlines (renderIfc ifc)
+        return ifc
 
     goField get (Field (Id name _ _) ty _)
       | (TIfc (Id subIfcName _ _), _) <- splitAppTy $ resolveTy ty = do
@@ -128,7 +131,7 @@ translateIfcStructs ss = case fixMap go (M.keys ss') of
       where
         (tys, args0, ret) = splitFnTy ty
 
-        (kind, addTokenArg) = case ret of
+        (kind, addTokenArg) = case resolveTy ret of
             TAction t ->
                 let addToken = null args0 in
                 let hasRet = case t of TUnit -> False; _ -> True in
@@ -170,3 +173,12 @@ layoutIfc items = IfcSpec entries numIn numOut
         _1 %= (+ itemInPorts item)
         _2 %= (+ itemOutPorts item)
         return $ (name, IfcEntry item curIn curOut)
+
+
+renderIfc :: IfcSpec -> [Text]
+renderIfc ifc = concatMap (go "  ") $ ifcEntries ifc
+  where
+    go indent (name, entry) = case ieItem entry of
+        IiMethod m -> [indent <> "method " <> name <> ": " <> T.pack (show m)]
+        IiSubIfc i -> [indent <> "interface " <> name <> ":"] ++
+            concatMap (go (indent <> "  ")) (ifcEntries i)
