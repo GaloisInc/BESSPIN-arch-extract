@@ -829,16 +829,12 @@ appPrim PMkReg [ty, _width] [_init] = return $ VMkReg ty
 appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
-appPrim PIndex [] vs@[v, i] | Just inps <- collectNets vs =
-    if S.null inps then return VConst else VNet <$> genCombLogic inps
-appPrim PSlice [] vs@[v, hi, lo] | Just inps <- collectNets vs =
-    if S.null inps then return VConst else VNet <$> genCombLogic inps
+appPrim PIndex [] vs@[v, i] = combineValues vs
+appPrim PSlice [] vs@[v, hi, lo] = combineValues vs
 appPrim PRegRead [] [VDff _ qNetId] = return $ VNet qNetId
 appPrim PRegWrite [] [VDff muxIdx _, v] = return $ VRegWrite muxIdx v
-appPrim (PUnOp _) [] vs | Just inps <- collectNets vs =
-    if S.null inps then return VConst else VNet <$> genCombLogic inps
-appPrim (PBinOp _) [] vs | Just inps <- collectNets vs =
-    if S.null inps then return VConst else VNet <$> genCombLogic inps
+appPrim (PUnOp _) [] vs = combineValues vs
+appPrim (PBinOp _) [] vs = combineValues vs
 appPrim (PResize _) [_] [v] = return v
 -- Non-monadic `if` generates a mux.  Monadic `if` is left intact to be handled
 -- by the monad evaluator.
@@ -890,46 +886,44 @@ force' (VThunkGlobal name) = do
 force' v = return v
 
 
--- Process a list of values.  On `VNet`, produces the `NetId`.  On `VConst`,
--- produces nothing.  If any other value is present in the input, `collectNets`
--- returns `Nothing`.
-collectNets :: [Value] -> Maybe (Seq A.NetId)
-collectNets vs = go vs
-  where
-    go [] = Just S.empty
-    go (VNet netId : vs) = (netId <|) <$> go vs
-    go (VConst : vs) = go vs
-    go (_ : vs) = Nothing
-
-asNet :: Value -> ExtractM A.NetId
-asNet (VNet n) = return n
-asNet VConst = addNet $ A.mkNet "const" (-1) A.TUnknown
-asNet v | isThunk v = force v >>= asNet
-asNet v = do
-    badEval_ ("expected a net or const", v)
-    asNet VConst
-
-combineNets :: [A.NetId] -> ExtractM A.NetId
-combineNets [] = asNet VConst
-combineNets [n] = return n
-combineNets ns = do
-    n' <- addNet $ A.mkNet "merge" (-1) A.TUnknown
+tryAsNet :: Value -> ExtractM (Maybe A.NetId)
+tryAsNet v | isThunk v = force v >>= tryAsNet
+tryAsNet (VNet n) = return (Just n)
+tryAsNet VConst = liftM Just $ addNet $ A.mkNet "<const>" (-1) A.TUnknown
+tryAsNet (VStruct ty kvs) = do
+    let names = M.keys kvs
+    nets <- mapM asNet $ M.elems kvs
+    let tyName = case ty of
+            TVar i -> idName i
+            TCon i -> idName i
+            TIfc i -> idName i
+            TAlias i _ -> idName i
+            _ -> T.pack $ show ty
+    let structTy = A.TAlias tyName A.TUnknown
+    outNet <- addNet $ A.mkNet "<struct>" (-1) structTy
     addLogic $ A.Logic A.LkExpr
-        (S.fromList $ map (\n -> A.Pin n A.TUnknown) ns)
-        (S.singleton $ A.Pin n' A.TUnknown)
+        (S.fromList $ map (\n -> A.Pin n A.TUnknown) nets)
+        (A.Pin outNet structTy <| S.empty)
         ()
-    return n'
+    return $ Just outNet
+tryAsNet _ = return Nothing
+
+addErrorNet :: ExtractM A.NetId
+addErrorNet = addNet $ A.mkNet "<error>" (-1) A.TUnknown
+
+asNet n = tryAsNet n >>= maybe addErrorNet return
 
 combineValues :: [Value] -> ExtractM Value
-combineValues vs = mapM force vs >>= go
-  where
-    go vs
-      | Just inps <- collectNets vs = case toList inps of
-        [] -> return VConst
-        [n] -> return $ VNet n
-        ns -> VNet <$> combineNets ns
-      | otherwise =
-        badEval ("expected only nets and consts", vs)
+combineValues [] = return VConst
+combineValues [v] = return v
+combineValues vs = do
+    ns <- catMaybes <$> mapM tryAsNet vs
+    outNet <- addNet $ A.mkNet "<merged>" (-1) A.TUnknown
+    addLogic $ A.Logic A.LkExpr
+        (S.fromList $ map (\n -> A.Pin n A.TUnknown) ns)
+        (A.Pin outNet A.TUnknown <| S.empty)
+        ()
+    return $ VNet outNet
 
 -- Create a combinational logic element with `inps` as its inputs and a fresh
 -- net as its output.  Returns the ID of the output net.
