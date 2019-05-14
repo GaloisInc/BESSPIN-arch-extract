@@ -54,6 +54,8 @@ instance Pretty (Logic x) where
                 LkRuleMux _ _ -> "ruleMux"
                 LkMatch _ _ -> "match"
                 LkRuleEnable name -> "ruleEnable" <+> pretty name
+                LkPack _ -> "pack"
+                LkUnpack _ -> "unpack"
                 LkExpr -> "expr"
                 LkOther -> emptyDoc
         in
@@ -87,6 +89,8 @@ instance Pretty (Logic x) where
                     , "numReadPorts" <+> pretty readPorts
                     , "numWritePorts" <+> pretty writePorts
                     ]
+                LkPack names -> [ "names" <+> pretty (toList names) ]
+                LkUnpack names -> [ "names" <+> pretty (toList names) ]
                 _ -> []
         in
         labeled header $ vsep $

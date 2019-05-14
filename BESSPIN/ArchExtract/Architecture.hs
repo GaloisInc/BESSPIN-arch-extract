@@ -176,6 +176,18 @@ data LogicKind =
         -- Name of the rule that this logic element enables.
         { lkRuleEnableName :: Text
         } |
+    -- Combinational logic element for building a struct or other aggregate
+    -- type.  Has `N` input ports (one for each field), and one output for the
+    -- struct value.
+    LkPack
+        { lkUnpackInNames :: Seq Text
+        } |
+    -- Combinational logic element for unpacking a struct or other aggregate
+    -- type.  Similar to a 1-input `LkMatch`, but with no possibility of
+    -- failure.
+    LkUnpack
+        { lkUnpackOutNames :: Seq Text
+        } |
     LkExpr |
     LkOther
     deriving (Show, Eq, Typeable, Data, Generic, NFData)

@@ -106,10 +106,10 @@ data Value =
     -- Structs are used to represent whole modules: a module definition in the
     -- source turns into a monadic computation returning a struct.
     | VStruct Ty (Map Text Value)
-    -- Struct field accessor function.  We store only the field name
-    -- (unqualified), to match the keys in `VStruct`.  The Int is the number of
-    -- type arguments the accessor expects.
-    | VFieldAcc Text Int
+    -- Struct field accessor function.  We store the field name unqualified, to
+    -- match the keys in `VStruct`.  The Int is the number of type arguments
+    -- the accessor expects.
+    | VFieldAcc Text Text Int
 
     -- Monadic computations.  These are processed by `runModule` and
     -- `runAction`.
@@ -160,6 +160,14 @@ data RuleVal = RuleVal Text [Value] Value
 type Scope = Map Text Value
 
 
+data CacheKey =
+      CkThunk Int
+    | CkStructToNet Text [A.NetId]
+    | CkNetToStruct Text A.NetId
+    deriving (Show, Eq, Ord)
+
+
+
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     -- Current rule name.  Only available while running Action computations.
@@ -177,9 +185,10 @@ data ExtractState = ExtractState
     , esModuleErrors :: Seq Text
     -- ID to assign to the next VThunk.
     , esNextThunkId :: Int
-    -- Results of previous `force` operations.  This avoids redoing work when a
-    -- thunk is used in multiple places.
-    , esThunkResults :: Map Int Value
+    -- Cached results of previous evaluations.  This is used to avoid
+    -- duplicating logic when a thunk is used in multiple places, or when a
+    -- struct is packed/unpacked multiple times.
+    , esValueCache :: Map CacheKey Value
     -- Names of functions to blackbox.  A call to one of these functions will
     -- produce a single combinational logic node, instead of running the actual
     -- function body.
@@ -277,6 +286,17 @@ takeModuleErrors = do
 
 nextThunkId :: ExtractM Int
 nextThunkId = _esNextThunkId <<%= (+1)
+
+-- Retrieve a value from cache, or compute it if needed.
+tryCache :: CacheKey -> ExtractM Value -> ExtractM Value
+tryCache k m = do
+    cached <- use $ _esValueCache . at k
+    case cached of
+        Just x -> return x
+        Nothing -> do
+            x <- m
+            _esValueCache %= M.insert k x
+            return x
 
 
 -- The Bool is True if this module came from a library package.
@@ -433,7 +453,7 @@ extractDesign' cfg ps =
         , esNodeErrors = M.empty
         , esModuleErrors = S.empty
         , esNextThunkId = 0
-        , esThunkResults = M.empty
+        , esValueCache = M.empty
         , esBlackboxFunctions = Config.bsvBlackboxFunctions cfg
         }
     (extractedMods, finalState) =
@@ -558,7 +578,7 @@ eval sc (EStatic (Id p _ _) (Id f _ _)) = do
     numTys <- case s of
         Nothing -> badEval' ("saw accessor for unknown struct", p) 0
         Just s -> return $ length $ structTyParams s
-    return $ VFieldAcc (lastWord f) numTys
+    return $ VFieldAcc p (lastWord f) numTys
 
 eval sc (EStruct TUnit []) = return VConst
 eval sc (EStruct (TCon _) []) = return VConst
@@ -662,11 +682,11 @@ appExact f tys vals = case f of
     VPrim p -> appPrim p tys vals
     VBlackbox _ -> combineValues vals
     VModuleCtor _ _ _ -> return $ VCompute f tys vals
-    VFieldAcc name _ -> case vals of
-        [VStruct _ fs]
+    VFieldAcc tyName name _ -> asStruct tyName (head vals) >>= \v -> case v of
+        VStruct _ fs
           | Just v <- M.lookup name fs -> return v
           | otherwise -> badEval ("unknown struct field", name, fs)
-        _ -> badEval ("expected exactly one struct argument", f, vals)
+        _ -> badEval ("expected a struct argument", f, vals)
     VMethod _ _ _ _ -> return $ VCompute f tys vals
     VCombMethod _ inNets outNet -> do
         argNets <- mapM asNet vals
@@ -688,7 +708,7 @@ isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
 isFunc (VBlackbox _) = True
-isFunc (VFieldAcc _ _) = True
+isFunc (VFieldAcc _ _ _) = True
 isFunc (VMethod _ _ _ _) = True
 isFunc (VCombMethod _ _ _) = True
 isFunc _ = False
@@ -706,7 +726,7 @@ countArgs (VPartApp f tys vals) = do
 countArgs (VPrim p) = return $ countArgsPrim p
 countArgs (VBlackbox nums) = return nums
 countArgs (VModuleCtor _ numArgs _) = return numArgs
-countArgs (VFieldAcc _ numTys) = return (numTys, 1)
+countArgs (VFieldAcc _ _ numTys) = return (numTys, 1)
 countArgs (VMethod numArgs _ _ _) = return numArgs
 countArgs (VCombMethod numArgs _ _) = return numArgs
 countArgs _ = return (0, 0)
@@ -855,22 +875,15 @@ appPrim p tys vals =
 
 
 force :: Value -> ExtractM Value
-force v = tryCache v $ do
+force v = tryCache' v $ do
     traceM $ "BEGIN forcing " ++ show v
     v' <- force' v
     traceM $ "END forcing " ++ show v
     return v'
   where
-    tryCache :: Value -> ExtractM Value -> ExtractM Value
-    tryCache (VThunk i _ _ _) m = do
-        cached <- use $ _esThunkResults . at i
-        case cached of
-            Just x -> return x
-            Nothing -> do
-                x <- m
-                _esThunkResults %= M.insert i x
-                return x
-    tryCache _ m = m
+    tryCache' :: Value -> ExtractM Value -> ExtractM Value
+    tryCache' (VThunk i _ _ _) m = tryCache (CkThunk i) m
+    tryCache' _ m = m
 
 force' :: Value -> ExtractM Value
 force' (VThunk _ f ty args) = do
@@ -899,19 +912,48 @@ tryAsNet (VStruct ty kvs) = do
             TIfc i -> idName i
             TAlias i _ -> idName i
             _ -> T.pack $ show ty
-    let structTy = A.TAlias tyName A.TUnknown
-    outNet <- addNet $ A.mkNet "<struct>" (-1) structTy
-    addLogic $ A.Logic A.LkExpr
-        (S.fromList $ map (\n -> A.Pin n A.TUnknown) nets)
-        (A.Pin outNet structTy <| S.empty)
-        ()
-    return $ Just outNet
+    v <- tryCache (CkStructToNet tyName nets) $ do
+        let structTy = A.TAlias tyName A.TUnknown
+        outNet <- addNet $ A.mkNet "<struct>" (-1) structTy
+        addLogic $ A.Logic (A.LkPack $ S.fromList names)
+            (S.fromList $ map (\n -> A.Pin n A.TUnknown) nets)
+            (A.Pin outNet structTy <| S.empty)
+            ()
+        return $ VNet outNet
+    tryAsNet v
 tryAsNet _ = return Nothing
 
 addErrorNet :: ExtractM A.NetId
 addErrorNet = addNet $ A.mkNet "<error>" (-1) A.TUnknown
 
-asNet n = tryAsNet n >>= maybe addErrorNet return
+asNet v = tryAsNet v >>= maybe complain return
+  where
+    complain = do
+        badEval_ ("cannot convert value net", v)
+        addErrorNet
+
+-- Try to convert `v` to a struct value.
+asStruct :: Text -> Value -> ExtractM Value
+asStruct _ v@(VStruct _ _) = return v
+asStruct tyName (VNet net) = tryCache (CkNetToStruct tyName net) $ do
+    use (_esStructs . at tyName) >>= \s -> case s of
+        Nothing -> badEval ("unknown target struct type", tyName, net)
+        Just s -> do
+            let names = S.fromList $ map fieldName $ structFields s
+            let structTy = A.TAlias tyName A.TUnknown
+            nets <- forM names $ \name ->
+                addNet $ A.Net name 1 S.empty S.empty A.TUnknown ()
+            addLogic $ A.Logic (A.LkUnpack names)
+                (A.Pin net structTy <| S.empty)
+                (fmap (\n -> A.Pin n A.TUnknown) nets)
+                ()
+            let fields = M.fromList $
+                    zip (toList names) (map VNet $ toList nets)
+            return $ VStruct (TCon $ Id tyName (-1) (-1)) fields
+  where
+    fieldName (Field (Id name _ _) _ _) = name
+asStruct _ v = return v
+
 
 combineValues :: [Value] -> ExtractM Value
 combineValues [] = return VConst
@@ -1403,19 +1445,15 @@ buildIfcItemPorts qualName (IiMethod m) impl = do
         MkComb -> do
             val <- if hasArgs then appValue impl [] (map VNet inNets)
                 else return impl
-            case val of
-                VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
-                VConst -> return ()
-                _ -> badEval_ ("combinational method returned non-logic value", val)
+            valNet <- asNet val
+            void $ mkNetAlias' valNet (head outNets) >>= addLogic
 
         MkAction hasToken hasResult -> do
             comp <- if hasArgs && not hasToken then appValue impl [] (map VNet inNets)
                 else return impl
             val <- withRuleName qualName $ runAction comp
-            when hasResult $ case val of
-                VNet valNet -> void $ mkNetAlias' valNet (head outNets) >>= addLogic
-                VConst -> return ()
-                _ -> badEval_ ("action method returned non-logic value", val)
+            valNet <- asNet val
+            void $ mkNetAlias' valNet (head outNets) >>= addLogic
   where
     hasArgs = not $ null $ imArgNames m
 
