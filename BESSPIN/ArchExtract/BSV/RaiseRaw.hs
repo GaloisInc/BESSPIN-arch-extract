@@ -31,6 +31,7 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV
 -- other parts of the AST, but functionality may be limited.
 raiseRaw :: Data a => a -> a
 raiseRaw x =
+    findForLoops $
     recordActionDefNames $
     setUnionCtorArgCounts $
     convertTypeclassAccessors $
@@ -41,6 +42,7 @@ raiseRaw x =
     reconstructAllLets $
     --cleanDefs $
     convertTypedefs $
+    unprefixStructFields $
     prefixNames $
     x
 
@@ -67,6 +69,15 @@ prefixNames x = everywhere (mkT goPackage) x
 
     goTypedef pkgName t@(Typedef { typedefId = Id name l c })
       | otherwise = t { typedefId = Id (pkgName <> "." <> name) l c }
+
+-- Fields in struct patterns `PStruct` are prefixed with the package name.  We
+-- prefer using unprefixed struct fields everywhere.
+unprefixStructFields :: Data a => a -> a
+unprefixStructFields x = everywhere (mkT go) x
+  where
+    go (PStruct tyName fields) =
+        PStruct tyName $ M.mapKeys (T.takeWhileEnd (/= '.')) fields
+    go p = p
 
 cleanDefs :: Data a => a -> a
 cleanDefs x = everywhere (mkT goPackage) x
@@ -443,6 +454,71 @@ setUnionCtorArgCounts x = everywhere (mkT go) x
     go (PCtor tyName ctorName _) =
         PCtor tyName ctorName $ getNumTys (idName tyName)
     go p = p
+
+
+findForLoops :: Data a => a -> a
+findForLoops x = everywhere (mkT go) $ liftLetRecTcDicts x
+  where
+    -- Look for this pattern:
+    --      letrec _f__ = \pat ->
+    --          if cond then
+    --              let ds... = ... in
+    --              _f__ expr
+    --          else
+    --              expr
+    --      in _f__ init
+    -- where `expr` is the inverse of `pat`.
+    go (ELetRec [Def i@(Id name _ _) ty [Clause [] [] e]] eRest)
+      | ELam [pat] (EApp (EPrim (PIf _)) [_] [cond, e'1, res2]) <- e
+      , (defs1, EApp (EVar (Id name' _ _)) _ [res1]) <- splitLet e'1
+      , name' == name
+      --, res1 == invertPat pat
+      --, res2 == invertPat pat
+      = let newBody = EForFold (EVar forLoopInit) pat cond (buildLet defs1 res1) in
+      ELet (Def i ty [Clause [] [] (ELam [PVar forLoopInit] newBody)]) eRest 0 []
+    go e = e
+
+    forLoopInit = Id "__forLoopInit" (-1) (-1)
+
+-- Look for code like this:
+--      letrec x =
+--          let tcdict1 = ... in
+--          let tcdict2 = ... in
+--          \a b c -> ...
+--      in body
+-- And replace it with this:
+--      let x =
+--          let tcdict1 = ... in
+--          let tcdict2 = ... in
+--          letrec x = \a b c -> ... in
+--          x
+--      in body
+liftLetRecTcDicts :: Data a => a -> a
+liftLetRecTcDicts x = everywhere (mkT go) x
+  where
+    go (ELetRec [Def i@(Id name _ _) ty [Clause [] [] body]] e)
+      | (ds, body') <- gatherConstants name body
+      , not $ null ds
+      = let rhs = buildLet ds $ ELetRec [Def i ty [Clause [] [] body']] (EVar i) in
+        ELet (Def i ty [Clause [] [] rhs]) e 0 []
+    go e = e
+
+    -- Peel off enclosing constants of the form `let tcdict1 = ... in ...`.
+    -- "Constant" means only that the body of the `Def` doesn't refer to
+    -- `boundVar`.  Due to the way this function is called, `Def`s that don't
+    -- use `boundVar` are eligible to be lifted out.
+    gatherConstants :: Text -> Expr -> ([Def], Expr)
+    gatherConstants boundVar (ELet d e _ _)
+      | not $ any (usesVar boundVar) $ map clauseBody $ defClauses d =
+      let (ds, e') = gatherConstants boundVar e in
+      (d : ds, e')
+    gatherConstants boundVar e = ([], e)
+
+    usesVar :: Text -> Expr -> Bool
+    usesVar v e = everything (||) (False `mkQ` go) e
+      where
+        go (EVar (Id name _ _)) = name == v
+        go _ = False
 
 
 lastMaybe [] = Nothing

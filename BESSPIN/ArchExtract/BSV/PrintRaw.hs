@@ -2,6 +2,7 @@
 module BESSPIN.ArchExtract.BSV.PrintRaw where
 
 import Data.Foldable
+import qualified Data.Map as M
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -104,6 +105,12 @@ instance Pretty Expr where
     pretty (EDo stmts last) =
         "do" <+> hang 0 (vsep $ map pretty stmts ++ [pretty last])
     pretty (EAddRules rs) = vsep [ "addRules", indent 2 $ vsep $ map pretty rs ]
+    pretty (EForFold init pat cond body) =
+        parens $ hsep ["for", parens (pretty pat <+> "<-" <+> pretty init),
+            parens ("when" <+> pretty cond), pretty body]
+    pretty (EMForFold init pat cond body) =
+        parens $ hsep ["mfor", parens (pretty pat <+> "<-" <+> pretty init),
+            parens ("when" <+> pretty cond), "do", pretty body]
     pretty e = viaShow e
 
 instance Pretty RawRule where
@@ -138,6 +145,9 @@ instance Pretty Stmt where
 
 instance Pretty Pat where
     pretty (PVar i) = pretty i
+    pretty (PStruct i fs) =
+        pretty i <+> braces (hsep $ punctuate comma $
+            map (\(name, pat) -> pretty name <> colon <+> pretty pat) $ M.toList fs)
     pretty p = viaShow p
 
 instance Pretty Ty where

@@ -603,6 +603,17 @@ eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
     return $ VAddRules rvs
 eval sc ETcDict = return VTcDict
+eval sc (EForFold init pat cond body) = do
+    initVal <- eval sc init
+    loop <- guessLoopOutput initVal
+    input <- genMux VConst [initVal, loop]
+    sc' <- bindPat pat input sc
+    condVal <- eval sc' cond
+    bodyVal <- eval sc' body
+    result <- genMux condVal [input, bodyVal]
+    aliasLoopOutput result loop
+    return result
+eval sc (EMForFold init pat cond body) = badEval ("EMForFold NYI")
 eval sc (EConst _) = return VConst
 eval sc EUndef = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
@@ -630,6 +641,28 @@ evalRule sc (Rule name conds body) = do
     conds' <- mapM (eval sc) conds
     body' <- eval sc body
     return $ RuleVal name' conds' body'
+
+guessLoopOutput :: Value -> ExtractM Value
+guessLoopOutput (VStruct ty fs) =
+    VStruct ty <$> mapM guessLoopOutput fs
+guessLoopOutput _ =
+    VNet <$> addNet (A.Net "loop" 0 S.empty S.empty A.TUnknown ())
+
+aliasLoopOutput :: Value -> Value -> ExtractM ()
+aliasLoopOutput (VNet n1) (VNet n2) =
+    void $ addLogic $ A.Logic A.LkNetAlias
+        (A.Pin n1 A.TUnknown <| S.empty)
+        (A.Pin n2 A.TUnknown <| S.empty)
+        ()
+aliasLoopOutput VConst VConst = return ()
+aliasLoopOutput (VStruct _ fs1) (VStruct _ fs2) = do
+    when (M.keys fs1 /= M.keys fs2) $
+        badEval_ ("mismatched struct fields in aliasLoopOutput", M.keys fs1, M.keys fs2)
+    forM_ (M.toList fs1) $ \(k, v1) -> case M.lookup k fs2 of
+        Nothing -> return ()
+        Just v2 -> aliasLoopOutput v1 v2
+aliasLoopOutput v1 v2 =
+    badEval_ ("mismatched values in aliasLoopOutput", v1, v2)
 
 
 -- Apply a value to (type and value) arguments.
@@ -819,6 +852,14 @@ bindPat p v sc = case p of
         _ -> badEval' ("passed non-VTcDict", v, "to PTcDict argument", p) sc
     PCtorPat _ _ _ ->
         badEval' ("static matching of PCtorPat is NYI", p, v) sc
+    PStruct tyName fs -> do
+        v <- asStruct (idName tyName) v
+        case v of
+            VStruct _ fs' -> do
+                foldM (\sc (name, pat) -> case M.lookup name fs' of
+                    Nothing -> badEval' ("missing field for struct pattern", name) sc
+                    Just fv -> bindPat pat fv sc) sc (M.toList fs)
+            v -> badEval' ("failed to match PStruct against non-struct value") sc
     PUnknown _ ->
         badEval' ("tried to match", v, "against unknown pattern") sc
 
@@ -876,9 +917,9 @@ appPrim p tys vals =
 
 force :: Value -> ExtractM Value
 force v = tryCache' v $ do
-    traceM $ "BEGIN forcing " ++ show v
+    --traceM $ "BEGIN forcing " ++ show v
     v' <- force' v
-    traceM $ "END forcing " ++ show v
+    --traceM $ "END forcing " ++ show v
     return v'
   where
     tryCache' :: Value -> ExtractM Value -> ExtractM Value
@@ -929,7 +970,7 @@ addErrorNet = addNet $ A.mkNet "<error>" (-1) A.TUnknown
 asNet v = tryAsNet v >>= maybe complain return
   where
     complain = do
-        badEval_ ("cannot convert value net", v)
+        badEval_ ("cannot convert value to net", v)
         addErrorNet
 
 -- Try to convert `v` to a struct value.

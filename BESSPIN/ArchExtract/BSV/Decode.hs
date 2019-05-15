@@ -218,6 +218,11 @@ getPat (tag "Pat_Var" -> [i]) = PVar <$> getId i
 getPat (tag0 "Pat_Any" -> True) = return PWild
 getPat (tag "Pat_ConTs" -> [tyName, ctorName, _, List args]) =
     PCtorPat <$> getId tyName <*> getId ctorName <*> mapM getPat args
+getPat (tag "Pat_Struct" -> [tyName, List fields]) = do
+    PStruct <$> getId tyName <*> (liftM M.fromList $ mapM go fields)
+  where
+    go (List [name, pat]) = (,) <$> (idName <$> getId name) <*> getPat pat
+    go x = bad' "struct entry" x ("<bad-struct-entry>", PUnknown CBOR.TNull)
 getPat x = bad' "Pat" x $ PUnknown x
 
 getTy :: CBOR.Term -> DecodeM Ty

@@ -101,6 +101,14 @@ data Expr =
     | EAddRules [Rule]
     | ETcDict   -- Replacement for elided `_tcdict` `EVar`s
     | EConst Text   -- always evaluates to a constant
+    -- `EForFold init pat cond body`: Initialize an accumulator `acc` to
+    -- `init`, then on every iteration, match `acc` against `pat`, and if
+    -- `cond` holds, then update `acc` with the result of `body`.
+    | EForFold Expr Pat Expr Expr
+    -- `EMForFold init pat cond body`: Monadic version of `EForFold`.  `body`
+    -- should be a monadic computation that returns a new value for the
+    -- accumulator.
+    | EMForFold Expr Pat Expr Expr
 
     | EUndef    -- Generate an undefined value of appropriate type
 
@@ -168,6 +176,7 @@ data Pat =
     | PTcDict   -- Replacement for elided `_tcdict` `PVar`s
     -- Avoid name collision with Prim PCtor
     | PCtorPat Id Id [Pat]
+    | PStruct Id (Map Text Pat)
     | PUnknown CBOR.Term
     deriving (Show, Data, Typeable, Generic, NFData)
 
@@ -244,6 +253,10 @@ splitLet (ELet d e' _ _) =
     let (defs', body') = splitLet e' in
     (d : defs', body')
 splitLet e = ([], e)
+
+buildLet :: [Def] -> Expr -> Expr
+buildLet [] e = e
+buildLet (d : ds) e = ELet d (buildLet ds e) 0 []
 
 -- Split an application type into the base type constructor and a list of
 -- arguments.
