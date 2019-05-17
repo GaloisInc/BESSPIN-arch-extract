@@ -166,6 +166,8 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goExpr (EApp (EVar (Id "Assert.dynamicAssert" _ _)) [_, _] [_dct, _, _]) =
         buildLambda [PWild, PWild] (primApp PReturn [] [EConst "dynamicAssert"])
 
+    goExpr (EVar (Id "Prelude.listLength" _ _)) = EPrim PListLength
+
     -- Unary and binary ops
     goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = binOp "+" l r
     goExpr (EApp (EVar (Id "Prelude.-" _ _)) [_] [_d1, l, r]) = binOp "-" l r

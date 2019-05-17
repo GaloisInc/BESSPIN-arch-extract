@@ -972,6 +972,7 @@ countArgsPrim p = case p of
     PSetRuleName _ -> (0, 1)
     PIf _ -> (1, 3)
     PCtor _ _ numTys -> (numTys, 1)
+    PListLength -> (1, 1)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
@@ -1001,6 +1002,7 @@ appPrim (PCtor tyId ctorId _) _ [VConst] = return VConst
 appPrim (PCtor tyId ctorId _) _ [x] = do
     net <- asNet x
     VNet <$> genCombLogic (S.singleton net)
+appPrim PListLength [_] [_] = return VConst
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 

@@ -154,6 +154,7 @@ data Prim =
     | PSetRuleName Text -- Action a -> Action a
 
     | PCtor Id Id Int   -- type name, ctor name, number of ty args
+    | PListLength   -- forall a. List a -> Int
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data RawRule =
