@@ -40,6 +40,17 @@ import BESSPIN.ArchExtract.Simplify (reconnectNets, mergeAliasedNets)
 TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV.Extract"
 
 
+data CallStack = CallStack
+    -- The actual call stack: the name of each function we're currently inside
+    -- (innermost at the head of the list).
+    { callStackNames :: [FuncId]
+    -- How many times each function appears in the call stack.  The keys are
+    -- the unique counter part of the FuncId; the values are the count and the
+    -- human-readable name (for easier error reporting).
+    , callStackCounts :: Map Int (Int, Text)
+    }
+    deriving (Show)
+
 -- Run-time values for our BSV interpreter.  Different kinds of values are
 -- represented more or less abstractly.  For example, `VNet` is abstract: we
 -- don't track concrete run-time values, but rather the IDs of architecture
@@ -54,25 +65,37 @@ data Value =
     -- anywhere in place of a `VNet`.
     | VConst
 
+    -- Thunks (delayed evaluation).  The BSV core language is lazy, and some
+    -- constructs exploit that, performing operations that would cause infinite
+    -- recursion in a strict language.  Our interpreter is still mostly strict,
+    -- but introduces thunks in a few key places to break infinite loops.
+    --
+    -- Each thunk keeps track of the call stack where it was created, and
+    -- re-enters that context when forced.  This ensures that functions can't
+    -- escape our recursion check by indirecting through thunks.
+
     -- Delayed access to a global definition.  If a global refers to itself,
     -- the recursive reference evaluates to one of these.
-    | VThunkGlobal Text
+    | VThunkGlobal CallStack Text
     -- Delayed function application.  Constructed by `appValue` when at least
     -- one input is a thunk.  The `Int` is an ID used to cache the result, so
     -- we don't repeat evaluation if the thunk is forced multiple times.
-    | VThunk Int Value [Ty] [Value]
+    | VThunk CallStack Int Value [Ty] [Value]
 
     -- Function-like values.  Closures keep track of how many type arguments
     -- they expect, but we don't have a way to pass types in at the moment, so
     -- they just get dropped at application time instead.
-    | VClosure Int [Pat] Scope Expr
+    --
+    -- The `FuncId` is optional: it's set for closures originating from ELam,
+    -- which provides a `FuncId` to use, but not for those arising from EDo.
+    | VClosure (Maybe FuncId) Int [Pat] Scope Expr
     -- "Case closures", for handling multi-clause `ELet`s and `Def`s.  Roughly
     -- equivalent to `\xs... -> case (xs...) of <<clauses...>>`.  This keeps
     -- track of how many type arguments the closure expects, like `VClosure`
     -- does.  We also record the result type of the `case`,
     --
     -- The first `Int` is the line number, used for monadic `case` expressions.
-    | VCaseClosure Int Int Ty Scope [Clause]
+    | VCaseClosure FuncId Int Int Ty Scope [Clause]
     -- Partial application.  Much easier to have one unified way of handling
     -- partial applications, instead of making every single callable type
     -- handle it separately.
@@ -150,8 +173,8 @@ data Value =
     | VUnknown
     deriving (Show)
 
-isThunk (VThunkGlobal _) = True
-isThunk (VThunk _ _ _ _) = True
+isThunk (VThunkGlobal _ _) = True
+isThunk (VThunk _ _ _ _ _) = True
 isThunk _ = False
 
 data RuleVal = RuleVal Text [Value] Value
@@ -174,6 +197,8 @@ data ExtractState = ExtractState
     , esCurRuleName :: Text
     -- Current rule name, minus any temporary suffixes.
     , esRuleBaseName :: Text
+    -- Current call stack.
+    , esCallStack :: CallStack
     , esRuleCounter :: Int
     , esStructs :: Map Text Struct
     , esDefs :: Map Text Def
@@ -299,6 +324,44 @@ tryCache k m = do
             return x
 
 
+callStackPush :: FuncId -> CallStack -> (CallStack, Int)
+callStackPush func@(FuncId num name) (CallStack funcs counts) =
+    let count = maybe 1 ((+ 1) . fst) $ M.lookup num counts in
+    (CallStack (func : funcs) (M.insert num (count, name) counts), count)
+
+callStackPush' :: FuncId -> CallStack -> CallStack
+callStackPush' func@(FuncId num name) (CallStack funcs counts) =
+    CallStack (func : funcs)
+        (M.alter (\old -> Just (maybe 1 ((+ 1) . fst) old, name)) num counts)
+
+callStackCount :: FuncId -> CallStack -> Int
+callStackCount (FuncId num _) (CallStack _ counts) =
+    maybe 0 fst $ M.lookup num counts
+
+callStackPop :: CallStack -> CallStack
+callStackPop (CallStack (FuncId num _ : funcs) counts) =
+    CallStack funcs
+        (M.update (\(count, name) -> if count <= 1 then Nothing
+            else Just (count - 1, name)) num counts)
+callStackPop (CallStack [] _) = error "callStackPop: empty stack"
+
+withCallStackEntry :: FuncId -> (Int -> ExtractM a) -> ExtractM a
+withCallStackEntry f m = do
+    old <- use _esCallStack
+    let (new, count) = callStackPush f old
+    _esCallStack .= new
+    x <- m count
+    _esCallStack .= old
+    return x
+
+withCallStack :: CallStack -> ExtractM a -> ExtractM a
+withCallStack cs m = do
+    old <- _esCallStack <<.= cs
+    x <- m
+    _esCallStack .= old
+    return x
+
+
 -- The Bool is True if this module came from a library package.
 data BSVModule = BSVModule Id Ty Expr Bool
     deriving (Generic, NFData)
@@ -333,11 +396,11 @@ data BSVModule = BSVModule Id Ty Expr Bool
 convertModule :: Bool -> Def -> Maybe BSVModule
 -- Synthesized module case.  This case is looking at the `mkFoo-` definition,
 -- which needs adjustments to its type and value to get into the standard form.
-convertModule isLib (Def i0 ty cs)
+convertModule isLib (Def i0 _ ty cs)
   | [Clause [] [] body] <- cs
   , (_, body') <- splitLambda body
   , (ds@(_:_), _) <- splitLet body'
-  , Def i ty' [Clause [] [] body''] <- last ds
+  , Def i _ ty' [Clause [] [] body''] <- last ds
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
   = Just $ BSVModule (addPkgName i)
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
@@ -353,13 +416,13 @@ convertModule isLib (Def i0 ty cs)
 -- simply calls `mkFoo-`.  We recognize it by checking if the body of the
 -- definition is an `EApp` (for full non-synthesized modules, the body is
 -- usually an `ELet` or `ELam` instead).
-convertModule isLib (Def i ty cs)
+convertModule isLib (Def i _ ty cs)
   | [Clause dcts [] body] <- cs
   , EApp _ _ _ <- body
   = Nothing
 -- Non-synthesized module case.  The only adjustment required is changing the
 -- return type.
-convertModule isLib (Def i ty cs)
+convertModule isLib (Def i _ ty cs)
   | [Clause dcts [] body] <- cs
   --, all (\p -> case p of PTcDict -> True; _ -> False) dcts
   , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
@@ -440,6 +503,7 @@ extractDesign' cfg ps =
         , esRuleBaseName =
             badCall' "ran Action not in any rule" $
             "[[error: no rule]]"
+        , esCallStack = CallStack [] M.empty
         , esRuleCounter = 0
         , esStructs = structs
         , esDefs = defs
@@ -537,28 +601,28 @@ eval sc (EVar i@(Id name _ _))
         (Just (modId, ty, ifc), _) -> do
             let (tyVars, argTys, retTy) = splitFnTy ty
             return $ VModuleCtor modId (length tyVars, length argTys) ifc
-        (Nothing, Just d) -> return $ VThunkGlobal name
+        (Nothing, Just d) -> VThunkGlobal <$> use _esCallStack <*> pure name
         (Nothing, Nothing) -> badEval ("unknown variable", name)
-eval sc (ELam ps body) = return $ VClosure 0 ps sc body
+eval sc (ELam funcId ps body) = return $ VClosure (Just funcId) 0 ps sc body
 eval sc (EApp f tys args) = do
     fv <- eval sc f
     argvs <- mapM (eval sc) args
     appValue fv tys argvs
 -- TODO: handling multi-clause defs will require multi-clause VClosure, and
 -- associated changes to application & pattern matching.
-eval sc (ELet (Def (Id name _ _) _ [Clause [] [] body]) e nid _) = do
-    v <- eval sc body
+eval sc (ELet (Def (Id name _ _) funcId _ [Clause [] [] body]) e nid _) = do
+    v <- inBody funcId $ eval sc body
     saveErrors nid v
     v <- nameNet name v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name _ _) ty [Clause ps [] body]) e nid _) = do
+eval sc (ELet (Def (Id name _ _) funcId ty [Clause ps [] body]) e nid _) = do
     let (tyVars, _, _) = splitFnTy ty
-    let v = VClosure (length tyVars) ps sc body
+    let v = VClosure (Just funcId) (length tyVars) ps sc body
     saveErrors nid v
     eval (M.insert name v sc) e
-eval sc (ELet (Def (Id name l _) ty cs) e nid _) = do
+eval sc (ELet (Def (Id name l _) funcId ty cs) e nid _) = do
     let (tyVars, _, retTy) = splitFnTy ty
-    let v = VCaseClosure l (length tyVars) retTy sc cs
+    let v = VCaseClosure funcId l (length tyVars) retTy sc cs
     saveErrors nid v
     eval (M.insert name v sc) e
 -- TODO: letrec is totally unsupported at the moment.  Not sure how hard this
@@ -597,7 +661,7 @@ eval sc (EDo ss e) = case ss of
                 SBind' m sid -> (PWild, m, sid)
                 SNote _ -> (PWild, EConst "SNote", 0)
         mv <- eval sc m
-        let kv = VClosure 0 [p] sc (EDo ss' e)
+        let kv = VClosure Nothing 0 [p] sc (EDo ss' e)
         return $ VBind mv kv sid
 eval sc (EAddRules rs) = do
     rvs <- mapM (evalRule sc) rs
@@ -625,13 +689,13 @@ evalDef name d = do
         return $ VBlackbox (length tyVars, length argTys)
     else
         case d of
-            Def _ _ [Clause [] [] e] -> eval M.empty e
-            Def _ ty [Clause ps [] e] ->
+            Def _ funcId _ [Clause [] [] e] -> inBody funcId $ eval M.empty e
+            Def _ funcId ty [Clause ps [] e] ->
                 let (tyVars, _, _) = splitFnTy ty in
-                return $ VClosure (length tyVars) ps M.empty e
-            Def (Id _ l _) ty cs ->
+                return $ VClosure (Just funcId) (length tyVars) ps M.empty e
+            Def (Id _ l _) funcId ty cs ->
                 let (tyVars, _, retTy) = splitFnTy ty in
-                return $ VCaseClosure l (length tyVars) retTy M.empty cs
+                return $ VCaseClosure funcId l (length tyVars) retTy M.empty cs
 
 evalRule sc (Rule name conds body) = do
     idx <- nextRuleIdx
@@ -641,6 +705,31 @@ evalRule sc (Rule name conds body) = do
     conds' <- mapM (eval sc) conds
     body' <- eval sc body
     return $ RuleVal name' conds' body'
+
+maxRecursionDepth = 2
+
+-- Functions that are exempt from the recursion check.
+recursionExempt :: Set Text
+recursionExempt = Set.fromList
+    -- Calling a composition of 3+ functions results in multiple `compose`s on
+    -- the stack, but `compose` isn't actually recursive itself.
+    [ "Prelude.compose"
+    , "Prelude.$"
+    ]
+
+-- Run `m`, which evaluates the body of `f`.  If `f` is already on the call
+-- stack at least `maxRecursionDepth` times, returns `VUnknown` and reports an
+-- error, without running `m`.
+inBody :: FuncId -> ExtractM Value -> ExtractM Value
+inBody f m = withCallStackEntry f $ \count ->
+    if count >= maxRecursionDepth && not (Set.member (funcIdName f) recursionExempt) then
+        -- TODO: may also want to report the full call stack.
+        badEval ("function entry exceeded max recursion depth", f)
+    else m
+
+inBody' :: Maybe FuncId -> ExtractM Value -> ExtractM Value
+inBody' Nothing m = m
+inBody' (Just f) m = inBody f m
 
 guessLoopOutput :: Value -> ExtractM Value
 guessLoopOutput (VStruct ty fs) =
@@ -669,7 +758,8 @@ aliasLoopOutput v1 v2 =
 appValue :: Value -> [Ty] -> [Value] -> ExtractM Value
 appValue f tys vals | isThunk f || any isThunk vals = do
     thunkId <- nextThunkId
-    return $ VThunk thunkId f tys vals
+    cs <- use _esCallStack
+    return $ VThunk cs thunkId f tys vals
 -- Should probably investigate *why* we're seeing `EApp`s with no arguments,
 -- but it's easy enough to ignore for now...
 appValue f [] [] | not $ isFunc f = return f
@@ -709,8 +799,8 @@ appValue f tys vals = do
 -- Like `appValue`, but the caller must provide exactly the right number of
 -- `tys` and `vals`.
 appExact f tys vals = case f of
-    VClosure _ ps sc' body -> appClosure ps vals sc' body
-    VCaseClosure l _ ty sc' cs -> appCaseClosure l ty vals sc' cs
+    VClosure funcId _ ps sc' body -> inBody' funcId $ appClosure ps vals sc' body
+    VCaseClosure funcId l _ ty sc' cs -> inBody funcId $ appCaseClosure l ty vals sc' cs
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VBlackbox _ -> combineValues vals
@@ -735,8 +825,8 @@ mkPartApp (VPartApp f tys vals) tys' vals' =
 mkPartApp f tys vals =
     VPartApp f tys vals
 
-isFunc (VClosure _ _ _ _) = True
-isFunc (VCaseClosure _ _ _ _ _) = True
+isFunc (VClosure _ _ _ _ _) = True
+isFunc (VCaseClosure _ _ _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
 isFunc (VModuleCtor _ _ _) = True
 isFunc (VPrim _) = True
@@ -749,9 +839,9 @@ isFunc _ = False
 -- Count the number of type and value arguments that `v` expects to receive.
 -- Returns (0,0) for non-functions.
 countArgs :: Value -> ExtractM (Int, Int)
-countArgs (VClosure numTys ps _ _) = return (numTys, length ps)
-countArgs (VCaseClosure _ numTys _ _ (Clause ps _ _ : _)) = return (numTys, length ps)
-countArgs v@(VCaseClosure _ numTys _ _ []) =
+countArgs (VClosure _ numTys ps _ _) = return (numTys, length ps)
+countArgs (VCaseClosure _ _ numTys _ _ (Clause ps _ _ : _)) = return (numTys, length ps)
+countArgs v@(VCaseClosure _ _ numTys _ _ []) =
     badEval' ("VCaseClosure has no clauses", v) (numTys, 0)
 countArgs (VPartApp f tys vals) = do
     (numTys, numVals) <- countArgs f
@@ -923,16 +1013,16 @@ force v = tryCache' v $ do
     return v'
   where
     tryCache' :: Value -> ExtractM Value -> ExtractM Value
-    tryCache' (VThunk i _ _ _) m = tryCache (CkThunk i) m
+    tryCache' (VThunk _ i _ _ _) m = tryCache (CkThunk i) m
     tryCache' _ m = m
 
 force' :: Value -> ExtractM Value
-force' (VThunk _ f ty args) = do
+force' (VThunk cs _ f ty args) = withCallStack cs $ do
     f <- force f
     args <- mapM force args
     v <- appValue f ty args
     force v
-force' (VThunkGlobal name) = do
+force' (VThunkGlobal cs name) = withCallStack cs $ do
     optDef <- use $ _esDefs . at name
     case optDef of
         Just d -> evalDef name d

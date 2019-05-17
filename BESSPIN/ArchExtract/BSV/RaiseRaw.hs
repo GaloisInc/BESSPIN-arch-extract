@@ -31,8 +31,9 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV
 -- other parts of the AST, but functionality may be limited.
 raiseRaw :: Data a => a -> a
 raiseRaw x =
-    findForLoops $
+    recordFuncIds $
     recordActionDefNames $
+    findForLoops $
     setUnionCtorArgCounts $
     convertTypeclassAccessors $
     postSimplify $
@@ -84,7 +85,7 @@ cleanDefs x = everywhere (mkT goPackage) x
   where
     goPackage (Package i imps ds ss us ts) =
         Package i imps (S.filter checkDef ds) ss us ts
-    checkDef (Def (Id t _ _) _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
+    checkDef (Def (Id t _ _) _ _ _) = not $ "Prelude.Prim" `T.isInfixOf` t
 
 -- At the level where we're operating, typeclass definitions have already been
 -- converted into structs, but the accessors are still `EVar "Foo.f"` instead
@@ -105,7 +106,7 @@ rewrite :: Data a => a -> a
 rewrite x = everywhere (mkT goExpr `extT` goTy) x
   where
     -- Monad handling
-    goExpr (EApp (EVar (Id "Prelude.bind" _ _)) [_tM, tA, _tB] [_dct, m, ELam [p] k]) =
+    goExpr (EApp (EVar (Id "Prelude.bind" _ _)) [_tM, tA, _tB] [_dct, m, ELam _ [p] k]) =
         goExpr $ EDo [SBind p tA m 0] k
     goExpr (EApp (EVar (Id "Prelude.bind_" _ _)) _tys [_dct, m, k]) =
         goExpr $ EDo [SBind' m 0] k
@@ -240,10 +241,10 @@ preSimplify x = everywhere (mkT goExpr `extT` goTy) x
     goTy t = t
 
     goExpr (EApp (EApp f tys1 args1) [] args2) = goExpr $ EApp f tys1 (args1 ++ args2)
-    goExpr (ELet (Def i ty [Clause [] [] body]) (EVar i') _ _)
+    goExpr (ELet (Def i _ ty [Clause [] [] body]) (EVar i') _ _)
       | i == i' = goExpr $ body
-    goExpr (ELet (Def i ty [Clause pats [] body]) (EVar i') _ _)
-      | not $ null pats, i == i' = goExpr $ ELam pats body
+    goExpr (ELet (Def i funcId ty [Clause pats [] body]) (EVar i') _ _)
+      | not $ null pats, i == i' = goExpr $ ELam funcId pats body
     goExpr e = e
 
 postSimplify :: Data a => a -> a
@@ -253,10 +254,10 @@ removeTcDicts :: Data a => a -> a
 removeTcDicts x = everywhere (mkT goExpr `extT` goDefs `extT` goPat) x
   where
     goExpr (EVar (Id t _ _)) | "_tcdict" `T.isPrefixOf` t = ETcDict
-    goExpr (ELet (Def (Id t _ _) _ _) body _ _) | "_tcdict" `T.isPrefixOf` t = body
+    goExpr (ELet (Def (Id t _ _) _ _ _) body _ _) | "_tcdict" `T.isPrefixOf` t = body
     goExpr e = e
 
-    goDefs (Def (Id t _ _) _ _ : rest) | "_tcdict" `T.isPrefixOf` t = rest
+    goDefs (Def (Id t _ _) _ _ _ : rest) | "_tcdict" `T.isPrefixOf` t = rest
     goDefs ds = ds
 
     goPat (PVar (Id t _ _)) | "_tcdict" `T.isPrefixOf` t = PTcDict
@@ -298,7 +299,7 @@ reconstructLet isRec dsList body =
         goDefault sc x = gmapQl (<>) Set.empty (go sc) x
 
         goExpr sc (EVar (Id name _ _)) | Just defId <- M.lookup name sc = Set.singleton defId
-        goExpr sc (ELam ps body) = goExpr (dropVars (mconcat $ map patVars ps) sc) body
+        goExpr sc (ELam _ ps body) = goExpr (dropVars (mconcat $ map patVars ps) sc) body
         goExpr sc (ELet d body _ _) =
             -- Defs are visible in the body, but not in the defs themselves.
             go sc d <>
@@ -398,8 +399,8 @@ recordActionDefNames x = go initCtx x
 
     goDefault ctx x = gmapT (go ctx) x
 
-    goDef ctx (Def i@(Id name _ _) ty cs) =
-        Def i ty (map (goClause ctx') cs)
+    goDef ctx (Def i@(Id name _ _) funcId ty cs) =
+        Def i funcId ty (map (goClause ctx') cs)
       where
         (_, argTys, retTy) = splitFnTy ty
         ctx' = RADNCtx
@@ -413,8 +414,8 @@ recordActionDefNames x = go initCtx x
       where
         ctx' = dropArgs (length ps) ctx
 
-    goExpr ctx (ELam ps body) =
-        ELam ps (goExpr ctx' body)
+    goExpr ctx (ELam funcId ps body) =
+        ELam funcId ps (goExpr ctx' body)
       where
         ctx' = dropArgs (length ps) ctx
     goExpr ctx e
@@ -436,6 +437,48 @@ recordActionDefNames x = go initCtx x
         { radnCtxNumArgs = 0
         , radnCtxReturnType = Nothing
         }
+
+-- Assign a distinct `FuncId` to every `Def` and `ELam` in the input.
+--
+-- TODO: This has some overlap with `recordActionDefNames` - probably that one
+-- should be deprecated, and Action evaluation should consult `FuncId`s
+-- instead.
+--
+-- Assigned ID numbers start at 1, to avoid overlap with `dummyFuncId`, which
+-- uses zero.
+recordFuncIds :: Data a => a -> a
+recordFuncIds x = evalState (go "" x) 1
+  where
+    go :: Data a => Text -> a -> State Int a
+    go path x = goDefault path `extM` goDef path `extM` goExpr path $ x
+
+    goDefault path x = gmapM (go path) x
+
+    goDef :: Text -> Def -> State Int Def
+    goDef path (Def i _ ty cs) =
+        let path' = path `joinPath` idName i in
+        Def <$> pure i
+            <*> mkFuncId path'
+            <*> pure ty
+            <*> mapM (go path') cs
+
+    goExpr :: Text -> Expr -> State Int Expr
+    goExpr path (ELam _ ps e) =
+        ELam <$> mkFuncId (path `joinPath` "{lam}")
+            <*> pure ps
+            <*> goExpr path e
+    goExpr path e = goDefault path e
+
+    mkFuncId :: Text -> State Int FuncId
+    mkFuncId path = do
+        idx <- get
+        modify (+ 1)
+        return $ FuncId idx path
+
+    joinPath :: Text -> Text -> Text
+    joinPath "" y = y
+    joinPath x y = x <> "." <> y
+
 
 -- Resolve union constructor references (`PCtor`), and update their arg-count
 -- position with the correct numbers.
@@ -468,14 +511,14 @@ findForLoops x = everywhere (mkT go) $ liftLetRecTcDicts x
     --              expr
     --      in _f__ init
     -- where `expr` is the inverse of `pat`.
-    go (ELetRec [Def i@(Id name _ _) ty [Clause [] [] e]] eRest)
-      | ELam [pat] (EApp (EPrim (PIf _)) [_] [cond, e'1, res2]) <- e
+    go (ELetRec [Def i@(Id name _ _) funcId ty [Clause [] [] e]] eRest)
+      | ELam funcId' [pat] (EApp (EPrim (PIf _)) [_] [cond, e'1, res2]) <- e
       , (defs1, EApp (EVar (Id name' _ _)) _ [res1]) <- splitLet e'1
       , name' == name
       --, res1 == invertPat pat
       --, res2 == invertPat pat
       = let newBody = EForFold (EVar forLoopInit) pat cond (buildLet defs1 res1) in
-      ELet (Def i ty [Clause [] [] (ELam [PVar forLoopInit] newBody)]) eRest 0 []
+      ELet (Def i funcId ty [Clause [] [] (ELam funcId' [PVar forLoopInit] newBody)]) eRest 0 []
     go e = e
 
     forLoopInit = Id "__forLoopInit" (-1) (-1)
@@ -496,11 +539,11 @@ findForLoops x = everywhere (mkT go) $ liftLetRecTcDicts x
 liftLetRecTcDicts :: Data a => a -> a
 liftLetRecTcDicts x = everywhere (mkT go) x
   where
-    go (ELetRec [Def i@(Id name _ _) ty [Clause [] [] body]] e)
+    go (ELetRec [Def i@(Id name _ _) _ ty [Clause [] [] body]] e)
       | (ds, body') <- gatherConstants name body
       , not $ null ds
-      = let rhs = buildLet ds $ ELetRec [Def i ty [Clause [] [] body']] (EVar i) in
-        ELet (Def i ty [Clause [] [] rhs]) e 0 []
+      = let rhs = buildLet ds $ ELetRec [Def i dummyFuncId ty [Clause [] [] body']] (EVar i) in
+        ELet (Def i dummyFuncId ty [Clause [] [] rhs]) e 0 []
     go e = e
 
     -- Peel off enclosing constants of the form `let tcdict1 = ... in ...`.

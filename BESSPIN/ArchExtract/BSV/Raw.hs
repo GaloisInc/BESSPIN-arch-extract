@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, DeriveGeneric, DeriveAnyClass,
-   StandaloneDeriving #-}
+   StandaloneDeriving, OverloadedStrings #-}
 module BESSPIN.ArchExtract.BSV.Raw where
 
 import Control.DeepSeq
@@ -67,6 +67,8 @@ data Typedef = Typedef
 
 data Def = Def
     { defId :: Id
+    -- Note that even non-function `Def`s have a `FuncId`, for simplicity.
+    , defFuncId :: FuncId
     , defTy :: Ty
     , defClauses :: [Clause]
     }
@@ -79,10 +81,26 @@ data Clause = Clause
     }
     deriving (Show, Data, Typeable, Generic, NFData)
 
+-- Each function - both `Def`s and `ELam` expressions - has a unique ID.  We
+-- use these during evaluation to track the current call stack and detect
+-- recursion.  (Recursion is mostly unsupported, since our value representation
+-- is so abstract that it usually doesn't terminate, so we detect it and bail
+-- out after a few iterations.)
+data FuncId = FuncId
+    -- The unique part of the ID, different for every `Def` and `ELam`.
+    { funcIdRaw :: Int
+    -- A human-readable name for the function.  This should be a fully
+    -- qualified path.
+    , funcIdName :: Text
+    }
+    deriving (Show, Eq, Ord, Data, Typeable, Generic, NFData)
+
+dummyFuncId = FuncId 0 ""
+
 data Expr =
     -- Standard functional constructs
       EVar Id
-    | ELam [Pat] Expr
+    | ELam FuncId [Pat] Expr
     | EApp Expr [Ty] [Expr]
     -- Let bindings have NodeIds and messages associated with the `Def`'s RHS.
     | ELet Def Expr NodeId [Text]
@@ -239,14 +257,14 @@ buildFnTy [] (argTy : argTys) retTy = TArrow argTy $ buildFnTy [] argTys retTy
 buildFnTy tyVars argTys retTy = TForall tyVars $ buildFnTy [] argTys retTy
 
 splitLambda :: Expr -> ([Pat], Expr)
-splitLambda (ELam ps e') =
+splitLambda (ELam _ ps e') =
     let (pats', body') = splitLambda e' in
     (ps ++ pats', body')
 splitLambda e = ([], e)
 
 buildLambda :: [Pat] -> Expr -> Expr
 buildLambda [] e = e
-buildLambda ps e = ELam ps e
+buildLambda ps e = ELam dummyFuncId ps e
 
 splitLet :: Expr -> ([Def], Expr)
 splitLet (ELet d e' _ _) =

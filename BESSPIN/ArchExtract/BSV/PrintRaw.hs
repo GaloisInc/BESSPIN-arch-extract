@@ -52,9 +52,9 @@ instance Pretty Typedef where
         "type" <+> hsep (map pretty $ i : tyParams) <+> equals <+> pretty ty <> semi
 
 instance Pretty Def where
-    pretty (Def id ty clauses) =
+    pretty (Def id funcId ty clauses) =
         vsep
-            [ pretty id <+> colon <> colon <+> pretty ty
+            [ pretty id <+> parens (pretty funcId) <+> colon <> colon <+> pretty ty
             , vsep $ map pretty clauses
             ]
 
@@ -71,6 +71,9 @@ instance Pretty Clause where
             , indent 2 $ equals <+> pretty body
             ]
 
+instance Pretty FuncId where
+    pretty (FuncId i name) = pretty i <> "#" <> pretty name
+
 instance Pretty Guard where
     pretty (GPat pat ty expr) = pretty pat <+> "<-" <+> pretty expr
     pretty (GCond expr) = pretty expr
@@ -80,8 +83,8 @@ instance Pretty Id where
 
 instance Pretty Expr where
     pretty (EVar i) = pretty i
-    pretty (ELam pats body) =
-        "\\" <> hsep (map pretty pats) <+> "->" <+> pretty body
+    pretty (ELam funcId pats body) =
+        brackets (pretty funcId) <+> "\\" <> hsep (map pretty pats) <+> "->" <+> pretty body
     pretty (EApp f tys args) = parens $ hsep $
         [pretty f] ++ map (\t -> "@" <> pretty t) tys ++ map pretty args
     pretty (ELet def body nid msgs) =
