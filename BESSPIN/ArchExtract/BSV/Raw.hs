@@ -155,6 +155,8 @@ data Prim =
 
     | PCtor Id Id Int   -- type name, ctor name, number of ty args
     | PListLength   -- forall a. List a -> Int
+    | PReplicateM   -- forall a. m a -> m (Multi a)
+    | PReplicateNM  -- forall n a. m a -> m (MultiN n a)
     deriving (Show, Data, Typeable, Generic, NFData)
 
 data RawRule =
@@ -217,6 +219,10 @@ data Ty =
     -- and `Action` is an alias for `ActionValue ()`.
     | TAction Ty
     | TIsModule Ty Ty
+    -- An array or list of items of type `.0`.
+    | TMulti Ty
+    -- An array of `.0` (which should evaluate to TNat) instances of `.1`.
+    | TMultiN Ty Ty
 
     -- A reference to a type alias, which resolves to the second field.
     | TAlias Id Ty

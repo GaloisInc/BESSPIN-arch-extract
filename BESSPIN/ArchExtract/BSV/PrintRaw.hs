@@ -113,7 +113,7 @@ instance Pretty Expr where
             parens ("when" <+> pretty cond), pretty body]
     pretty (EMForFold init pat cond body) =
         parens $ hsep ["mfor", parens (pretty pat <+> "<-" <+> pretty init),
-            parens ("when" <+> pretty cond), "do", pretty body]
+            parens ("when" <+> pretty cond), pretty body]
     pretty e = viaShow e
 
 instance Pretty RawRule where
@@ -167,6 +167,8 @@ instance Pretty Ty where
     pretty (TReg t) = parens $ "Reg" <+> pretty t
     pretty (TBit t) = parens $ "Bit" <+> pretty t
     pretty (TModule t) = parens $ "Module" <+> pretty t
+    pretty (TMulti t) = parens $ "Multi" <+> pretty t
+    pretty (TMultiN n t) = parens $ "MultiN" <+> pretty n <+> pretty t
 
     pretty (TAlias i ty) = pretty i <> "@" <> pretty ty
     pretty (TLam is body) = parens $ "\\" <> hsep (map pretty is) <+> "->" <+> pretty body

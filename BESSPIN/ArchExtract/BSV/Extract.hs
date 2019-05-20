@@ -134,6 +134,10 @@ data Value =
     -- the accessor expects.
     | VFieldAcc Text Text Int
 
+    -- An array or list of multiple elements, each of which looks like `v`.
+    -- The `Int` is the index of a rule mux for indexing into the array.
+    | VMulti Int Value
+
     -- Monadic computations.  These are processed by `runModule` and
     -- `runAction`.
     | VReturn Value
@@ -160,6 +164,10 @@ data Value =
     -- component is expected to be the `match_ok` output of a pattern match
     -- node.)
     | VMMatch Int [(Value, Value)]
+    -- Monadic for/fold loop.  `VMForFold` wraps up the monadic part of the
+    -- loop along with all the pieces needed after the monadic result is
+    -- computed.  See the relevant `eval` and `handleAction` cases for details.
+    | VMForFold Value Value Value Value
     -- Action monad primitives.
     -- First arg is the index of the target register's rule mux; second arg is
     -- the value to write.  The effect of the write is to connect the value's
@@ -677,7 +685,16 @@ eval sc (EForFold init pat cond body) = do
     result <- genMux condVal [input, bodyVal]
     aliasLoopOutput result loop
     return result
-eval sc (EMForFold init pat cond body) = badEval ("EMForFold NYI")
+-- For `EMForFold`, we do the same thing as `EForFold`, but split into separate
+-- pure and monadic parts.  The monadic part is in `handleAction`.
+eval sc (EMForFold init pat cond body) = do
+    initVal <- eval sc init
+    loop <- guessLoopOutput initVal
+    input <- genMux VConst [initVal, loop]
+    sc' <- bindPat pat input sc
+    condVal <- eval sc' cond
+    bodyComp <- eval sc' body
+    return $ VMForFold condVal input bodyComp loop
 eval sc (EConst _) = return VConst
 eval sc EUndef = return VConst
 eval sc (EUnknown cbor) = badEval ("EUnknown", cbor)
@@ -973,6 +990,8 @@ countArgsPrim p = case p of
     PIf _ -> (1, 3)
     PCtor _ _ numTys -> (numTys, 1)
     PListLength -> (1, 1)
+    PReplicateM -> (1, 1)
+    PReplicateNM -> (2, 1)
 
 appPrim :: Prim -> [Ty] -> [Value] -> ExtractM Value
 appPrim PReturn [] [v] = return $ VReturn v
@@ -981,7 +1000,12 @@ appPrim PMkReg [ty, _width] [_init] = return $ VMkReg ty
 appPrim PMkRegU [ty, _width] [] = return $ VMkReg ty
 appPrim PPack [] [v] = return v
 appPrim PUnpack [] [v] = return v
-appPrim PIndex [] vs@[v, i] = combineValues vs
+appPrim PIndex [] vs@[v, i] = case v of
+    VMulti muxIdx v' -> do
+        iNet <- asNet i
+        accessIndexMux muxIdx [iNet]
+        return v'
+    _ -> combineValues vs
 appPrim PSlice [] vs@[v, hi, lo] = combineValues vs
 appPrim PRegRead [] [VDff _ qNetId] = return $ VNet qNetId
 appPrim PRegWrite [] [VDff muxIdx _, v] = return $ VRegWrite muxIdx v
@@ -996,13 +1020,17 @@ appPrim (PIf line) [ty] [c, t, e] =
     else
         genMux c [t, e]
 appPrim (PSetName name) [] [c] = return $ VNamed name c
-appPrim (PSetRuleName name) [] [c] =
-    return $ VCompute (VPrim $ PSetRuleName name) [] [c]
 appPrim (PCtor tyId ctorId _) _ [VConst] = return VConst
 appPrim (PCtor tyId ctorId _) _ [x] = do
     net <- asNet x
     VNet <$> genCombLogic (S.singleton net)
 appPrim PListLength [_] [_] = return VConst
+appPrim p ts vs | case p of
+        PSetRuleName _ -> True
+        PReplicateM -> True
+        PReplicateNM -> True
+        _ -> False
+    = return $ VCompute (VPrim p) ts vs
 appPrim p tys vals =
     badEval ("bad arguments for primitive", p, tys, vals)
 
@@ -1303,6 +1331,16 @@ accessRuleMux muxIdx nets = do
             A.LkRuleMux rs ps -> A.LkRuleMux (rs |> ruleName) ps
             _ -> error $ "expected RuleMux"
 
+accessIndexMux :: Int -> [A.NetId] -> ExtractM ()
+accessIndexMux muxIdx nets = do
+    let name = "_"
+    pins <- S.fromList <$> mapM netPin nets
+    zoom (_esCurModule . A._moduleLogic muxIdx) $ do
+        A._logicInputs %= (<> pins)
+        A._logicKind %= \lk -> case lk of
+            A.LkRuleMux rs ps -> A.LkRuleMux (rs |> name) ps
+            _ -> error $ "expected RuleMux"
+
 -- Create an input port connected to a fresh net.  Returns the ID of the net.
 genInputPort :: Text -> ExtractM A.NetId
 genInputPort name = do
@@ -1397,7 +1435,17 @@ handleModule c = go Nothing c
                 genRuleEnable cond
                 runAction body
         return VConst   -- returns unit
+    go optName (VCompute (VPrim PReplicateM) [_] [_, c]) = goReplicate optName c
+    go optName (VCompute (VPrim PReplicateNM) [_, _] [c]) = goReplicate optName c
     go _ c = badEval ("unsupported Module computation", c)
+
+    goReplicate optName c = do
+        muxIdx <- addLogic $ A.Logic
+            (A.LkRuleMux S.empty ("index" <| S.empty))
+            S.empty S.empty ()
+
+        -- TODO: provide multiplicity info when running `c`
+        VMulti muxIdx <$> runMonad (go optName) c
 
 
 
@@ -1532,6 +1580,13 @@ handleAction c = go c
                 v <- runAction m
                 return (n, v)
         genPriorityMux cases'
+    go (VMForFold cond input bodyComp loop) = do
+        -- This is essentially the last bit of the non-monadic `EForFold` case
+        -- of `eval`.
+        body <- runAction bodyComp
+        result <- genMux cond [input, body]
+        aliasLoopOutput result loop
+        return result
     go (VCompute (VPrim (PSetRuleName name)) [] [m]) = do
         let baseName = T.takeWhileEnd (/= '.') name
         let wrap = case baseName of

@@ -168,6 +168,11 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
 
     goExpr (EVar (Id "Prelude.listLength" _ _)) = EPrim PListLength
 
+    goExpr (EApp (EVar (Id "Vector.replicateM" _ _)) [_m, a, n] [_d1, e]) =
+        EApp (EPrim PReplicateNM) [n, a] [e]
+    goExpr (EApp (EVar (Id "List.replicateM" _ _)) [_m, a] [n, e]) =
+        EApp (EPrim PReplicateM) [a] [n, e]
+
     -- Unary and binary ops
     goExpr (EApp (EVar (Id "Prelude.+" _ _)) [_] [_d1, l, r]) = binOp "+" l r
     goExpr (EApp (EVar (Id "Prelude.-" _ _)) [_] [_d1, l, r]) = binOp "-" l r
@@ -212,6 +217,10 @@ rewrite x = everywhere (mkT goExpr `extT` goTy) x
     goTy (TCon (Id "Prelude.Action" _ _)) = TAction TUnit
     goTy (TApp (TCon (Id "Prelude.ActionValue" _ _)) [t]) = TAction t
     goTy (TApp (TCon (Id "Prelude.IsModule" _ _)) [t1, t2]) = TIsModule t1 t2
+    goTy (TApp (TCon (Id "Vector.Vector" _ _)) [n, t]) = TMultiN n t
+    goTy (TApp (TCon (Id "ListN.ListN" _ _)) [n, t]) = TMultiN n t
+    goTy (TApp (TCon (Id "Prelude.List" _ _)) [t]) = TMulti t
+    goTy (TApp (TCon (Id "Prelude.Array" _ _)) [t]) = TMulti t
     goTy t = t
 
     primApp p tys args = EApp (EPrim p) tys args
@@ -508,19 +517,38 @@ findForLoops x = everywhere (mkT go) $ liftLetRecTcDicts x
     --      letrec _f__ = \pat ->
     --          if cond then
     --              let ds... = ... in
-    --              _f__ expr
+    --              _f__ res1
     --          else
-    --              expr
+    --              res2
     --      in _f__ init
-    -- where `expr` is the inverse of `pat`.
+    -- where `res1` and `res2` are the inverse of `pat`.
     go (ELetRec [Def i@(Id name _ _) funcId ty [Clause [] [] e]] eRest)
       | ELam funcId' [pat] (EApp (EPrim (PIf _)) [_] [cond, e'1, res2]) <- e
       , (defs1, EApp (EVar (Id name' _ _)) _ [res1]) <- splitLet e'1
       , name' == name
-      --, res1 == invertPat pat
-      --, res2 == invertPat pat
       = let newBody = EForFold (EVar forLoopInit) pat cond (buildLet defs1 res1) in
       ELet (Def i funcId ty [Clause [] [] (ELam funcId' [PVar forLoopInit] newBody)]) eRest 0 []
+
+    -- Look for this pattern:
+    --      letrec _f__ = \pat ->
+    --          if cond then do
+    --              stmts...
+    --              let defs... = ... in
+    --              _f__ res1
+    --          else
+    --              return res2
+    --      in _f__ init
+    -- where `res1` and `res2` are the inverse of `pat`.
+    go (ELetRec [Def i@(Id name _ _) funcId ty [Clause [] [] e]] eRest)
+      | ELam funcId' [pat] (EApp (EPrim (PIf _)) [_] [cond, EDo stmts e'1, e'2]) <- e
+      , (defs, EApp (EVar (Id name' _ _)) _ [res1]) <- splitLet e'1
+      , EApp (EPrim PReturn) [] [res2] <- e'2
+      , name' == name
+      =
+      let newDo = EDo stmts (EApp (EPrim PReturn) [] [buildLet defs res1]) in
+      let newBody = EMForFold (EVar forLoopInit) pat cond newDo in
+      ELet (Def i funcId ty [Clause [] [] (ELam funcId' [PVar forLoopInit] newBody)]) eRest 0 []
+
     go e = e
 
     forLoopInit = Id "__forLoopInit" (-1) (-1)
