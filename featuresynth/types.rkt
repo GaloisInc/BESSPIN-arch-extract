@@ -16,6 +16,7 @@
   feature-model-group
   feature-model-dependency
   feature-model-group-members
+  feature-model-group-member-indices
   count-enabled-group-members
   all-group-members-disabled
   feature-model-num-features
@@ -44,6 +45,10 @@
   (apply +
     (for/list ([f (feature-model-features fm)])
       (if (= j (feature-group-id f)) 1 0))))
+
+(define (feature-model-group-member-indices fm j)
+  (for/list ([(f i) (in-indexed (feature-model-features fm))]
+             #:when (= j (feature-group-id f))) i))
 
 (define (count-enabled-group-members fm cfg j)
   (apply +

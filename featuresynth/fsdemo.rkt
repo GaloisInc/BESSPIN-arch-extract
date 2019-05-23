@@ -15,6 +15,7 @@
 (require "manager.rkt")
 (require "clafer.rkt")
 (require "unsatcore.rkt")
+(require "sample.rkt")
 (current-bitwidth #f)
 
 
@@ -234,84 +235,84 @@
   (displayln (list "wrote" (length synth-tests) "tests to file"))
 )
 
-(define (do-claims)
-  (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (define added-tests (mutable-set))
-  (define claims (all-claims symbolic-fm))
-
-  ; Add test `inp`, but only if it hasn't been previously added.  Returns `#t`
-  ; if `inp` is a new test input and the oracle returns `#t` on it.
-  (define (add-test0 inp)
-    (if (not (set-member? added-tests inp))
-      (begin
-        (set-add! added-tests inp)
-        (define out (oracle inp))
-        (synth 'test (cons inp out))
-        (printf "add test #~a~n" (set-count added-tests))
-        (when out
-          (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
-          (printf "  positive: ~a claims remain~n" (length claims))
-          )
-        out)
-      #f))
-
-  (define (add-test inp)
-    (when (add-test0 inp)
-      (for ([i (in-range (vector-length inp))])
-        (define inp*
-          (for/vector ([(v j) (in-indexed inp)])
-            (if (= j i) (not v) v)))
-        (add-test0 inp*))))
-
-
-
-  (define (loop)
-    (define result (synth 'disprove claims))
-    (when result
-      (add-test result)
-      (loop)))
-    ;(when (not (null? claims))
-    ;  (define result (synth 'disprove claims))
-    ;  (wresult
-    ;    (begin
-    ;      (add-test result)
-    ;      (loop))
-    ;    (begin
-    ;      (printf "proved claims ~a~n" cs)
-    ;      (synth 'assert-claims cs)
-    ;      (set! claims (filter (lambda (c) (not (member c cs))) claims))
-    ;      (loop))
-    ;    )))
-
-
-  (printf "begin with ~a claims (~a features)~n"
-          (length claims) (feature-model-num-features symbolic-fm))
-  (for ([inp init-tests]) (add-test inp))
-  (loop)
-  (printf "claim loop ended after ~a tests: ~a claims remain~n"
-          (set-count added-tests) (length claims))
-  (for ([c claims])
-    (displayln c))
-
-
-  (define test-count (set-count added-tests))
-
-  (define (loop2)
-    (define result (synth 'synthesize))
-    (cond
-      [(vector? result)
-       (add-test result)
-       (loop2)]
-      [(feature-model? result) result]
-      [(false? result) result]))
-
-  (define synth-fm (loop2))
-  (printf "finished after ~a more tests (~a total)~n"
-          (- (set-count added-tests) test-count) (set-count added-tests))
-  (pretty-write synth-fm)
-
-  (pretty-write-to-file (set->list added-tests) "tests-raw.rktd")
-)
+;(define (do-claims)
+;  (define synth (oracle-guided-synthesis+ symbolic-fm))
+;  (define added-tests (mutable-set))
+;  (define claims (all-claims symbolic-fm))
+;
+;  ; Add test `inp`, but only if it hasn't been previously added.  Returns `#t`
+;  ; if `inp` is a new test input and the oracle returns `#t` on it.
+;  (define (add-test0 inp)
+;    (if (not (set-member? added-tests inp))
+;      (begin
+;        (set-add! added-tests inp)
+;        (define out (oracle inp))
+;        (synth 'test (cons inp out))
+;        (printf "add test #~a~n" (set-count added-tests))
+;        (when out
+;          (set! claims (filter (lambda (c) (eval-claim c inp)) claims))
+;          (printf "  positive: ~a claims remain~n" (length claims))
+;          )
+;        out)
+;      #f))
+;
+;  (define (add-test inp)
+;    (when (add-test0 inp)
+;      (for ([i (in-range (vector-length inp))])
+;        (define inp*
+;          (for/vector ([(v j) (in-indexed inp)])
+;            (if (= j i) (not v) v)))
+;        (add-test0 inp*))))
+;
+;
+;
+;  (define (loop)
+;    (define result (synth 'disprove claims))
+;    (when result
+;      (add-test result)
+;      (loop)))
+;    ;(when (not (null? claims))
+;    ;  (define result (synth 'disprove claims))
+;    ;  (wresult
+;    ;    (begin
+;    ;      (add-test result)
+;    ;      (loop))
+;    ;    (begin
+;    ;      (printf "proved claims ~a~n" cs)
+;    ;      (synth 'assert-claims cs)
+;    ;      (set! claims (filter (lambda (c) (not (member c cs))) claims))
+;    ;      (loop))
+;    ;    )))
+;
+;
+;  (printf "begin with ~a claims (~a features)~n"
+;          (length claims) (feature-model-num-features symbolic-fm))
+;  (for ([inp init-tests]) (add-test inp))
+;  (loop)
+;  (printf "claim loop ended after ~a tests: ~a claims remain~n"
+;          (set-count added-tests) (length claims))
+;  (for ([c claims])
+;    (displayln c))
+;
+;
+;  (define test-count (set-count added-tests))
+;
+;  (define (loop2)
+;    (define result (synth 'synthesize))
+;    (cond
+;      [(vector? result)
+;       (add-test result)
+;       (loop2)]
+;      [(feature-model? result) result]
+;      [(false? result) result]))
+;
+;  (define synth-fm (loop2))
+;  (printf "finished after ~a more tests (~a total)~n"
+;          (- (set-count added-tests) test-count) (set-count added-tests))
+;  (pretty-write synth-fm)
+;
+;  (pretty-write-to-file (set->list added-tests) "tests-raw.rktd")
+;)
 
 (define (do-synthesize-from-tests)
   (define tests-orig (read-from-file "tests.rktd"))
@@ -408,7 +409,27 @@
   )
 
 
-(do-claims2)
+(define (do-sample)
+  (define var-config
+    (for/vector ([i (in-range (feature-model-num-features oracle-fm))])
+      (string->symbol (format "v~a" i))))
+  (define bexp (feature-model-bexp oracle-fm var-config))
+  (define bdd (make-robdd bexp (vector->list var-config)))
+  (define sol-count (robdd-sat-count bdd (vector-length var-config)))
+  (printf "~a configurations~n" sol-count)
+  (define sol-0 (robdd-nth-sat bdd (vector-length var-config) 0))
+  (define sol-n (robdd-nth-sat bdd (vector-length var-config) (- sol-count 1)))
+  (printf "solution #0: ~a~n" sol-0)
+  (printf "solution #~a: ~a~n" (- sol-count 1) sol-n)
+
+  (for ([i (in-range 20)])
+    (define idx (random sol-count))
+    (define sol (robdd-nth-sat bdd (vector-length var-config) idx))
+    (printf "solution #~a: ~a => ~a~n" idx sol (eval-feature-model oracle-fm sol)))
+)
+
+(do-sample)
+;(do-claims2)
 ;(do-threaded)
 ;(do-claims)
 ;(do-synthesize2)
