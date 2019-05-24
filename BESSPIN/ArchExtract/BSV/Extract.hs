@@ -203,6 +203,9 @@ data ModSpec = ModSpec
     , modSpecIfc :: IfcSpec
     , modSpecTy :: Ty
     , modSpecNumArgs :: (Int, Int)
+    -- A name for each value argument.  May be `_argN` if names are
+    -- unavailable.
+    , modSpecArgNames :: [Text]
     -- Gives the index of each module parameter in the (value) arguments.  This
     -- list is sorted.
     , modSpecParamMods :: [Int]
@@ -556,14 +559,29 @@ extractDesign' cfg ps =
         return (m', errs, finalErrs)
 
 mkModSpec :: Int -> IfcSpec -> BSVModule -> ModSpec
-mkModSpec idx ifc (BSVModule (Id name _ _) ty _ _) =
-    ModSpec idx ifc ty numArgs modParams
+mkModSpec idx ifc (BSVModule (Id name _ _) ty body _) =
+    ModSpec idx ifc ty numArgs argNames modParams
   where
     (tyVars, argTys, retTy) = splitFnTy ty
     modParams = catMaybes $ zipWith (\i ty -> case splitAppTy ty of
         (TIfc _, _) -> Just i
         _ -> Nothing) [0..] argTys
     numArgs = (length tyVars, length argTys)
+
+    (_, body') = splitLet body
+    pats = case body' of
+        ELam _ ps _ -> ps
+        _ -> []
+    optNames = map (\p -> case p of
+        PVar (Id name _ _) -> Just name
+        _ -> Nothing) pats
+    -- Pad on the left with `Nothing`, for args handled by patterns in the Def
+    -- itself (such as the initial IsModule `_tcdict`).
+    optNames' = replicate (length argTys - length optNames) Nothing ++ optNames
+    argNames = zipWith (\i n -> case n of
+        Nothing -> "_arg" <> T.pack (show i)
+        Just name -> name) [0..] optNames'
+
 
 extractModule :: BSVModule -> ModSpec -> ExtractM (A.Module ())
 extractModule (BSVModule (Id name _ _) ty body isLib) ms = do
@@ -572,7 +590,7 @@ extractModule (BSVModule (Id name _ _) ty body isLib) ms = do
     let kind = if isLib then A.MkExtern else A.MkNormal
     let initMod = A.Module name kind S.empty S.empty S.empty S.empty S.empty S.empty
     m <- withModule initMod $ do
-        buildParamModPorts $ modSpecParamMods ms
+        buildParamModPorts ms
         if not isLib then do
             v <- eval M.empty body
 
@@ -1477,16 +1495,17 @@ buildModule name ms = do
         (A.LkInst $ A.Inst modId name S.empty)
         S.empty S.empty ()
 
-    buildParamModLogic instId $ modSpecParamMods ms
+    buildParamModLogic instId ms
     buildIfcLogic (name <> ".") instId $ modSpecIfc ms
 
 -- Generate the logic, nets, etc. for the provided parameter modules.
-buildParamModLogic :: Int -> [Int] -> ExtractM ()
-buildParamModLogic instId idxs = do
-    inNets <- forM idxs $ \idx ->
-        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".results") 0 A.TUnknown
-    outNets <- forM idxs $ \idx ->
-        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".args") 0 A.TUnknown
+buildParamModLogic :: Int -> ModSpec -> ExtractM ()
+buildParamModLogic instId ms = do
+    let paramNames = indexMulti (modSpecArgNames ms) (modSpecParamMods ms)
+    inNets <- forM paramNames $ \name ->
+        addNet $ A.mkNet (name <> ".results") 0 A.TUnknown
+    outNets <- forM paramNames $ \name ->
+        addNet $ A.mkNet (name <> ".args") 0 A.TUnknown
 
     inPins <- S.fromList <$> mapM netPin inNets
     outPins <- S.fromList <$> mapM netPin outNets
@@ -1637,12 +1656,13 @@ handleAction c = go c
 
 
 -- Generate input/output ports for each parameter module.
-buildParamModPorts :: [Int] -> ExtractM ()
-buildParamModPorts idxs = do
-    inNets <- forM idxs $ \idx ->
-        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".results") 0 A.TUnknown
-    outNets <- forM idxs $ \idx ->
-        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".args") 0 A.TUnknown
+buildParamModPorts :: ModSpec -> ExtractM ()
+buildParamModPorts ms = do
+    let paramNames = indexMulti (modSpecArgNames ms) (modSpecParamMods ms)
+    inNets <- forM paramNames $ \name ->
+        addNet $ A.mkNet (name <> ".results") 0 A.TUnknown
+    outNets <- forM paramNames $ \name ->
+        addNet $ A.mkNet (name <> ".args") 0 A.TUnknown
 
     inPorts <- S.fromList <$> mapM netPort inNets
     outPorts <- S.fromList <$> mapM netPort outNets
@@ -1720,3 +1740,14 @@ buildIfcItemPorts_ qualName (IiMethod m) = do
 -- Get the last dot-separated word from `t`.
 lastWord :: Text -> Text
 lastWord t = T.takeWhileEnd (/= '.') t
+
+-- Get the values of `xs` at each index in `idxs`.  `idxs` must be
+-- nondecreasing.
+indexMulti :: [a] -> [Int] -> [a]
+indexMulti xs idxs = go xs idxs 0
+  where
+    go _ [] _ = []
+    go [] idxs _ = error $ "indexes out of range: " ++ show idxs
+    go (x : xs) (idx : idxs) cur
+      | cur == idx = x : go (x : xs) idxs cur
+      | otherwise = go xs (idx : idxs) (cur + 1)
