@@ -110,7 +110,7 @@ data Value =
     -- `moduleLogics`.  Second arg is the ID of its output net.
     | VDff Int A.NetId
 
-    | VModuleCtor A.ModId (Int, Int) IfcSpec
+    | VModuleCtor ModSpec
     | VMethod
         (Int, Int)      -- number of type and value arguments
         Bool            -- rule mux has an extra `token`/`_go` input
@@ -198,6 +198,17 @@ data CacheKey =
     deriving (Show, Eq, Ord)
 
 
+data ModSpec = ModSpec
+    { modSpecId :: A.ModId
+    , modSpecIfc :: IfcSpec
+    , modSpecTy :: Ty
+    , modSpecNumArgs :: (Int, Int)
+    -- Gives the index of each module parameter in the (value) arguments.  This
+    -- list is sorted.
+    , modSpecParamMods :: [Int]
+    }
+    deriving (Show)
+
 
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
@@ -210,7 +221,7 @@ data ExtractState = ExtractState
     , esRuleCounter :: Int
     , esStructs :: Map Text Struct
     , esDefs :: Map Text Def
-    , esModMap :: Map Text (A.ModId, Ty, IfcSpec)
+    , esModMap :: Map Text ModSpec
     , esIfcSpecs :: Map Text IfcSpec
     -- Error messages from `badEval`
     , esErrors :: Seq Text
@@ -410,6 +421,7 @@ convertModule isLib (Def i0 _ ty cs)
   , (ds@(_:_), _) <- splitLet body'
   , Def i _ ty' [Clause [] [] body''] <- last ds
   , (tyVars, argTys, TModule ifcTy) <- splitFnTy ty'
+  , traceShow ("module", idName i, "argTys", argTys) True
   = Just $ BSVModule (addPkgName i)
     (buildFnTy (iM : iC : tyVars) (dictTy : argTys) (TModule ifcTy))
     body''
@@ -435,6 +447,7 @@ convertModule isLib (Def i _ ty cs)
   --, all (\p -> case p of PTcDict -> True; _ -> False) dcts
   , (tyVars, argTys, TApp (TVar iM) [ifcTy]) <- splitFnTy ty
   , any (isModDict iM) argTys
+  , traceShow ("module", idName i, "argTys", argTys) True
   = Just $ BSVModule i
     (buildFnTy tyVars argTys (TModule ifcTy))
     body
@@ -454,7 +467,6 @@ findPackageModules cfg p =
 returnedIfcName :: Ty -> Maybe Text
 returnedIfcName ty
   | (_, _, ret) <- splitFnTy ty
-  , traceShow ("rifcname", ret) True
   , TModule tIfc <- ret
   , (TIfc (Id name _ _), _) <- splitAppTy $ resolveTy tIfc
   = Just name
@@ -494,8 +506,8 @@ extractDesign' cfg ps =
         Just ifc -> ifc
 
     modMap = M.fromList $
-        zipWith (\(BSVModule (Id name _ _) ty _ _) idx ->
-            (name, (idx, ty, modIfc name ty))) bsvMods [0..]
+        zipWith (\m@(BSVModule (Id name _ _) ty _ _) idx ->
+            (name, mkModSpec idx (modIfc name ty) m)) bsvMods [0..]
 
     initState =
         seq (alwaysTrace ("processing " ++ show (M.size structs) ++ " structs") structs) $
@@ -536,22 +548,31 @@ extractDesign' cfg ps =
     modErrs = M.fromList [(A.moduleName m, e <> fe) | (m,e,fe) <- extractedMods]
     nodeErrs = esNodeErrors finalState
     go m@(BSVModule (Id name _ _) ty _ _) = do
-        m' <- extractModule m (modIfc name ty)
+        let ms = modMap M.! name
+        m' <- extractModule m ms
         deepseq m' $ return ()
         finalErrs <- takeErrors
         errs <- takeModuleErrors
         return (m', errs, finalErrs)
 
+mkModSpec :: Int -> IfcSpec -> BSVModule -> ModSpec
+mkModSpec idx ifc (BSVModule (Id name _ _) ty _ _) =
+    ModSpec idx ifc ty numArgs modParams
+  where
+    (tyVars, argTys, retTy) = splitFnTy ty
+    modParams = catMaybes $ zipWith (\i ty -> case splitAppTy ty of
+        (TIfc _, _) -> Just i
+        _ -> Nothing) [0..] argTys
+    numArgs = (length tyVars, length argTys)
 
-extractModule :: BSVModule -> IfcSpec -> ExtractM (A.Module ())
-extractModule (BSVModule (Id name _ _) ty body isLib) ifc = do
+extractModule :: BSVModule -> ModSpec -> ExtractM (A.Module ())
+extractModule (BSVModule (Id name _ _) ty body isLib) ms = do
     traceM (" --- extracting module " ++ show name ++ " ---")
-    traceM (T.unpack $ printAny ty)
-    traceM (T.unpack $ printAny body)
-    traceM "---"
+    let ifc = modSpecIfc ms
     let kind = if isLib then A.MkExtern else A.MkNormal
     let initMod = A.Module name kind S.empty S.empty S.empty S.empty S.empty S.empty
-    m <- withModule initMod $
+    m <- withModule initMod $ do
+        buildParamModPorts $ modSpecParamMods ms
         if not isLib then do
             v <- eval M.empty body
 
@@ -606,9 +627,7 @@ eval sc (EVar i@(Id name _ _))
     optDef <- use $ _esDefs . at name
 
     case (optMod, optDef) of
-        (Just (modId, ty, ifc), _) -> do
-            let (tyVars, argTys, retTy) = splitFnTy ty
-            return $ VModuleCtor modId (length tyVars, length argTys) ifc
+        (Just ms , _) -> return $ VModuleCtor ms
         (Nothing, Just d) -> VThunkGlobal <$> use _esCallStack <*> pure name
         (Nothing, Nothing) -> badEval ("unknown variable", name)
 eval sc (ELam funcId ps body) = return $ VClosure (Just funcId) 0 ps sc body
@@ -821,7 +840,7 @@ appExact f tys vals = case f of
     VPartApp f tys' vals' -> appExact f (tys' ++ tys) (vals' ++ vals)
     VPrim p -> appPrim p tys vals
     VBlackbox _ -> combineValues vals
-    VModuleCtor _ _ _ -> return $ VCompute f tys vals
+    VModuleCtor _ -> return $ VCompute f tys vals
     VFieldAcc tyName name _ -> asStruct tyName (head vals) >>= \v -> case v of
         VStruct _ fs
           | Just v <- M.lookup name fs -> return v
@@ -845,7 +864,7 @@ mkPartApp f tys vals =
 isFunc (VClosure _ _ _ _ _) = True
 isFunc (VCaseClosure _ _ _ _ _ _) = True
 isFunc (VPartApp _ _ _) = True
-isFunc (VModuleCtor _ _ _) = True
+isFunc (VModuleCtor _) = True
 isFunc (VPrim _) = True
 isFunc (VBlackbox _) = True
 isFunc (VFieldAcc _ _ _) = True
@@ -865,7 +884,7 @@ countArgs (VPartApp f tys vals) = do
     return (numTys - length tys, numVals - length vals)
 countArgs (VPrim p) = return $ countArgsPrim p
 countArgs (VBlackbox nums) = return nums
-countArgs (VModuleCtor _ numArgs _) = return numArgs
+countArgs (VModuleCtor ms) = return $ modSpecNumArgs ms
 countArgs (VFieldAcc _ _ numTys) = return (numTys, 1)
 countArgs (VMethod numArgs _ _ _) = return numArgs
 countArgs (VCombMethod numArgs _ _) = return numArgs
@@ -1420,14 +1439,14 @@ handleModule c = go Nothing c
             ()
 
         return $ VDff muxIdx qNet
-    go optName (VCompute (VModuleCtor modId _ ifc) tys vals) = do
+    go optName (VCompute (VModuleCtor ms) tys vals) = do
         name <- case optName of
             Just name -> return name
             Nothing -> do
                 count <- S.length <$> use (_esCurModule . A._moduleLogics)
                 return $ "_mod" <> T.pack (show count)
 
-        buildModule name modId ifc
+        buildModule name ms
     go _ (VAddRules rs) = do
         forM_ rs $ \(RuleVal name conds body) -> do
             cond <- combineValues conds
@@ -1449,15 +1468,31 @@ handleModule c = go Nothing c
 
 
 
-buildModule :: Text -> A.ModId -> IfcSpec -> ExtractM Value
-buildModule name modId ifc = do
+buildModule :: Text -> ModSpec -> ExtractM Value
+buildModule name ms = do
+    let modId = modSpecId ms
     -- Create the module itself, with no pins.  The pins are added
     -- incrementally inside `buildIfcLogic`.
     instId <- addLogic $ A.Logic
         (A.LkInst $ A.Inst modId name S.empty)
         S.empty S.empty ()
 
-    buildIfcLogic (name <> ".") instId ifc
+    buildParamModLogic instId $ modSpecParamMods ms
+    buildIfcLogic (name <> ".") instId $ modSpecIfc ms
+
+-- Generate the logic, nets, etc. for the provided parameter modules.
+buildParamModLogic :: Int -> [Int] -> ExtractM ()
+buildParamModLogic instId idxs = do
+    inNets <- forM idxs $ \idx ->
+        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".results") 0 A.TUnknown
+    outNets <- forM idxs $ \idx ->
+        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".args") 0 A.TUnknown
+
+    inPins <- S.fromList <$> mapM netPin inNets
+    outPins <- S.fromList <$> mapM netPin outNets
+    zoom (_esCurModule . A._moduleLogic instId) $ do
+        A._logicInputs %= (<> inPins)
+        A._logicOutputs %= (<> outPins)
 
 -- Generate the logic, nets, etc. for each method in `ifc`, including nested
 -- methods.  Generated names are prefixed with `prefix` (useful for qualifying
@@ -1600,6 +1635,19 @@ handleAction c = go c
     go c = badEval ("unsupported Action computation", c)
 
 
+
+-- Generate input/output ports for each parameter module.
+buildParamModPorts :: [Int] -> ExtractM ()
+buildParamModPorts idxs = do
+    inNets <- forM idxs $ \idx ->
+        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".results") 0 A.TUnknown
+    outNets <- forM idxs $ \idx ->
+        addNet $ A.mkNet ("param" <> T.pack (show idx) <> ".args") 0 A.TUnknown
+
+    inPorts <- S.fromList <$> mapM netPort inNets
+    outPorts <- S.fromList <$> mapM netPort outNets
+    _esCurModule . A._moduleInputs %= (<> inPorts)
+    _esCurModule . A._moduleOutputs %= (<> outPorts)
 
 -- Generate input/output ports for each method in `ifc`, and connect them up to
 -- the implementations in `impl`.  Generated port names are prefixed with
