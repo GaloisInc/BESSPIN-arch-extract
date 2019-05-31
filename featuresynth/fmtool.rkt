@@ -64,6 +64,10 @@
   (define-values (fm names) (read-fmjson-from-file path))
   (display (config->json-string names (nth-config fm (random (count-configs fm))))))
 
+(define (do-print-clafer path)
+  (define j (call-with-input-file* path read-json))
+  (display (fmjson->clafer j)))
+
 (define (usage desc)
   (printf "usage: racket fmtool.rkt ~a ~a~n" (vector-ref args 0) desc)
   (exit 1))
@@ -84,6 +88,10 @@
   [`#("print" ,path)
     (pretty-write (read-fmjson-from-file path))]
   [`#("print" _ ...) (usage "<path>")]
+
+  [`#("print-clafer" ,path)
+    (do-print-clafer path)]
+  [`#("print-clafer" _ ...) (usage "<path>")]
 
   [else
     (printf "usage: racket fmtool.rkt <subcommand...>~n")
