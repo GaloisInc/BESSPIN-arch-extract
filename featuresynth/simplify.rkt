@@ -174,13 +174,6 @@
     (when (and ok (> n 0))
       (loop (- n 1)))))
 
-; Split a constraint into a list of clauses that are combined with `&&`.
-(define (constraint-clauses c)
-  (match c
-    [(cons '&& cs)
-     (append-map constraint-clauses cs)]
-    [else (list c)]))
-
 ; Return a vector of booleans of size `(length cs)`, where each position is
 ; `#t` if the corresponding clause in `cs` is implied by the non-`#t` clauses.
 (define (find-implied-clauses concrete-fm)

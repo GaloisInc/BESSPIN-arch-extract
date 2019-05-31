@@ -3,6 +3,7 @@
 (provide
   eval-feature-model
   eval-constraint
+  constraint-clauses
 
   (struct-out claim-set)
   make-claim-set
@@ -305,3 +306,11 @@
     [(cons '=> args) (apply => (map loop args))]
     [(cons '<=> args) (apply <=> (map loop args))]
     ))
+
+; Split a constraint into a list of clauses that are combined with `&&`.
+(define (constraint-clauses c)
+  (match c
+    [(cons '&& cs)
+     (append-map constraint-clauses cs)]
+    [else (list c)]))
+
