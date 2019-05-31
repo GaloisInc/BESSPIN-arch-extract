@@ -21,11 +21,12 @@
   (format "grp_~a" j))
 
 (define (group-clafer-cardinality g)
-  (cond
-    [(= 1 (group-min-card g) (group-max-card g)) 'xor]
-    [(and (= 0 (group-min-card g)) (= 1 (group-max-card g))) 'mux]
-    [(= 1 (group-min-card g)) 'or]
-    [else 'opt]))
+  (match/values (group-cards g)
+    [(1 1) 'xor]
+    [(0 1) 'mux]
+    [(1 '*) 'or]
+    [(0 '*) 'opt]
+    [(lo hi) (raise (format "unsupported group cardinality ~a..~a" lo hi))]))
 
 ; Build a tree of features reflecting the `feature-parent-id` relationships in
 ; `fm`.  Each node in the result is a hash that maps child IDs to nodes
@@ -43,10 +44,12 @@
     (define p (group-parent-id g))
     (define h (vector-ref group-hashes j))
     (define k `(group ,j))
-    (when (not (= 0 (group-min-card g) (group-max-card g)))
-      (cond
-        [(not (= -1 p)) (hash-set! (vector-ref feature-hashes p) k h)]
-        [else (hash-set! top k h)])))
+    (match/values (group-cards g)
+      [(0 '*) (void)]
+      [(_ _)
+        (cond
+          [(not (= -1 p)) (hash-set! (vector-ref feature-hashes p) k h)]
+          [else (hash-set! top k h)])]))
 
   ; Attach each feature to its parent feature or group.
   (for ([(f i) (in-indexed (feature-model-features fm))])

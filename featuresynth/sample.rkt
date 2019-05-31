@@ -48,8 +48,9 @@
          (match (group-max-card g)
            [0 (list 'not (card-ge-1 is cfg))]
            [1 (list 'not (card-ge-2 is cfg))]
-           [(? (lambda (m) (= m n)) _) #t]
-           [_ (raise "can't handle 1 < max-card < n")]))])
+           [m #:when (= m n) #t]
+           ['* #t]
+           [_ (raise "can't handle 1 < max-card < *")]))])
     (if (>= p 0)
       (ite (vector-ref cfg p) card-ok (list 'not (card-ge-1 is cfg)))
       card-ok)))

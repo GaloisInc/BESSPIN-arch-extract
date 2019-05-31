@@ -12,6 +12,7 @@
   valid-feature-model
   all-claims
   all-fixed-claims
+  group-cards
   feature-model-feature
   feature-model-group
   feature-model-dependency
@@ -31,6 +32,9 @@
 (struct group (parent-id min-card max-card) #:transparent)
 (struct dependency (a b val) #:transparent)
 (struct feature-model (features groups dependencies constraint) #:transparent)
+
+(define (group-cards g)
+  (values (group-min-card g) (group-max-card g)))
 
 (define (feature-model-feature fm i)
   (vector-ref (feature-model-features fm) i))
@@ -136,20 +140,24 @@
       ([n (feature-model-group-members fm j)])
       (||
         ; Disabled/unused group
-        (= 0 n (group-min-card g) (group-max-card g))
+        (&&
+          (= 0 (group-min-card g))
+          (eq? '* (group-max-card g))
+          (= 0 n))
         ; XOR group
         (&&
-          (= 1 (group-min-card g) (group-max-card g))
+          (= 1 (group-min-card g))
+          (eq? 1 (group-max-card g))
           (>= n 2))
         ; MUX group
         (&&
           (= 0 (group-min-card g))
-          (= 1 (group-max-card g))
+          (eq? 1 (group-max-card g))
           (>= n 2))
         ; OR group
         (&&
           (= 1 (group-min-card g))
-          (= n (group-max-card g))
+          (eq? '* (group-max-card g))
           (>= n 2))
         ))))
 

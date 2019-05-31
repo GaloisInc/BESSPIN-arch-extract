@@ -33,8 +33,11 @@
 (define (?*feature)
   (feature (?*feature-id) (?*group-id) (?*) (?*bool) (?*bool)))
 
+(define (?*min-card) (if (?*bool) 0 1))
+(define (?*max-card) (if (?*bool) 1 '*))
+
 (define (?*group)
-  (group (?*feature-id) (?*) (?*)))
+  (group (?*feature-id) (?*min-card) (?*max-card)))
 
 (define (?*dependency)
   (dependency (?*feature-id) (?*feature-id) (?*bool)))

@@ -33,10 +33,15 @@
     ([p (group-parent-id g)])
     (if (or (< p 0) (vector-ref cfg p))
       ; Group's parent is enabled, or group has no parent (always enabled).
-      (<=
-        (group-min-card g)
-        (count-enabled-group-members fm cfg j)
-        (group-max-card g))
+      (&&
+        (<=
+          (group-min-card g)
+          (count-enabled-group-members fm cfg j))
+        (or
+          (eq? (group-max-card g) '*)
+          (<=
+            (count-enabled-group-members fm cfg j)
+            (group-max-card g))))
       ; Group has a parent, and it's disabled.
       (all-group-members-disabled fm cfg j))))
 
