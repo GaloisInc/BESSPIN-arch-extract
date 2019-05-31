@@ -2,6 +2,7 @@
 
 (provide
   feature-model-bexp
+  feature-model-bdd
   robdd-nth-sat)
 
 (require bdd/robdd)
@@ -48,7 +49,7 @@
          (match (group-max-card g)
            [0 (list 'not (card-ge-1 is cfg))]
            [1 (list 'not (card-ge-2 is cfg))]
-           [m #:when (= m n) #t]
+           [m #:when (eq? m n) #t]
            ['* #t]
            [_ (raise "can't handle 1 < max-card < *")]))])
     (if (>= p 0)
@@ -76,8 +77,6 @@
     [(cons '<=> args) (cons 'eqv (map loop args))]
     ))
 
-; Evaluate a feature model to determine the validity of `cfg`.  Returns `#t` if
-; `cfg` is allowed by model `fm`, and `#f` if it is forbidden.
 (define (feature-model-bexp fm cfg)
   (cons 'and
     (append
@@ -105,3 +104,9 @@
         (set! idx (- idx count-f))
         #t))))
 
+(define (feature-model-bdd fm)
+  (define var-config
+    (for/vector ([i (in-range (feature-model-num-features fm))])
+      (string->symbol (format "v~a" i))))
+  (define bexp (feature-model-bexp fm var-config))
+  (make-robdd bexp (vector->list var-config)))

@@ -2,216 +2,90 @@
 
 (require json)
 (require threading)
+(require bdd/robdd)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
-;(require "fmjson.rkt")
+(require "fmjson.rkt")
+(require "sample.rkt")
 
-(define (accumulator)
-  (define xs '())
-  (define num 0)
-  (lambda (x)
-    (match x
-      ['count num]
-      ['get xs]
-      [_
-        (begin0
-          num
-          (set! xs (cons x xs))
-          (set! num (add1 num)))])))
+(define args (current-command-line-arguments))
 
-(define (counter)
-  (define n 0)
-  (lambda () (begin0 n (set! n (add1 n)))))
+(define (read-fmjson-from-file path)
+  ; TODO run `clafer -m fmjson` if file extension is .cfr
+  (define j (call-with-input-file* path read-json))
+  (fmjson->feature-model j))
 
-(define (feature-jsexpr j name)
-  (~> j (hash-ref 'features) (hash-ref (string->symbol name))))
+(define (parse-int s)
+  (define n (string->number s))
+  (when (not (integer? n))
+    (raise (format "failed to parse `~a` as an integer" s)))
+  n)
 
-(define (produces-group j name)
-  (not (equal? "opt" (~> j (feature-jsexpr name) (hash-ref 'gcard)))))
+(define (check-range desc idx lo hi)
+  (when (< idx lo) (raise (format "~a out of range: ~a < ~a" desc idx lo)))
+  (when (>= idx hi) (raise (format "~a out of range: ~a >= ~a" desc idx hi)))
+)
 
-; The translation from FMJSON to `feature-model` is not quite 1-to-1, due to
-; the distinction `feature-model` makes between "features" and "groups".  A
-; naïve translation would produce a f-m feature for each FMJSON feature, plus a
-; f-m group for each FMJSON feature with `gcard` not set to `opt`.  However,
-; for some FMJSON features, it's possible to omit the f-m feature and produce
-; only a group.  This is necessary in some cases for f-m -> FMJSON -> f-m
-; round-tripping.
-;
-; Specifically, we omit the f-m feature for an FMJSON feature when the
-; following hold:
-; - `gcard != opt`.  Otherwise there would be no group for this FMJSON feature.
-; - `card = on`.  Otherwise, we need the parent f-m feature to support toggling
-;   the group independent of its parent feature.
-; - The parent FMJSON feature has `gcard = opt`, and thus did not produce an
-;   f-m group.  The f-m format doesn't support directly nesting groups.
-(define (can-omit-feature j name)
-  (define fj (feature-jsexpr j name))
-  (and
-    (not (equal? "opt" (hash-ref fj 'gcard)))
-    (equal? "on" (hash-ref fj 'card))
-    (let ([parent-name (hash-ref fj 'parent)])
-      (or (eq? 'null parent-name) (not (produces-group j parent-name))))))
+(define (config->json-string names cfg)
+  (define parts
+    (for/list ([n names] [v cfg])
+      (format "  ~a: ~a~n" (jsexpr->string n) (if v "true" "false"))))
+  (string-join
+    parts
+    ""
+    #:before-first "{\n"
+    #:after-last "}\n"))
 
-; Return the names of all features in `j`, using a preorder traversal starting
-; from `roots`.
-(define (feature-order j)
-  (define names-rev '())
-  (define (walk name)
-    (set! names-rev (cons name names-rev))
-    (define children
-      (~> j (hash-ref 'features) (hash-ref (string->symbol name)) (hash-ref 'children)))
-    (for ([n children]) (walk n)))
-  (for ([n (hash-ref j 'roots)]) (walk n))
-  (list->vector (reverse names-rev)))
-
-(define (jsexpr->feature-model j)
-  (define base-version (~> j (hash-ref 'version) (hash-ref 'base)))
-  (unless (= 1 base-version)
-    (raise (format "unsupported FMJSON version: ~a" base-version)))
-
-  (define order (feature-order j))
-  (define feature-idx-map
-    (let ([next-idx (counter)])
-      (for/hash ([n order] #:when (not (can-omit-feature j n)))
-        (values n (next-idx)))))
-  (define group-idx-map
-    (let ([next-idx (counter)])
-      (for/hash ([n order] #:when (produces-group j n))
-        (values n (next-idx)))))
-
-  (displayln feature-idx-map)
-  (displayln group-idx-map)
-
-  (define (feature-idx name)
-    (if (eq? name 'null) #f
-      (hash-ref feature-idx-map name)))
-
-  ; Get the index of `name`, for use as a parent feature.
-  (define (parent-feature-idx name)
-    (if (eq? name 'null) #f
-      (hash-ref feature-idx-map name
-        (lambda ()
-          (define parent-name (~> j (feature-jsexpr name) (hash-ref 'parent)))
-          (if (eq? parent-name 'null) #f
-            ; This lookup should always succeed.  `can-omit-feature` should
-            ; never return true for both a feature and its direct parent.
-            (hash-ref feature-idx-map parent-name))))))
-
-  (define (group-idx name)
-    (if (eq? name 'null) #f
-      (hash-ref group-idx-map name #f)))
-
-  (define feature-depth-map (make-hash))
-  (define (feature-depth name)
-    (define idx (feature-idx name))
-    (let loop ([name name] [idx idx])
-      (hash-ref! feature-depth-map idx
-        (lambda ()
-          (define parent-name (~> j (feature-jsexpr name) (hash-ref 'parent)))
-          (define parent-idx (parent-feature-idx parent-name))
-          (if (not parent-idx) 0 (add1 (loop parent-name parent-idx)))))))
-
-  ; List of extra constraints generated by `jsexpr->feature`.
-  (define extra-constraints (accumulator))
-
-  (define (jsexpr->feature fj)
-    (define name (hash-ref fj 'name))
-    (define parent-name (hash-ref fj 'parent))
-    (define parent-id (parent-feature-idx parent-name))
-    (define group-id (group-idx parent-name))
-    (define depth (feature-depth name))
-    (define-values (force-on force-off)
-      (match (hash-ref fj 'card)
-        ["opt" (values #f #f)]
-        ["off" (values #f #t)]
-        ; `card = on` can be implemented with `force-on` only when the feature
-        ; is at top level.  (This works even for children of omitted FMJSON
-        ; features, since `can-omit-feature` requires the omitted feature to
-        ; have `card = on`.)  Otherwise, we must emit an explicit constraint
-        ; from the parent to the child.
-        ["on"
-         (if (not parent-id)
-           (values #t #f)
-           (begin
-             (extra-constraints
-               `(=> ,parent-id ,(feature-idx name)))
-             (values #f #f)))]
-        [c (raise (format "unknown cardinality: ~a" c))]))
-    ; Set `depth = -1` as a placeholder, to be filled in later.
-    (feature parent-id group-id depth force-on force-off))
-
-  (define (jsexpr->group fj)
-    (define parent-id (parent-feature-idx (hash-ref fj 'name)))
-    (define num-children (length (hash-ref fj 'children)))
-    (define-values (min-card max-card)
-      (match (hash-ref fj 'gcard)
-        ["opt" (values 0 num-children)]
-        ["or" (values 1 num-children)]
-        ["mux" (values 0 1)]
-        ["xor" (values 1 1)]
-        [gc (raise (format "unknown group cardinality: ~a" gc))]))
-    (group parent-id min-card max-card))
-
-  (define (jsexpr->constraint cj)
-    (match (hash-ref cj 'kind)
-      ["lit" (hash-ref cj 'val)]
-      ; We use `parent-feature-idx` instead of `feature-idx` because the
-      ; referenced feature may be omitted.  Omitted features always have `card
-      ; = on`, meaning its state is the same as its parent's.
-      ["feat" (parent-feature-idx (hash-ref cj 'name))]
-      ["op" #:when (equal? (hash-ref cj 'op) "xor")
-       ; Special case for `xor`, which we don't support directly.  Instead, we
-       ; unroll it into a horrible mess of nested `and`s and `or`s.
-       (for/fold ([acc #f]) ([arg (sequence-map jsexpr->constraint (hash-ref cj 'args))])
-         `(|| (&& acc (! arg)) (&& arg (! acc))))]
-      ["op"
-       (define op
-         (match (hash-ref cj 'op)
-           ["and" '&&]
-           ["or" '||]
-           ; `xor` handled above
-           ["not" '!]
-           ["imp" '=>]
-           ["eqv" '<=>]
-           [o (raise (format "unknown expr op: ~a" o))]))
-       (cons op (map jsexpr->constraint (hash-ref cj 'args)))]
-      [k (raise (format "unknown expr kind: ~a" k))]))
-
-  (define constraints
-    (append
-      (for/list ([cj (hash-ref j 'constraints)]) (jsexpr->constraint cj))
-      (reverse (extra-constraints 'get))))
-  (define clauses (append-map constraint-clauses constraints))
-
-  (define (constraint->dep c)
-    (match c
-      [`(=> ,(? integer? a) ,(? integer? b)) (dependency a b #t)]
-      [`(=> ,(? integer? a) (! ,(? integer? b))) (dependency a b #f)]
-      [else #f]))
-  (define deps
-    (for/vector ([cl clauses] #:when #t
-                 [dep (in-value (constraint->dep cl))] #:when dep) dep))
-  (define other-clauses
-    (for/list ([cl clauses] #:when (not (constraint->dep cl))) cl))
-
-  (feature-model
-    (for/vector ([n order] #:when (hash-has-key? feature-idx-map n))
-      (jsexpr->feature (feature-jsexpr j n)))
-    (for/vector ([n order] #:when (hash-has-key? group-idx-map n))
-      (jsexpr->group (feature-jsexpr j n)))
-    deps
-    (cons '&& other-clauses)
-    )
-  )
+(define (config-map names cfg)
+  (for/hash ([n names] [v cfg]) (values (string->symbol n) v)))
 
 
-(define j (call-with-input-file* "test.fm.json" read-json))
+(define (count-configs fm)
+  (define n (feature-model-num-features fm))
+  (define bdd (feature-model-bdd fm))
+  (robdd-sat-count bdd n))
 
-(printf "features:~n")
+(define (nth-config fm idx)
+  (define n (feature-model-num-features fm))
+  (define bdd (feature-model-bdd fm))
+  (check-range "config index" idx 0 (robdd-sat-count bdd n))
+  (robdd-nth-sat bdd n idx))
 
-(for ([name (feature-order j)])
-  (printf "  ~a; feature? ~a; group? ~a~n"
-          name (not (can-omit-feature j name)) (produces-group j name)))
+(define (do-count-configs path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (displayln (count-configs fm)))
 
-(pretty-write (jsexpr->feature-model j))
+(define (do-nth-config path idx)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (display (config->json-string names (nth-config fm idx))))
+
+(define (do-random-config path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (display (config->json-string names (nth-config fm (random (count-configs fm))))))
+
+(define (usage desc)
+  (printf "usage: racket fmtool.rkt ~a ~a~n" (vector-ref args 0) desc)
+  (exit 1))
+
+(match args
+  [`#("count-configs" ,path)
+    (do-count-configs path)]
+  [`#("count-configs" _ ...) (usage "<path>")]
+
+  [`#("nth-config" ,path ,idx)
+    (do-nth-config path (parse-int idx))]
+  [`#("nth-config" _ ...) (usage "<path> <index>")]
+
+  [`#("random-config" ,path)
+    (do-random-config path)]
+  [`#("random-config" _ ...) (usage "<path>")]
+
+  [`#("print" ,path)
+    (pretty-write (read-fmjson-from-file path))]
+  [`#("print" _ ...) (usage "<path>")]
+
+  [else
+    (printf "usage: racket fmtool.rkt <subcommand...>~n")
+    (exit 1)]
+)
