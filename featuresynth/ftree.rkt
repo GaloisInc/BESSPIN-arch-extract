@@ -288,7 +288,7 @@
   (define (ftree-feature-parent-id f)
     (cond
       [(not (= -1 (feature-group-id f)))
-       (ftree-feature-id (feature-group-id f))]
+       (ftree-group-id (feature-group-id f))]
       [(not (= -1 (feature-parent-id f)))
        (ftree-feature-id (feature-parent-id f))]
       [else #f]))
