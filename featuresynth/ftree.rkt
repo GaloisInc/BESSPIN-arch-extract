@@ -352,7 +352,8 @@
   (define fnodes (hash-union normal-fnodes group-fnodes))
 
   (define dep-constraints
-    (for/list ([d (feature-model-dependencies fm)])
+    (for/list ([d (feature-model-dependencies fm)]
+               #:when (not (= -1 (dependency-a d))))
       (match-define (dependency a b val) d)
       (if val
         `(=> (feature ,(ftree-feature-id a)) (feature ,(ftree-feature-id b)))
@@ -443,6 +444,7 @@
 (define (split-constraint c)
   (match c
     [`(&& ,@cs) (append-map split-constraint cs)]
+    [#t '()]
     [else (list c)]))
 
 (define (ftree-split-constraints! ft)
