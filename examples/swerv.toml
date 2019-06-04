@@ -62,6 +62,6 @@ init-tests-file = "examples/swerv/init-tests.rktd"
 max-groups = 3
 max-dependencies = 0
 
-# Where to write the generated clafer model, once synthesis succeeds.
-out-file = "examples/swerv/swerv.cfr"
+# Where to write the generated feature model, once synthesis succeeds.
+out-file = "examples/swerv/swerv.fm.json"
 

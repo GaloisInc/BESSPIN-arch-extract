@@ -3,6 +3,7 @@
 (require rosette/lib/match)
 (require rosette/lib/synthax)
 (require racket/random)
+(require json)
 (require "util.rkt")
 (require "synthesis.rkt")
 (require "types.rkt")
@@ -141,15 +142,15 @@
   )
 
 (define (output-feature-model symbolic-fm concrete-fm)
-  (define fm (simplify-feature-model symbolic-fm concrete-fm '()))
+  (define fm concrete-fm)
   (pretty-write fm)
-  (define clafer-str (feature-model->clafer (feature-name-list feature-names) fm))
-  (displayln clafer-str)
+  (define j (feature-model->fmjson (feature-name-list feature-names) fm))
+  (displayln (fmjson->clafer j))
   (when config-out-file
     (call-with-output-file*
       config-out-file
       #:exists 'truncate
-      (lambda (f) (write-string clafer-str f)))))
+      (lambda (f) (write-json j f)))))
 
 (define (output-unsat symbolic-fm tests)
   (printf "Minimizing failing input...~n")

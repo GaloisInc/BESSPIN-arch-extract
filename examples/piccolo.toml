@@ -43,7 +43,7 @@ init-tests-file = "examples/piccolo/init-tests.rktd"
 resume-tests-file = "examples/piccolo/resume-tests.rktd"
 max-groups = 3
 max-dependencies = 3
-out-file = "piccolo.cfr"
+out-file = "piccolo.fm.json"
 
 hard-constraints = [
     "(! CSR_REGFILE_MIN)",

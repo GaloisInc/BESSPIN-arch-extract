@@ -5,4 +5,4 @@ init-tests-file = "examples/secure-cpu-isa-init-tests.rktd"
 resume-tests-file = "examples/secure-cpu-isa-resume-tests.rktd"
 max-groups = 5
 max-dependencies = 3
-out-file = "out.cfr"
+out-file = "out.fm.json"
