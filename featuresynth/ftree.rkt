@@ -222,18 +222,41 @@
   (define group-names
     (for/vector ([x group-ids]) (fnode-name (ftree-feature ft x))))
 
+  (define-values (dep-cons normal-cons)
+    (partition
+      (match-lambda
+        [`(=> (feature ,_) (feature ,_)) #t]
+        [`(=> (feature ,_) (! (feature ,_))) #t]
+        [else #f])
+      (ftree-constraints ft)))
+
+  ; Get the feature index to use for `x` in constraints.  This is `x`'s own
+  ; index when `x` is a feature, and its parent index when it's a group.
+  (define (constraint-feature-id x)
+    (define fn (ftree-feature ft x))
+    (if (fnode-is-group? fn)
+      (hash-ref feature-id-map (fnode-parent fn))
+      (hash-ref feature-id-map x)))
+
+  (define (build-dep ax bx val)
+    (dependency
+      (constraint-feature-id ax)
+      (constraint-feature-id bx)
+      val))
+
+  (define dependencies
+    (for/vector ([c dep-cons])
+      (match c
+        [`(=> (feature ,ax) (feature ,bx))
+          (build-dep ax bx #t)]
+        [`(=> (feature ,ax) (! (feature ,bx)))
+          (build-dep ax bx #f)])))
+
   (define constraint
-    (rewrite-constraint
-      (lambda (c)
-        (match c
-          [`(feature ,x)
-            (define fn (ftree-feature ft x))
-            ; TODO - should probably require constraints only mention non-group
-            ; features
-            (if (fnode-is-group? fn)
-              (hash-ref feature-id-map (fnode-parent fn))
-              (hash-ref feature-id-map x))]))
-      (cons '&& (ftree-constraints ft))))
+    (cons '&&
+      (rewrite-constraints
+        (match-lambda [`(feature ,x) (constraint-feature-id x)])
+        normal-cons)))
 
   (define full-order
     (for/vector ([x (ftree-feature-order ft)])
@@ -246,7 +269,7 @@
     (feature-model
       features
       groups
-      (vector)
+      dependencies
       constraint))
 
   (values
@@ -520,5 +543,3 @@
           (not (maybe-set-card a b 'off))]
         [else #t])
       (ftree-constraints ft))))
-
-; TODO constraints to deps

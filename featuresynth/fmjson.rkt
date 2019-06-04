@@ -47,6 +47,7 @@
   (define ft (fmjson->ftree j))
   (ftree-split-opt-groups! ft)
   (ftree-force-card-opt! ft)
+  (ftree-split-constraints! ft)
   (ftree-complete-order! ft
     (lambda (k) (list (format "~a-parent" k))))
   (define-values (fm names) (ftree->feature-model ft))
