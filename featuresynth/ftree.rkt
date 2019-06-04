@@ -13,6 +13,8 @@
   ftree-force-card-opt!
 
   feature-model->ftree
+  ftree-names-as-ids!
+  ftree-collapse-groups!
   )
 
 (require racket/hash)
@@ -59,7 +61,7 @@
     (set-add! (hash-ref m (fnode-parent f)) k))
   m)
 
-; Recalculate `feature-order` so it includes exactly the IDs present in
+; Compute a new `feature-order` that includes exactly the IDs present in
 ; `features`, using the existing `feature-order` as a hint.  The result is
 ; based on a depth-first preorder traversal of the feature tree, using the
 ; various ordering hints to sort the children of each node.
@@ -67,7 +69,7 @@
 ; If provided, `alt-ids` should, given a feature ID, return a list of other IDs
 ; that are related and should be placed just after the given ID in the sort
 ; order.
-(define (ftree-complete-order! ft [alt-ids (lambda (x) '())])
+(define (ftree-complete-order ft [alt-ids (lambda (x) '())])
   (define idx-map (make-hash))
   (define next (let ([i 0]) (lambda () (begin0 i (set! i (add1 i))))))
 
@@ -93,8 +95,13 @@
   (define (walk x)
     (cons x (append-map walk (sorted-children x))))
 
-  (set-ftree-feature-order! ft (append-map walk (sorted-children #f)))
+  (append-map walk (sorted-children #f))
   )
+
+(define (ftree-complete-order! ft [alt-ids (lambda (x) '())])
+  (set-ftree-feature-order!
+    ft
+    (ftree-complete-order ft alt-ids)))
 
 (define (fnode-is-group? fn)
   (not (eq? 'opt (fnode-gcard fn))))
@@ -109,6 +116,9 @@
       [(cons '=> args) (cons '=> (map loop args))]
       [(cons '<=> args) (cons '<=> (map loop args))]
       [x (f x)])))
+
+(define (rewrite-constraints f cs)
+  (map (lambda (c) (rewrite-constraint f c)) cs))
 
 ; Convert an ftree to a feature-model.  Requirements:
 ; * Each feature in the tree falls into one of three categories:
@@ -225,13 +235,12 @@
              #:when (not (fnode-is-group? (ftree-feature ft k))))
     k))
 
-(define (fresh-feature-id ft base)
-  (define features (ftree-features ft))
-  (if (not (hash-has-key? features base))
+(define (fresh-id base in-use)
+  (if (not (in-use base))
     base
     (let loop ([i 0])
       (define name (format "~a~a" base i))
-      (if (not (hash-has-key? features name))
+      (if (not (in-use name))
         name
         (loop (add1 i))))))
 
@@ -241,7 +250,10 @@
   (for ([(k fn) (ftree-features ft)]
         #:when (and (fnode-is-group? fn)
                     (not (eq? 'on (fnode-card fn)))))
-    (define new-k (fresh-feature-id ft (format "~a-parent" k)))
+    (define new-k
+      (fresh-id
+        (format "~a-parent" k)
+        (lambda (n) (hash-has-key? (ftree-features ft) n))))
     (hash-set! (ftree-features ft) new-k
       (fnode
         (fnode-name fn)
@@ -362,3 +374,69 @@
     (cons constraint dep-constraints)
     order
     ))
+
+; Reassign feature IDs based on their names.
+(define (ftree-names-as-ids! ft)
+  (define id-map
+    (let ([used-ids (mutable-set)])
+      (for/hash ([k (ftree-complete-order ft)])
+        (define fn (ftree-feature ft k))
+        (define new-k 
+          (fresh-id (fnode-name fn) (lambda (n) (set-member? used-ids n))))
+        (set-add! used-ids new-k)
+        (values k new-k))))
+
+  (set-ftree-features! ft
+    (make-hash
+      (for/list ([(k fn) (ftree-features ft)])
+        (define parent
+          (and (fnode-parent fn) (hash-ref id-map (fnode-parent fn))))
+        (cons
+          (hash-ref id-map k)
+          (struct-copy fnode fn [parent parent])))))
+
+  (set-ftree-constraints! ft
+    (rewrite-constraints
+      (lambda (c) (match c [`(feature ,k) `(feature ,(hash-ref id-map k))]))
+      (ftree-constraints ft)))
+
+  (set-ftree-feature-order! ft
+    (for/list ([old-k (ftree-feature-order ft)] #:when #t
+               [new-k (in-value (hash-ref id-map old-k #f))] #:when new-k)
+      new-k))
+  )
+
+; Find extraneous group/nongroup feature pairs, like those created by
+; ftree-split-opt-groups!, and combine them back into single features.
+; Specifically, this looks for a `gcard = opt` feature with a `gcard != opt,
+; card = on` feature as its only child.
+(define (ftree-collapse-groups! ft)
+  (define child-map (ftree-child-map ft))
+  (define (only-child k)
+    (define children (hash-ref child-map k))
+    (and (= 1 (set-count children)) (set-first children)))
+
+  (define subst-map
+    (for/hash ([(k fn) (ftree-features ft)] #:when (eq? 'opt (fnode-gcard fn))
+               [k2 (in-value (only-child k))] #:when k2
+               [fn2 (in-value (ftree-feature ft k2))]
+               #:when (and (not (eq? 'opt (fnode-gcard fn2)))
+                           (eq? 'on (fnode-card fn2))))
+      (values k k2)))
+
+  (for ([(k k2) subst-map])
+    (define fn (ftree-feature ft k))
+    (define fn2 (ftree-feature ft k2))
+    (set-fnode-parent! fn2 (fnode-parent fn))
+    (set-fnode-card! fn2 (fnode-card fn))
+    (hash-remove! (ftree-features ft) k))
+
+  (set-ftree-constraints! ft
+    (rewrite-constraints
+      (lambda (c) (match c [`(feature ,k) `(feature ,(hash-ref subst-map k k))]))
+      (ftree-constraints ft)))
+  )
+
+
+
+

@@ -176,6 +176,8 @@
 
 (define (feature-model->fmjson names fm)
   (define ft (feature-model->ftree names fm))
+  (ftree-names-as-ids! ft)
+  (ftree-collapse-groups! ft)
   (ftree-complete-order! ft)
   (ftree->fmjson ft))
 
