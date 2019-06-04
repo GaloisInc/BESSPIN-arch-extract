@@ -2,14 +2,19 @@
 
 (provide
   fmjson->feature-model
+  feature-model->fmjson
   fmjson->clafer
+
+  fmjson->ftree
 )
 
+(require racket/hash)
 (require json)
 (require threading)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
+(require "ftree.rkt")
 
 
 (define (fmjson-feature j name)
@@ -32,104 +37,60 @@
 (define (produces-group fj)
   (not (equal? "opt" (hash-ref fj 'gcard))))
 
-; Direct translation of FMJSON to `feature-model`.  Generates one feature for
-; every FMJSON feature, and a group for every feature having `gcard != opt`.
-; Returns two values: the `feature-model`, and a vector of feature names.
 (define (fmjson->feature-model j)
+  (define ft (fmjson->ftree j))
+  (ftree-split-opt-groups! ft)
+  (ftree-force-card-opt! ft)
+  (ftree-complete-order! ft)
+  (values
+    (ftree->feature-model ft)
+    (list->vector (ftree-non-group-feature-order ft))))
+
+
+(define (fmjson->ftree j)
   (unless (= 1 (fmjson-version j))
     (raise (format "unsupported FMJSON version: ~a" (fmjson-version j))))
 
   (define order (feature-order j))
-  (define feature-map
-    (for/hash ([(name i) (in-indexed order)])
-      (values name i)))
-  (define group-map
-    (let ([i 0])
-      (for/hash ([name order] #:when (produces-group (fmjson-feature j name)))
-        (begin0
-          (values name i)
-          (set! i (add1 i))))))
 
-  (define (feature-id name)
-    (if (eq? name 'null) -1
-      (hash-ref feature-map name)))
-  (define (group-id name)
-    (hash-ref group-map name -1))
+  (define features (make-hash))
+  (for ([k order])
+    (define fj (fmjson-feature j k))
+    (define parent (hash-ref fj 'parent))
+    (hash-set! features k
+      (fnode
+        (hash-ref fj 'name)
+        (if (eq? parent 'null) #f parent)
+        (string->symbol (hash-ref fj 'card))
+        (string->symbol (hash-ref fj 'gcard))
+        )))
 
-  ; json->feature sometimes has to generate additional dependencies.  These are
-  ; used to handle `card = on` in non-top-level features.
-  (define extra-deps
-    (let ([acc '()])
-      (match-lambda
-        ['get (reverse acc)]
-        [x (set! acc (cons x acc))])))
+  (define constraints
+    (map json->ftree-constraint (hash-ref j 'constraints)))
 
-  (define (json->feature fj)
-    (define name (hash-ref fj 'name))
-    (define parent-name (hash-ref fj 'parent))
-    (define pid (feature-id parent-name))
-    (define gid (group-id parent-name))
-    (define-values (on off)
-      (match (hash-ref fj 'card)
-        ["opt" (values #f #f)]
-        ["off" #:when (= -1 pid) (values #f #t)]
-        ["on" #:when (= -1 pid) (values #t #f)]
-        ["off"
-         (extra-deps (dependency pid (feature-id name) #f))
-         (values #f #f)]
-        ["on"
-         (extra-deps (dependency pid (feature-id name) #t))
-         (values #f #f)]))
-    (feature pid gid 'depth-unset on off)
-  )
+  (ftree features constraints (vector->list (feature-order j))))
 
-  (define (json->group fj)
-    ; The group's parent is its corresponding feature.
-    (define pid (feature-id (hash-ref fj 'name)))
-    (define-values (lo hi)
-      (match (hash-ref fj 'gcard)
-        ["opt" (raise "shouldn't run json->group when `gcard = opt`")]
-        ["or" (values 1 '*)]
-        ["mux" (values 0 1)]
-        ["xor" (values 1 1)]
-        [gc (raise (format "unknown group cardinality: ~a" gc))]))
-    (group pid lo hi)
-  )
-
-  (define (json->constraint cj)
-    (match (hash-ref cj 'kind)
-      ["lit" (hash-ref cj 'val)]
-      ["feat" (feature-id (hash-ref cj 'name))]
-      ["op" #:when (equal? (hash-ref cj 'op) "xor")
-       ; Special case for `xor`, which we don't support directly.  Instead, we
-       ; unroll it into a chain of nested `(! (<=> a b))`.
-       (for/fold ([acc #f]) ([arg (sequence-map json->constraint (hash-ref cj 'args))])
-         `(! (<=> ,acc ,arg)))]
-      ["op"
-       (define op
-         (match (hash-ref cj 'op)
-           ["and" '&&]
-           ["or" '||]
-           ; `xor` handled above
-           ["not" '!]
-           ["imp" '=>]
-           ["eqv" '<=>]
-           [o (raise (format "unknown expr op: ~a" o))]))
-       (cons op (map json->constraint (hash-ref cj 'args)))]
-      [k (raise (format "unknown expr kind: ~a" k))]))
-
-  (values
-    (feature-model
-      (for/vector ([name order]) (json->feature (fmjson-feature j name)))
-      (let ([acc (make-vector (hash-count group-map))])
-        (for ([(name idx) group-map])
-          (vector-set! acc idx (json->group (fmjson-feature j name))))
-        acc)
-      (list->vector (extra-deps 'get))
-      (cons '&& (map json->constraint (hash-ref j 'constraints))))
-    order
-  ))
-
+(define (json->ftree-constraint cj)
+  (match (hash-ref cj 'kind)
+    ["lit" (hash-ref cj 'val)]
+    ["feat" `(feature ,(hash-ref cj 'name))]
+    ["op" #:when (equal? (hash-ref cj 'op) "xor")
+     ; Special case for `xor`, which we don't support directly.  Instead, we
+     ; unroll it into a chain of nested `(! (<=> a b))`.
+     (for/fold ([acc #f]) ([arg (sequence-map json->ftree-constraint (hash-ref cj 'args))])
+       `(! (<=> ,acc ,arg)))]
+    ["op"
+     (define op
+       (match (hash-ref cj 'op)
+         ["and" '&&]
+         ["or" '||]
+         ; `xor` handled above
+         ["not" '!]
+         ["imp" '=>]
+         ["eqv" '<=>]
+         [o (raise (format "unknown expr op: ~a" o))]))
+     (cons op (map json->ftree-constraint (hash-ref cj 'args)))]
+    [k (raise (format "unknown expr kind: ~a" k))]))
 
 (define (recalc-feature-depths fm)
   (define depth-map (make-hash))
@@ -143,6 +104,113 @@
     [features
       (for/vector ([(f i) (in-indexed (feature-model-features fm))])
         (struct-copy feature f [depth (depth i)]))]))
+
+
+; Given a function `f` that maps an element of `xs` to a value `j`, build the
+; inverse mapping from each `j` to the indices `i` of the `xs` where `(f x)` is
+; `j`.
+(define (build-inverse-map f xs)
+  (define m (make-hash))
+  (for ([(x i) (in-indexed xs)] #:when #t
+        [j (in-value (f x))] #:when j)
+    (hash-update! m j (lambda (is) (cons i is)) (lambda () '())))
+  (for/hash ([(j is) m]) (values j (reverse is))))
+
+(define (as-string s)
+  (if (symbol? s)
+    (symbol->string s)
+    s))
+
+(define (feature-model->fmjson names fm)
+  (define feature-children
+    (build-inverse-map
+      (lambda (f) (let ([i (feature-parent-id f)]) (if (= i -1) #f i)))
+      (feature-model-features fm)))
+  (define feature-groups
+    (build-inverse-map
+      (lambda (g) (let ([i (group-parent-id g)]) (if (= i -1) #f i)))
+      (feature-model-groups fm)))
+  (define group-members
+    (build-inverse-map
+      (lambda (f) (let ([j (feature-group-id f)]) (if (= j -1) #f j)))
+      (feature-model-features fm)))
+
+  (define (get-feature-name i)
+    (as-string (vector-ref names i)))
+    ;(as-string (feature-name (feature-model-feature fm i))))
+  (define (get-group-name j)
+    (format "grp_~a" (add1 j)))
+    ;(as-string (group-name (feature-model-group fm j))))
+
+  (define (feature-parent-name f)
+    (cond
+      [(not (= -1 (feature-group-id f)))
+       (get-group-name (feature-group-id f))]
+      [(not (= -1 (feature-parent-id f)))
+       (get-feature-name (feature-parent-id f))]
+      [else 'null]))
+
+  (define (group-parent-name g)
+    (cond
+      [(not (= -1 (group-parent-id g)))
+       (get-feature-name (group-parent-id g))]
+      [else 'null]))
+
+  (define (feature-children-names i)
+    (append
+      (map get-feature-name (hash-ref feature-children i '()))
+      (map get-group-name (hash-ref feature-groups i '()))))
+
+  (define normal-feature-json
+    (for/hash ([(f i) (in-indexed (feature-model-features fm))])
+      (define card
+        (cond
+          [(feature-force-on f) 'on]
+          [(feature-force-off f) 'off]
+          [else 'opt]))
+      (values
+        (get-feature-name i)
+        `#hash(
+          (name . ,(get-feature-name i))
+          (parent . ,(feature-parent-name f))
+          (children . ,(feature-children-names i))
+          (card . ,card)
+          (gcard . "opt")
+        ))))
+
+  (define group-feature-json
+    (for/hash ([(g j) (in-indexed (feature-model-groups fm))]
+               #:when (match/values (group-cards g) [(0 '*) #f] [(_ _) #t]))
+      (define gcard
+        (match/values (group-cards g)
+          [(0 '*) "opt"]
+          [(1 '*) "or"]
+          [(0 1) "mux"]
+          [(1 1) "xor"]
+          [(lo hi) (raise (format "unsupported group cardinality ~a..~a" lo hi))]))
+      (values
+        (get-group-name j)
+        `#hash(
+          (name . ,(get-group-name j))
+          (parent . ,(group-parent-name g))
+          (children . ,(map get-feature-name (hash-ref group-members j '())))
+          (card . "on")
+          (gcard . ,gcard)
+        ))))
+
+  (define feature-json (hash-union normal-feature-json group-feature-json))
+
+  (define roots
+    (for/list ([fj (in-hash-values feature-json)]
+               #:when (eq? 'null (hash-ref fj 'parent)))
+      (hash-ref fj 'name)))
+
+  `#hash(
+    (features . ,feature-json)
+    (roots . ,roots)
+    (constraints . ())
+    (version . #hash( ('base . 1) ))
+  ))
 
 
 (define (fmjson->clafer j)

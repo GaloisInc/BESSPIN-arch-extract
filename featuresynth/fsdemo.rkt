@@ -7,6 +7,7 @@
 (require racket/random)
 (require racket/place)
 (require bdd/robdd)
+(require json)
 (require "synthesis.rkt")
 (require "build.rkt")
 (require "types.rkt")
@@ -16,6 +17,8 @@
 (require "clafer.rkt")
 (require "unsatcore.rkt")
 (require "sample.rkt")
+(require "fmjson.rkt")
+(require "ftree.rkt")
 (current-bitwidth #f)
 
 
@@ -428,7 +431,24 @@
     (printf "solution #~a: ~a => ~a~n" idx sol (eval-feature-model oracle-fm sol)))
 )
 
-(do-sample)
+
+(define (do-ftree)
+  (define j (call-with-input-file* "test.fm.json" read-json))
+  (define ft (fmjson->ftree j))
+  (pretty-write ft)
+
+  (ftree-split-opt-groups! ft)
+  (ftree-force-card-opt! ft)
+  (ftree-complete-order! ft)
+  (pretty-write ft)
+
+  (define fm (ftree->feature-model ft))
+  (pretty-write fm)
+  )
+
+
+(do-ftree)
+;(do-sample)
 ;(do-claims2)
 ;(do-threaded)
 ;(do-claims)
