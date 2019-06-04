@@ -8,11 +8,11 @@
 (require "types.rkt")
 (require "eval.rkt")
 (require "manager.rkt")
-(require "clafer.rkt")
 (require "config.rkt")
 (require "build.rkt")
 (require "unsatcore.rkt")
 (require "simplify.rkt")
+(require "fmjson.rkt")
 (current-bitwidth #f)
 
 
@@ -143,7 +143,7 @@
 (define (output-feature-model symbolic-fm concrete-fm)
   (define fm (simplify-feature-model symbolic-fm concrete-fm '()))
   (pretty-write fm)
-  (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
+  (define clafer-str (feature-model->clafer feature-names fm))
   (displayln clafer-str)
   (when config-out-file
     (call-with-output-file*

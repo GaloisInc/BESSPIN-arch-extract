@@ -14,7 +14,6 @@
 (require "eval.rkt")
 (require "util.rkt")
 (require "manager.rkt")
-(require "clafer.rkt")
 (require "unsatcore.rkt")
 (require "sample.rkt")
 (require "fmjson.rkt")
@@ -345,7 +344,7 @@
 
 (define (output-feature-model fm)
   (pretty-write fm)
-  (define clafer-str (clafer->string (feature-model->clafer feature-names fm)))
+  (define clafer-str (feature-model->clafer feature-names fm))
   (displayln clafer-str)
   (call-with-output-file*
     "fsdemo.cfr"
@@ -388,7 +387,8 @@
   (apply ?*feature-model symbolic-fm-args))
 
 (define (do-threaded)
-  (define resume-tests (read-resume-tests))
+  ;(define resume-tests (read-resume-tests))
+  (define resume-tests '())
 
   (define fm
     (run-manager
@@ -454,10 +454,10 @@
   )
 
 
-(do-ftree)
+;(do-ftree)
 ;(do-sample)
 ;(do-claims2)
-;(do-threaded)
+(do-threaded)
 ;(do-claims)
 ;(do-synthesize2)
 ;(do-minimize)

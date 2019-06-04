@@ -355,8 +355,8 @@
     (for/list ([d (feature-model-dependencies fm)])
       (match-define (dependency a b val) d)
       (if val
-        `(=> (feature ,(ftree-feature-id a) ,(ftree-feature-id b)))
-        `(=> (feature ,(ftree-feature-id a) (! ,(ftree-feature-id b))))
+        `(=> (feature ,(ftree-feature-id a)) (feature ,(ftree-feature-id b)))
+        `(=> (feature ,(ftree-feature-id a)) (! (feature ,(ftree-feature-id b))))
         )))
 
   (define constraint

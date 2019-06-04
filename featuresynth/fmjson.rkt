@@ -3,7 +3,9 @@
 (provide
   fmjson->feature-model
   feature-model->fmjson
+
   fmjson->clafer
+  feature-model->clafer
 
   fmjson->ftree
   ftree->fmjson
@@ -182,6 +184,10 @@
   (ftree-split-constraints! ft)
   (ftree-constraints-to-cards! ft)
   (ftree->fmjson ft))
+
+(define (feature-model->clafer names fm)
+  (fmjson->clafer
+    (feature-model->fmjson names fm)))
 
 (define (fmjson->clafer j)
   (define (feature-header in-group fj)
