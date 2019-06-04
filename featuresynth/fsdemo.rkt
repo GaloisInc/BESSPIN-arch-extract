@@ -443,7 +443,14 @@
   (pretty-write ft)
 
   (define fm (ftree->feature-model ft))
+  (define names (list->vector (ftree-non-group-feature-order ft)))
   (pretty-write fm)
+
+  (define ft2 (feature-model->ftree names fm))
+  (pretty-write ft2)
+
+  (define j2 (ftree->fmjson ft))
+  (pretty-write j2)
   )
 
 

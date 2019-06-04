@@ -4,14 +4,18 @@
   (struct-out ftree)
   (struct-out fnode)
 
+  ftree-child-map
   ftree-non-group-feature-order
 
   ftree->feature-model
   ftree-complete-order!
   ftree-split-opt-groups!
   ftree-force-card-opt!
+
+  feature-model->ftree
   )
 
+(require racket/hash)
 (require "types.rkt")
 (require "util.rkt")
 
@@ -250,6 +254,102 @@
       (cons 
         `(=> (feature ,(fnode-parent fn)) ,rhs)
         (ftree-constraints ft)))))
+
+
+(define (as-string s)
+  (if (symbol? s)
+    (symbol->string s)
+    s))
+
+(define (feature-model->ftree names fm)
+  (define (ftree-feature-id i) (format "feat-~a" i))
+  (define (ftree-group-id j) (format "grp-~a" j))
+
+  (define (get-feature-name i)
+    (as-string (vector-ref names i)))
+    ;(as-string (feature-name (feature-model-feature fm i))))
+  (define (get-group-name j)
+    (format "grp_~a" (add1 j)))
+    ;(as-string (group-name (feature-model-group fm j))))
+
+  (define (ftree-feature-parent-id f)
+    (cond
+      [(not (= -1 (feature-group-id f)))
+       (ftree-feature-id (feature-group-id f))]
+      [(not (= -1 (feature-parent-id f)))
+       (ftree-feature-id (feature-parent-id f))]
+      [else #f]))
+
+  (define (ftree-group-parent-id g)
+    (cond
+      [(not (= -1 (group-parent-id g)))
+       (ftree-group-id (group-parent-id g))]
+      [else #f]))
+
+  (define normal-fnodes
+    (for/hash ([(f i) (in-indexed (feature-model-features fm))])
+      (define card
+        (cond
+          [(feature-force-on f) 'on]
+          [(feature-force-off f) 'off]
+          [else 'opt]))
+      (values
+        (ftree-feature-id i)
+        (fnode
+          (get-feature-name i)
+          (ftree-feature-parent-id f)
+          card
+          'opt
+          ))))
+
+  (define group-fnodes
+    (for/hash ([(g j) (in-indexed (feature-model-groups fm))]
+               #:when (match/values (group-cards g) [(0 '*) #f] [(_ _) #t]))
+      (define gcard
+        (match/values (group-cards g)
+          [(0 '*) "opt"]
+          [(1 '*) "or"]
+          [(0 1) "mux"]
+          [(1 1) "xor"]
+          [(lo hi) (raise (format "unsupported group cardinality ~a..~a" lo hi))]))
+      (values
+        (ftree-group-id j)
+        (fnode
+          (get-group-name j)
+          (ftree-group-parent-id g)
+          'on
+          gcard
+          ))))
+
+  (define fnodes (hash-union normal-fnodes group-fnodes))
+
+  (define dep-constraints
+    (for/list ([d (feature-model-dependencies fm)])
+      (match-define (dependency a b val) d)
+      (if val
+        `(=> (feature ,(ftree-feature-id a) ,(ftree-feature-id b)))
+        `(=> (feature ,(ftree-feature-id a) (! ,(ftree-feature-id b))))
+        )))
+
+  (define constraint
+    (rewrite-constraint
+      (lambda (i) `(feature ,(format "feat-~a" i)))
+      (feature-model-constraint fm)))
+
+  (define order
+    (append
+      (for/list ([i (in-range (feature-model-num-features fm))])
+        (format "feat-~a" i))
+      (for/list ([j (in-range (feature-model-num-groups fm))])
+        (format "grp-~a" j))
+      ))
+
+  (ftree
+    fnodes
+    (cons constraint dep-constraints)
+    order
+    ))
+
 
 (define (recalc-feature-depths fm)
   (define depth-map (make-hash))
