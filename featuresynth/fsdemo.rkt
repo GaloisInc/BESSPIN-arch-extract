@@ -344,7 +344,7 @@
 
 (define (output-feature-model fm)
   (pretty-write fm)
-  (define clafer-str (feature-model->clafer feature-names fm))
+  (define clafer-str (feature-model->clafer (name-list feature-names #f) fm))
   (displayln clafer-str)
   (call-with-output-file*
     "fsdemo.cfr"
@@ -442,8 +442,7 @@
   (ftree-complete-order! ft)
   (pretty-write ft)
 
-  (define fm (ftree->feature-model ft))
-  (define names (list->vector (ftree-non-group-feature-order ft)))
+  (define-values (fm names) (ftree->feature-model ft))
   (pretty-write fm)
 
   (define ft2 (feature-model->ftree names fm))

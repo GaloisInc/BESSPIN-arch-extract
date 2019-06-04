@@ -1,6 +1,8 @@
 #lang racket
 
 (provide
+  (struct-out name-list)
+
   fmjson->feature-model
   feature-model->fmjson
 
@@ -45,9 +47,8 @@
   (ftree-split-opt-groups! ft)
   (ftree-force-card-opt! ft)
   (ftree-complete-order! ft)
-  (values
-    (ftree->feature-model ft)
-    (list->vector (ftree-non-group-feature-order ft))))
+  (define-values (fm names) (ftree->feature-model ft))
+  (values fm names))
 
 
 (define (fmjson->ftree j)

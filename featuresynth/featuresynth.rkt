@@ -143,7 +143,7 @@
 (define (output-feature-model symbolic-fm concrete-fm)
   (define fm (simplify-feature-model symbolic-fm concrete-fm '()))
   (pretty-write fm)
-  (define clafer-str (feature-model->clafer feature-names fm))
+  (define clafer-str (feature-model->clafer (name-list feature-names #f) fm))
   (displayln clafer-str)
   (when config-out-file
     (call-with-output-file*

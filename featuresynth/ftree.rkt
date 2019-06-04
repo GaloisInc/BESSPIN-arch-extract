@@ -3,6 +3,7 @@
 (provide
   (struct-out ftree)
   (struct-out fnode)
+  (struct-out name-list)
 
   ftree-child-map
   ftree-non-group-feature-order
@@ -52,6 +53,14 @@
 
 (define (ftree-feature ft x)
   (hash-ref (ftree-features ft) x))
+
+
+; The `feature-model` representation doesn't have fields for storing feature
+; and group names.  `ftree->feature-model` splits the names out into a
+; `name-list`, and `feature-model->ftree` uses the `name-list` to reassociate
+; names with features and groups.
+(struct name-list (features groups) #:transparent)
+
 
 ; Build a hashmap that maps each feature ID to a set of the IDs of its
 ; children.
@@ -133,6 +142,9 @@
 ;   in weird corner cases, since the nested group usually has card = opt, which
 ;   triggers other transforms)
 ; * The `feature-order` exactly covers the IDs in `features`
+;
+; Returns two values: a feature model, and a name-list associating the names
+; from `ft` with the features and groups of the feature model.
 (define (ftree->feature-model ft)
   (define feature-ids
     (for/list ([x (ftree-feature-order ft)]
@@ -184,6 +196,9 @@
         (eq? 'off (fnode-card fn))
         )))
 
+  (define feature-names
+    (for/vector ([x feature-ids]) (fnode-name (ftree-feature ft x))))
+
   (define groups
     (for/vector ([x group-ids])
       (define fn (ftree-feature ft x))
@@ -198,6 +213,9 @@
         min-card
         max-card
         )))
+
+  (define group-names
+    (for/vector ([x group-ids]) (fnode-name (ftree-feature ft x))))
 
   (define constraint
     (rewrite-constraint
@@ -218,7 +236,11 @@
       groups
       (vector)
       constraint))
-  (recalc-feature-depths fm))
+
+  (values
+    (recalc-feature-depths fm)
+    (name-list feature-names group-names)
+    ))
 
 (define (recalc-feature-depths fm)
   (define depth-map (make-hash))
@@ -293,12 +315,15 @@
   (define (ftree-feature-id i) (format "feat-~a" i))
   (define (ftree-group-id j) (format "grp-~a" j))
 
+  (match-define (name-list feature-names group-names) names)
   (define (get-feature-name i)
-    (as-string (vector-ref names i)))
-    ;(as-string (feature-name (feature-model-feature fm i))))
+    (if-let ([name (and feature-names (vector-ref feature-names i))])
+      (as-string name)
+      (format "feat_~a" (add1 i))))
   (define (get-group-name j)
-    (format "grp_~a" (add1 j)))
-    ;(as-string (group-name (feature-model-group fm j))))
+    (if-let ([name (and group-names (vector-ref group-names j))])
+      (as-string name)
+      (format "grp_~a" (add1 j))))
 
   (define (ftree-feature-parent-id f)
     (cond
