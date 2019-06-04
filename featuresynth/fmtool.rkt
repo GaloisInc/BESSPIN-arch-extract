@@ -68,6 +68,12 @@
   (define j (call-with-input-file* path read-json))
   (display (fmjson->clafer j)))
 
+(define (do-test-roundtrip-fmjson path)
+  (define j (call-with-input-file* path read-json))
+  (define-values (fm names) (fmjson->feature-model j))
+  (define j2 (feature-model->fmjson names fm))
+  (write-json j2))
+
 (define (usage desc)
   (printf "usage: racket fmtool.rkt ~a ~a~n" (vector-ref args 0) desc)
   (exit 1))
@@ -92,6 +98,10 @@
   [`#("print-clafer" ,path)
     (do-print-clafer path)]
   [`#("print-clafer" _ ...) (usage "<path>")]
+
+  [`#("test-roundtrip-fmjson" ,path)
+    (do-test-roundtrip-fmjson path)]
+  [`#("test-roundtrip-fmjson" _ ...) (usage "<path>")]
 
   [else
     (printf "usage: racket fmtool.rkt <subcommand...>~n")

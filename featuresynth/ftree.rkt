@@ -207,6 +207,19 @@
       constraint))
   (recalc-feature-depths fm))
 
+(define (recalc-feature-depths fm)
+  (define depth-map (make-hash))
+  (hash-set! depth-map -1 -1)
+  (define (depth i)
+    (hash-ref! depth-map i
+      (lambda ()
+        (add1 (depth (feature-parent-id (feature-model-feature fm i)))))))
+
+  (struct-copy feature-model fm
+    [features
+      (for/vector ([(f i) (in-indexed (feature-model-features fm))])
+        (struct-copy feature f [depth (depth i)]))]))
+
 (define (ftree-non-group-feature-order ft)
   (for/list ([k (ftree-feature-order ft)]
              #:when (not (fnode-is-group? (ftree-feature ft k))))
@@ -283,7 +296,7 @@
   (define (ftree-group-parent-id g)
     (cond
       [(not (= -1 (group-parent-id g)))
-       (ftree-group-id (group-parent-id g))]
+       (ftree-feature-id (group-parent-id g))]
       [else #f]))
 
   (define normal-fnodes
@@ -307,10 +320,10 @@
                #:when (match/values (group-cards g) [(0 '*) #f] [(_ _) #t]))
       (define gcard
         (match/values (group-cards g)
-          [(0 '*) "opt"]
-          [(1 '*) "or"]
-          [(0 1) "mux"]
-          [(1 1) "xor"]
+          [(0 '*) 'opt]
+          [(1 '*) 'or]
+          [(0 1) 'mux]
+          [(1 1) 'xor]
           [(lo hi) (raise (format "unsupported group cardinality ~a..~a" lo hi))]))
       (values
         (ftree-group-id j)
@@ -349,17 +362,3 @@
     (cons constraint dep-constraints)
     order
     ))
-
-
-(define (recalc-feature-depths fm)
-  (define depth-map (make-hash))
-  (hash-set! depth-map -1 -1)
-  (define (depth i)
-    (hash-ref! depth-map i
-      (lambda ()
-        (add1 (depth (feature-parent-id (feature-model-feature fm i)))))))
-
-  (struct-copy feature-model fm
-    [features
-      (for/vector ([(f i) (in-indexed (feature-model-features fm))])
-        (struct-copy feature f [depth (depth i)]))]))

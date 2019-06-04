@@ -110,8 +110,9 @@
 
   (define features
     (for/hash ([(k fn) (ftree-features ft)])
+      (define parent (or (fnode-parent fn) 'null))
       (values
-        k
+        (string->symbol k)
         `#hash(
           (name . ,k)
           (parent . ,(fnode-parent fn))
@@ -174,9 +175,9 @@
     s))
 
 (define (feature-model->fmjson names fm)
-  (define ft (feature-model->ftree fm))
+  (define ft (feature-model->ftree names fm))
   (ftree-complete-order! ft)
-  (ftree->fmjson names ft))
+  (ftree->fmjson ft))
 
 (define (fmjson->clafer j)
   (define (feature-header in-group fj)
