@@ -344,7 +344,7 @@
 
 (define (output-feature-model fm)
   (pretty-write fm)
-  (define clafer-str (feature-model->clafer (name-list feature-names #f) fm))
+  (define clafer-str (feature-model->clafer (feature-name-list feature-names) fm))
   (displayln clafer-str)
   (call-with-output-file*
     "fsdemo.cfr"

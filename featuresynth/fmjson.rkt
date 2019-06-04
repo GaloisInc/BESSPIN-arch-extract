@@ -2,6 +2,7 @@
 
 (provide
   (struct-out name-list)
+  feature-name-list
 
   fmjson->feature-model
   feature-model->fmjson
@@ -46,7 +47,8 @@
   (define ft (fmjson->ftree j))
   (ftree-split-opt-groups! ft)
   (ftree-force-card-opt! ft)
-  (ftree-complete-order! ft)
+  (ftree-complete-order! ft
+    (lambda (k) (list (format "~a-parent" k))))
   (define-values (fm names) (ftree->feature-model ft))
   (values fm names))
 
@@ -179,11 +181,11 @@
 
 (define (feature-model->fmjson names fm)
   (define ft (feature-model->ftree names fm))
-  (ftree-names-as-ids! ft)
   (ftree-collapse-groups! ft)
   (ftree-complete-order! ft)
   (ftree-split-constraints! ft)
   (ftree-constraints-to-cards! ft)
+  (ftree-names-as-ids! ft)
   (ftree->fmjson ft))
 
 (define (feature-model->clafer names fm)
