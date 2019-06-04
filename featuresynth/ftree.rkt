@@ -15,6 +15,9 @@
   feature-model->ftree
   ftree-names-as-ids!
   ftree-collapse-groups!
+  ftree-constraints-to-cards!
+
+  ftree-split-constraints!
   )
 
 (require racket/hash)
@@ -437,6 +440,41 @@
       (ftree-constraints ft)))
   )
 
+(define (split-constraint c)
+  (match c
+    [`(&& ,@cs) (append-map split-constraint cs)]
+    [else (list c)]))
 
+(define (ftree-split-constraints! ft)
+  (set-ftree-constraints! ft
+    (append-map split-constraint (ftree-constraints ft))))
 
+(define (ftree-constraints-to-cards! ft)
+  ; If `a` is the parent of `b`, and `b`'s cardinality can be safely changed to
+  ; `new-card`, then change it and return #t.  Otherwise, return #f.
+  (define (maybe-set-card a b new-card)
+    (define fn (ftree-feature ft b))
+    (and
+      (equal? a (fnode-parent fn))
+      ; This is the "safe to change cardinality" check.  If the existing
+      ; cardinality is 'on, it is *not* safe to change to 'off (and delete the
+      ; corresponding constraint), since it would eliminate a contradiction
+      ; among the constraints.
+      (or (eq? new-card (fnode-card fn))
+          (eq? 'opt (fnode-card fn)))
+      (begin
+        (set-fnode-card! fn new-card)
+        #t)))
 
+  (set-ftree-constraints! ft
+    (filter
+      (match-lambda
+        ; If maybe-set-card succeeds, then we want to delete the constraint.
+        [`(=> (feature ,a) (feature ,b))
+          (not (maybe-set-card a b 'on))]
+        [`(=> (feature ,a) (! (feature ,b)))
+          (not (maybe-set-card a b 'off))]
+        [else #t])
+      (ftree-constraints ft))))
+
+; TODO constraints to deps

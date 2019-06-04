@@ -179,6 +179,8 @@
   (ftree-names-as-ids! ft)
   (ftree-collapse-groups! ft)
   (ftree-complete-order! ft)
+  (ftree-split-constraints! ft)
+  (ftree-constraints-to-cards! ft)
   (ftree->fmjson ft))
 
 (define (fmjson->clafer j)
