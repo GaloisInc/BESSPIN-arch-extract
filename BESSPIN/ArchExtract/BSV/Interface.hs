@@ -39,7 +39,8 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV
 
 
 data IfcSpec = IfcSpec
-    { ifcEntries :: [(Text, IfcEntry)]
+    { ifcTyName :: Text
+    , ifcEntries :: [(Text, IfcEntry)]
     , ifcInPorts :: Int
     , ifcOutPorts :: Int
     }
@@ -72,7 +73,7 @@ data MethodKind =
     deriving (Show, Generic, NFData)
 
 
-dummyIfc = IfcSpec [] 0 0
+dummyIfc = IfcSpec "<dummy-ifc>" [] 0 0
 
 
 -- Generic helper for building a map of recursive data structures, where some
@@ -118,7 +119,7 @@ translateIfcStructs ss = case fixMap go (M.keys ss') of
     go get k = do
         ifc <- case M.lookup k ss' of
             Nothing -> traceShow ("unknown ifc", k) $ return dummyIfc
-            Just s -> layoutIfc <$> mapM (goField get) (structFields s)
+            Just s -> layoutIfc (idName $ structId s) <$> mapM (goField get) (structFields s)
         traceM $ T.unpack $ "interface " <> k <> ":\n" <> T.unlines (renderIfc ifc)
         return ifc
 
@@ -161,8 +162,8 @@ itemOutPorts (IiMethod m) = methodOutPorts m
 itemOutPorts (IiSubIfc ifc) = ifcOutPorts ifc
 
 
-layoutIfc :: [(Text, IfcItem)] -> IfcSpec
-layoutIfc items = IfcSpec entries numIn numOut
+layoutIfc :: Text -> [(Text, IfcItem)] -> IfcSpec
+layoutIfc tyName items = IfcSpec tyName entries numIn numOut
   where
     entries :: [(Text, IfcEntry)]
     (entries, (numIn, numOut)) = runState (mapM go items) (0, 0)

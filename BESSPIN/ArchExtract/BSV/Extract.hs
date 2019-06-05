@@ -206,9 +206,9 @@ data ModSpec = ModSpec
     -- A name for each value argument.  May be `_argN` if names are
     -- unavailable.
     , modSpecArgNames :: [Text]
-    -- Gives the index of each module parameter in the (value) arguments.  This
-    -- list is sorted.
-    , modSpecParamMods :: [Int]
+    -- Gives the index and interface name of each module parameter in the
+    -- (value) arguments.  This list is sorted.
+    , modSpecParamMods :: [(Int, Text)]
     }
     deriving (Show)
 
@@ -344,6 +344,14 @@ tryCache k m = do
             x <- m
             _esValueCache %= M.insert k x
             return x
+
+
+getIfcSpec :: Text -> ExtractM IfcSpec
+getIfcSpec name = do
+    specs <- use _esIfcSpecs
+    case M.lookup name specs of
+        Just x -> return x
+        Nothing -> badEval' ("unknown IFC", name) dummyIfc
 
 
 callStackPush :: FuncId -> CallStack -> (CallStack, Int)
@@ -563,9 +571,11 @@ mkModSpec idx ifc (BSVModule (Id name _ _) ty body _) =
     ModSpec idx ifc ty numArgs argNames modParams
   where
     (tyVars, argTys, retTy) = splitFnTy ty
+
     modParams = catMaybes $ zipWith (\i ty -> case splitAppTy ty of
-        (TIfc _, _) -> Just i
+        (TIfc (Id ifcName _ _), _) -> Just (i, ifcName)
         _ -> Nothing) [0..] argTys
+
     numArgs = (length tyVars, length argTys)
 
     (_, body') = splitLet body
@@ -859,11 +869,7 @@ appExact f tys vals = case f of
     VPrim p -> appPrim p tys vals
     VBlackbox _ -> combineValues vals
     VModuleCtor _ -> return $ VCompute f tys vals
-    VFieldAcc tyName name _ -> asStruct tyName (head vals) >>= \v -> case v of
-        VStruct _ fs
-          | Just v <- M.lookup name fs -> return v
-          | otherwise -> badEval ("unknown struct field", name, fs)
-        _ -> badEval ("expected a struct argument", f, vals)
+    VFieldAcc tyName name _ -> getField (head vals) tyName name
     VMethod _ _ _ _ -> return $ VCompute f tys vals
     VCombMethod _ inNets outNet -> do
         argNets <- mapM asNet vals
@@ -873,6 +879,13 @@ appExact f tys vals = case f of
     -- Non-function values request no arguments, so we aren't really applying
     -- anything here.
     _ -> return f
+
+getField :: Value -> Text -> Text -> ExtractM Value
+getField val tyName name = asStruct tyName val >>= \v -> case v of
+    VStruct _ fs
+      | Just v <- M.lookup name fs -> return v
+      | otherwise -> badEval ("unknown struct field", name, fs)
+    _ -> badEval ("expected a struct argument for field access", tyName, name, val)
 
 mkPartApp (VPartApp f tys vals) tys' vals' =
     VPartApp f (tys ++ tys') (vals ++ vals')
@@ -1464,7 +1477,7 @@ handleModule c = go Nothing c
                 count <- S.length <$> use (_esCurModule . A._moduleLogics)
                 return $ "_mod" <> T.pack (show count)
 
-        buildModule name ms
+        buildModule name ms vals
     go _ (VAddRules rs) = do
         forM_ rs $ \(RuleVal name conds body) -> do
             cond <- combineValues conds
@@ -1486,8 +1499,8 @@ handleModule c = go Nothing c
 
 
 
-buildModule :: Text -> ModSpec -> ExtractM Value
-buildModule name ms = do
+buildModule :: Text -> ModSpec -> [Value] -> ExtractM Value
+buildModule name ms vals = do
     let modId = modSpecId ms
     -- Create the module itself, with no pins.  The pins are added
     -- incrementally inside `buildIfcLogic`.
@@ -1495,23 +1508,80 @@ buildModule name ms = do
         (A.LkInst $ A.Inst modId name S.empty)
         S.empty S.empty ()
 
-    buildParamModLogic instId ms
+    withRuleName (name <> "._params") $
+        buildParamModLogic instId ms vals
     buildIfcLogic (name <> ".") instId $ modSpecIfc ms
 
 -- Generate the logic, nets, etc. for the provided parameter modules.
-buildParamModLogic :: Int -> ModSpec -> ExtractM ()
-buildParamModLogic instId ms = do
-    let paramNames = indexMulti (modSpecArgNames ms) (modSpecParamMods ms)
-    inNets <- forM paramNames $ \name ->
-        addNet $ A.mkNet (name <> ".results") 0 A.TUnknown
-    outNets <- forM paramNames $ \name ->
-        addNet $ A.mkNet (name <> ".args") 0 A.TUnknown
+buildParamModLogic :: Int -> ModSpec -> [Value] -> ExtractM ()
+buildParamModLogic instId ms vals = do
+    when (not $ length vals == length (modSpecArgNames ms)) $
+        badEval_ ("wrong number of args for module", modSpecArgNames ms, vals)
 
-    inPins <- S.fromList <$> mapM netPin inNets
-    outPins <- S.fromList <$> mapM netPin outNets
+    let names = indexMulti (modSpecArgNames ms) (map fst $ modSpecParamMods ms)
+    let paramVals = indexMulti vals (map fst $ modSpecParamMods ms)
+    let ifcNames = map snd $ modSpecParamMods ms
+
+    let merged = zip3 (names ++ repeat "_error") (paramVals ++ repeat VUnknown) ifcNames
+    (argNets, resultNets) <- liftM unzip $ forM merged $ \(name, val, ifcName) -> do
+        ifc <- getIfcSpec ifcName
+        buildIfcBoundaryLogic name val ifc
+
+    inPins <- S.fromList <$> mapM netPin resultNets
+    outPins <- S.fromList <$> mapM netPin argNets
     zoom (_esCurModule . A._moduleLogic instId) $ do
         A._logicInputs %= (<> inPins)
         A._logicOutputs %= (<> outPins)
+
+
+buildIfcBoundaryLogic :: Text -> Value -> IfcSpec -> ExtractM (A.NetId, A.NetId)
+buildIfcBoundaryLogic prefix v ifc = do
+    (args, results) <- buildIfcItemBoundaryLogic prefix v (IiSubIfc ifc)
+
+    inNet <- addNet $ A.Net (prefix <> ".args") 0 S.empty S.empty A.TUnknown ()
+    addLogic $ A.Logic (A.LkUnpack $ S.fromList $ map fst args)
+        (A.Pin inNet A.TUnknown <| S.empty)
+        (S.fromList $ map (\n -> A.Pin n A.TUnknown) $ map snd args)
+        ()
+
+    outNet <- addNet $ A.Net (prefix <> ".results") 0 S.empty S.empty A.TUnknown ()
+    addLogic $ A.Logic (A.LkPack $ S.fromList $ map fst results)
+        (S.fromList $ map (\n -> A.Pin n A.TUnknown) $ map snd results)
+        (A.Pin outNet A.TUnknown <| S.empty)
+        ()
+
+    return (inNet, outNet)
+
+buildIfcItemBoundaryLogic :: Text -> Value -> IfcItem ->
+    ExtractM ([(Text, A.NetId)], [(Text, A.NetId)])
+buildIfcItemBoundaryLogic qualName v (IiSubIfc ifc) =
+    liftM mconcat $ forM (ifcEntries ifc) $ \(name, entry) -> do
+        subVal <- getField v (ifcTyName ifc) name
+        buildIfcItemBoundaryLogic (qualName <> "." <> name) subVal (ieItem entry)
+buildIfcItemBoundaryLogic qualName v (IiMethod m) = do
+    args <- forM (imArgNames m) $ \argName -> do
+        let fullName = qualName <> "." <> argName
+        netId <- addNet $ A.mkNet fullName 0 A.TUnknown
+        return (fullName, netId)
+    let argNets = map snd args
+    results <- case v of
+        VMethod _ hasToken muxIdx optOutNet -> do
+            argNets' <-
+                if not hasToken then return argNets
+                else (:[]) <$> asNet VConst     -- Token value
+            accessRuleMux muxIdx argNets'
+            return $ case optOutNet of
+                Nothing -> []
+                Just outNet -> [(qualName <> ".return", outNet)]
+        VCombMethod _ inNets outNet -> do
+            forM_ (zip argNets (toList inNets)) $ \(a,b) ->
+                void $ mkNetAlias' a b >>= addLogic
+            return [(qualName <> ".return", outNet)]
+        _ -> badEval' ("expected field to contain a method value", qualName, v) []
+    return (args, results)
+
+
+
 
 -- Generate the logic, nets, etc. for each method in `ifc`, including nested
 -- methods.  Generated names are prefixed with `prefix` (useful for qualifying
@@ -1658,7 +1728,7 @@ handleAction c = go c
 -- Generate input/output ports for each parameter module.
 buildParamModPorts :: ModSpec -> ExtractM ()
 buildParamModPorts ms = do
-    let paramNames = indexMulti (modSpecArgNames ms) (modSpecParamMods ms)
+    let paramNames = indexMulti (modSpecArgNames ms) (map fst $ modSpecParamMods ms)
     inNets <- forM paramNames $ \name ->
         addNet $ A.mkNet (name <> ".results") 0 A.TUnknown
     outNets <- forM paramNames $ \name ->
@@ -1747,7 +1817,7 @@ indexMulti :: [a] -> [Int] -> [a]
 indexMulti xs idxs = go xs idxs 0
   where
     go _ [] _ = []
-    go [] idxs _ = error $ "indexes out of range: " ++ show idxs
+    go [] idxs _ = []   -- error case: idxs exceed the length of xs
     go (x : xs) (idx : idxs) cur
       | cur == idx = x : go (x : xs) idxs cur
       | otherwise = go xs (idx : idxs) (cur + 1)
