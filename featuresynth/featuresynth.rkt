@@ -194,8 +194,6 @@
   (define j (call-with-input-file* path read-json))
   (define-values (fm0 names0) (fmjson->feature-model j))
 
-  (pretty-write names0)
-
   ; Reorder the loaded feature model so its features line up with those in the
   ; symbolic fm.
   (define fm0-idx
@@ -225,12 +223,6 @@
   ; TODO - would be nice to preserve group names, but it's tricky because
   ; groups may be removed or modified during simplification.
   (define names2 (struct-copy name-list names [groups #f]))
-  (pretty-write fm0)
-  (pretty-write names0)
-  (pretty-write fm)
-  (pretty-write names)
-  (pretty-write fm2)
-  (pretty-write names2)
   (define j2 (feature-model->fmjson names2 fm2))
   (write-json j2))
 
