@@ -134,6 +134,58 @@ feature model (using the `max-groups` and other settings from the config file)
 that produces correct results on all the tests.  This output can be useful for
 debugging synthesis failures.
 
+### `simplify`
+
+    racket featuresynth/featuresynth.rkt <config.toml> simplify <input.fm.json>
+
+Produce a simplified version of the feature model `input.fm.json`.  The feature
+model must be the output of a previous `synthesize` command using the same
+`config.toml`.  The simplified feature model will be printed to standard out.
+Simplification performs best if a copy of the `test-log.rktd` from the original
+`synthesize` run is provided as the `resume-tests-file` in `config.toml`.
+
+The `synthesize` command often produces a feature model that is correct, but is
+unnecessarily complicated or confusing.  Simplification produces an equivalent
+feature model that is often easier to understand.
+
+
+# `featuresynth/fmtool.rkt` / `besspin-feature-model-tool`
+
+The `featuresynth/fmtool.rkt` script corresponds to the
+`besspin-feature-model-tool` command in the BESSPIN tool suite.  It provides
+basic operations for manipulating feature models.
+
+### `count-configs`
+
+    racket featuresynth/fmtool.rkt count-configs <input.fm.json>
+
+Prints the number of valid configurations of the input feature model.
+
+### `nth-config`
+
+    racket featuresynth/fmtool.rkt nth-config <input.fm.json> <index>
+
+Prints the configuration at position `index` in the list of all valid
+configurations of the input feature model.  Valid indices are `0 <= index < N`,
+where `N` is the number of valid configurations (see `count-configs`).
+
+Configurations are printed in JSON format.  A configuration is represented as a
+JSON object that maps feature names to booleans.
+
+### `random-config`
+
+    racket featuresynth/fmtool.rkt random-config <input.fm.json>
+
+Prints a valid configuration of the input feature model, selected uniformly at
+random.
+
+### `print-clafer`
+
+    racket featuresynth/fmtool.rkt print-clafer <input.fm.json>
+
+Converts a feature model in FMJSON format to Clafer format and prints it.  The
+opposite conversion can be done with `clafer -m fmjson <input.cfr>`.
+
 
 # Examples
 

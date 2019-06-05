@@ -62,6 +62,7 @@ init-tests-file = "examples/swerv/init-tests.rktd"
 max-groups = 3
 max-dependencies = 0
 
-# Where to write the generated feature model, once synthesis succeeds.
+# Where to write the generated feature model, once synthesis succeeds.  The
+# output is is BESSPIN Feature Model JSON (FMJSON) format.
 out-file = "examples/swerv/swerv.fm.json"
 
