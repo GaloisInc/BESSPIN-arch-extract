@@ -111,8 +111,8 @@
 
   ; Try to synthesize a unique program that passes all current tests.
   (define (synthesize)
-    (printf "synthesizing from ~a tests (~a positive)~n"
-            (length tests) (length (filter cdr tests)))
+    (eprintf "synthesizing from ~a tests (~a positive)~n"
+             (length tests) (length (filter cdr tests)))
     (if-let ([concrete-fm (try-evaluate symbolic-fm (solver-check solver))])
       ; Found a program - now check if it's unique
       (distinguish concrete-fm)

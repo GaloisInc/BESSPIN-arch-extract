@@ -3,6 +3,8 @@
 (provide
   (struct-out ftree)
   (struct-out fnode)
+  mk-name
+  name-str
 
   ftree-child-map
   ftree-non-group-feature-order
@@ -53,8 +55,37 @@
    )
   #:transparent #:mutable)
 
+; The name of an `fnode`: a string, plus an integer indicating its level of
+; "auto-generated-ness".
+(struct name (str auto) #:transparent)
+
+(define (mk-name s [auto 0])
+  (name s auto))
+
 (define (ftree-feature ft x)
   (hash-ref (ftree-features ft) x))
+
+(define (name-derive f n [auto 10])
+  (name (f (name-str n)) (+ auto (name-auto n))))
+
+(define (fresh-id base in-use)
+  (if (not (in-use base))
+    base
+    (let loop ([i 0])
+      (define name (format "~a~a" base i))
+      (if (not (in-use name))
+        name
+        (loop (add1 i))))))
+
+(define (fresh-name base in-use [auto 1])
+  (define s (fresh-id (name-str base) in-use))
+  (define more-auto (if (equal? s (name-str base)) 0 auto))
+  (name s (+ more-auto (name-auto base))))
+
+; Choose whichever of `n1` and `n2` is "less auto-generated".  Picks `n1` is
+; case of a tie.
+(define (choose-name n1 n2)
+  (if (<= (name-auto n1) (name-auto n2)) n1 n2))
 
 
 ; The `feature-model` representation doesn't have fields for storing feature
@@ -179,8 +210,9 @@
     (define fn (ftree-feature ft x))
     (if (fnode-is-group? fn)
       (begin
-        ; Parent is required to be a non-group, so it appears in feature-id-map
-        (hash-set! parent-feature-map x (hash-ref feature-id-map (fnode-parent fn)))
+        ; Parent is either #f or a non-group, which appears in feature-id-map.
+        (hash-set! parent-feature-map x
+          (if-let ([p (fnode-parent fn)]) (hash-ref feature-id-map p) -1))
         (hash-set! parent-group-map x (hash-ref group-id-map x)))
       (begin
         (hash-set! parent-feature-map x (hash-ref feature-id-map x))
@@ -214,7 +246,7 @@
           ['mux (values 0 1)]
           ['xor (values 1 1)]))
       (group
-        (hash-ref feature-id-map (fnode-parent fn))
+        (if-let ([p (fnode-parent fn)]) (hash-ref feature-id-map p) -1)
         min-card
         max-card
         )))
@@ -295,15 +327,6 @@
              #:when (not (fnode-is-group? (ftree-feature ft k))))
     k))
 
-(define (fresh-id base in-use)
-  (if (not (in-use base))
-    base
-    (let loop ([i 0])
-      (define name (format "~a~a" base i))
-      (if (not (in-use name))
-        name
-        (loop (add1 i))))))
-
 ; Find features with both gcard != opt and card != on, and split them into two
 ; separate features, one with gcard != opt and a parent feature with card != on
 (define (ftree-split-opt-groups! ft)
@@ -316,7 +339,7 @@
         (lambda (n) (hash-has-key? (ftree-features ft) n))))
     (hash-set! (ftree-features ft) new-k
       (fnode
-        (fnode-name fn)
+        (name-derive (lambda (s) (format "~a-parent" s)) (fnode-name fn))
         (fnode-parent fn)
         (fnode-card fn)
         'opt))
@@ -341,10 +364,12 @@
         (ftree-constraints ft)))))
 
 
-(define (as-string s)
-  (if (symbol? s)
-    (symbol->string s)
-    s))
+(define (as-name x)
+  (cond
+    [(name? x) x]
+    [(string? x) (mk-name x)]
+    [(symbol? x) (mk-name (symbol->string x))]
+    [else (raise "can't convert ~a to a name" x)]))
 
 (define (feature-model->ftree names fm)
   (define (ftree-feature-id i) (format "feat-~a" i))
@@ -352,13 +377,13 @@
 
   (match-define (name-list feature-names group-names _) names)
   (define (get-feature-name i)
-    (if-let ([name (and feature-names (vector-ref feature-names i))])
-      (as-string name)
-      (format "feat_~a" (add1 i))))
+    (if-let ([n (and feature-names (vector-ref feature-names i))])
+      (as-name n)
+      (name (format "feat_~a" (add1 i)) 10)))
   (define (get-group-name j)
-    (if-let ([name (and group-names (vector-ref group-names j))])
-      (as-string name)
-      (format "grp_~a" (add1 j))))
+    (if-let ([n (and group-names (vector-ref group-names j))])
+      (as-name n)
+      (name (format "grp_~a" (add1 j)) 10)))
 
   (define (ftree-feature-parent-id f)
     (cond
@@ -451,7 +476,8 @@
       (for/hash ([k (ftree-complete-order ft)])
         (define fn (ftree-feature ft k))
         (define new-k 
-          (fresh-id (fnode-name fn) (lambda (n) (set-member? used-ids n))))
+          (fresh-id (name-str (fnode-name fn))
+                    (lambda (n) (set-member? used-ids n))))
         (set-add! used-ids new-k)
         (values k new-k))))
 
@@ -496,6 +522,7 @@
   (for ([(k k2) subst-map])
     (define fn (ftree-feature ft k))
     (define fn2 (ftree-feature ft k2))
+    (set-fnode-name! fn2 (choose-name (fnode-name fn) (fnode-name fn2)))
     (set-fnode-parent! fn2 (fnode-parent fn))
     (set-fnode-card! fn2 (fnode-card fn))
     (hash-remove! (ftree-features ft) k))

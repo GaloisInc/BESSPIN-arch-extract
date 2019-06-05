@@ -86,10 +86,15 @@
 (define (simplify-feature-model symbolic-fm concrete-fm tests)
   (define worker (make-worker symbolic-fm concrete-fm tests))
 
+  (eprintf "identifying forced features...~n")
   (force-features worker)
+  (eprintf "simplifying constraints...~n")
   (simplify-constraint worker)
+  (eprintf "removing dependencies...~n")
   (remove-deps worker)
+  (eprintf "flattening tree...~n")
   (raise-features worker)
+  (eprintf "removing groups...~n")
   (remove-groups worker)
 
   (worker 'get-new-concrete-fm))
@@ -101,10 +106,10 @@
 
   (for ([(f i) (in-indexed (feature-model-features (worker 'get-symbolic-fm)))])
     (when (synth 'prove-fixed i #t)
-      (printf "simplify: proved feature ~a is always on~n" i)
+      (eprintf "simplify: proved feature ~a is always on~n" i)
       (worker 'add-clause (feature-force-on f)))
     (when (synth 'prove-fixed i #f)
-      (printf "simplify: proved feature ~a is always off~n" i)
+      (eprintf "simplify: proved feature ~a is always off~n" i)
       (worker 'add-clause (feature-force-off f)))
   ))
 
@@ -130,7 +135,7 @@
   (for ([(c i) (in-indexed clauses)])
     (vector-set! removed-clauses i #t)
     (if (worker 'try (new-symbolic-fm) (suggested-constraint c))
-      (printf "simplify: removed clause ~a~n" i)
+      (eprintf "simplify: removed clause ~a~n" i)
       (vector-set! removed-clauses i #f)))
 
   ; Last successful `try-symbolic-fm` is kept in `worker` automatically.
@@ -142,7 +147,7 @@
     (feature-model fs gs (vector-take ds n) c))
 
   (let loop ([n (- (vector-length ds) 1)])
-    (printf "trying with ~a explicit deps~n" n)
+    (eprintf "trying with ~a explicit deps~n" n)
     (define ok (worker 'try-symbolic-fm (new-symbolic-fm n)))
     (when (and ok (> n 0))
       (loop (- n 1)))))
@@ -156,7 +161,7 @@
   (for ([(f i) (in-indexed symbolic-fs)] [d concrete-depth])
     (let loop ([d d])
       (when (> d 0)
-        (printf "trying with feature ~a at depth < ~a~n" i d)
+        (eprintf "trying with feature ~a at depth < ~a~n" i d)
         (define fm (worker 'check-clause (< (feature-depth f) d)))
         (if fm
           (loop (feature-depth (feature-model-feature fm i)))
@@ -169,7 +174,7 @@
     (feature-model fs (vector-take gs n) ds c))
 
   (let loop ([n (- (vector-length gs) 1)])
-    (printf "trying with ~a groups~n" n)
+    (eprintf "trying with ~a groups~n" n)
     (define ok (worker 'try-symbolic-fm (new-symbolic-fm n)))
     (when (and ok (> n 0))
       (loop (- n 1)))))
@@ -183,7 +188,7 @@
   (match-define (feature-model fs gs ds c) concrete-fm)
   (define concrete-fm-unconstrained (feature-model fs gs ds #t))
   (define cs (constraint-clauses c))
-  (printf "clauses: ~a~n" cs)
+  (eprintf "clauses: ~a~n" cs)
 
   (solver-assert
     solver
@@ -206,7 +211,7 @@
     (vector-set! implied i #t)
     (if (not (model-implies-clause c))
       (vector-set! implied i #f)
-      (printf "disproved clause ~a: ~a~n" i c)))
+      (eprintf "disproved clause ~a: ~a~n" i c)))
 
   implied)
 

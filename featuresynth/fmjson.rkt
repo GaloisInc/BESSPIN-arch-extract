@@ -66,7 +66,7 @@
         (cons
           name
           (fnode
-            name
+            (mk-name name)
             (if (eq? parent 'null) #f parent)
             (string->symbol (hash-ref fj 'card))
             (string->symbol (hash-ref fj 'gcard))
@@ -121,7 +121,7 @@
         (string->symbol k)
         `#hash(
           (name . ,k)
-          (parent . ,(fnode-parent fn))
+          (parent . ,parent)
           (children . ,(child-list k))
           (card . ,(symbol->string (fnode-card fn)))
           (gcard . ,(symbol->string (fnode-gcard fn)))

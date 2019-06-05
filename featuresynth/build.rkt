@@ -17,6 +17,8 @@
   resolve-dependency
   resolve-constraint
   resolve-feature-model
+
+  feature-model-permute-features
   )
 
 (require "types.rkt")
@@ -138,3 +140,23 @@
     (vector-map (basic-deserializer group) (vector-ref v 2))
     (vector-map (basic-deserializer dependency) (vector-ref v 3))
     (vector-ref v 4)))
+
+
+; Misc utilities
+
+(define (feature-model-permute-features perm fm)
+  (define ins (make-vector (feature-model-num-features fm) #f))
+  (define outs (make-vector (feature-model-num-features fm) #f))
+  (for ([(a b) perm])
+    (vector-set! ins a #t)
+    (vector-set! outs b #t))
+  (when (or (not (for/and ([x ins]) x)) (not (for/and ([x outs]) x)))
+    (raise "perm is not a valid permutation"))
+
+  (define (func kind loc val)
+    (cond
+      [(not (eq? kind 'feature)) val]
+      [(= val -1) val]
+      [else (hash-ref perm val)]))
+
+  (map-feature-model func fm))
