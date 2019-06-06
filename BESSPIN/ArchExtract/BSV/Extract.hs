@@ -600,14 +600,25 @@ extractModule (BSVModule (Id name _ _) ty body isLib) ms = do
     let kind = if isLib then A.MkExtern else A.MkNormal
     let initMod = A.Module name kind S.empty S.empty S.empty S.empty S.empty S.empty
     m <- withModule initMod $ do
-        buildParamModPorts ms
+        paramModNets <- buildParamModPorts ms
         if not isLib then do
             v <- eval M.empty body
+
+            let paramNames = indexMulti (modSpecArgNames ms) (map fst $ modSpecParamMods ms)
+            let merged = zip3 paramNames (modSpecParamMods ms) paramModNets
+            paramModVals <- forM merged $ \(name, (idx, ifcName), (resultPort, argPort)) -> do
+                ifc <- getIfcSpec ifcName
+                (v, argPort', resultPort') <- buildParamModInstance name ifc
+                void $ mkNetAlias' resultPort resultPort' >>= addLogic
+                void $ mkNetAlias' argPort' argPort >>= addLogic
+                return (idx, v)
 
             (numTys, numVals) <- countArgs v
             when (numTys > 0) $ void $
                 badEval ("can't provide type arguments to module body", name, v)
-            let argVals = replicate numVals VConst
+            let argVals = take numVals $
+                    map (\x -> case x of Just v -> v; Nothing -> VConst) $
+                    placeMulti paramModVals ++ repeat Nothing
 
             v' <- if numVals > 0 then appValue v [] argVals else return v
             m <- runModule v'
@@ -1510,7 +1521,12 @@ buildModule name ms vals = do
 
     withRuleName (name <> "._params") $
         buildParamModLogic instId ms vals
-    buildIfcLogic (name <> ".") instId $ modSpecIfc ms
+    buildIfcLogic (name <> ".") (modSpecIfc ms) $ \_ inNets _ outNets -> do
+        inPins <- S.fromList <$> mapM netPin inNets
+        outPins <- S.fromList <$> mapM netPin outNets
+        zoom (_esCurModule . A._moduleLogic instId) $ do
+            A._logicInputs %= (<> inPins)
+            A._logicOutputs %= (<> outPins)
 
 -- Generate the logic, nets, etc. for the provided parameter modules.
 buildParamModLogic :: Int -> ModSpec -> [Value] -> ExtractM ()
@@ -1581,35 +1597,65 @@ buildIfcItemBoundaryLogic qualName v (IiMethod m) = do
     return (args, results)
 
 
+-- Build logic similar to a module instance, but for a parameter module rather
+-- than an actual module instantiation.  Returns an implementation struct for
+-- the "instantiated" module, just like `buildModule` and `buildIfcLogic` do.
+buildParamModInstance :: Text -> IfcSpec -> ExtractM (Value, A.NetId, A.NetId)
+buildParamModInstance name ifc = do
+    argNet <- addNet $ A.Net (name <> ".args") 0 S.empty S.empty A.TUnknown ()
+    argLogic <- addLogic $ A.Logic (A.LkPack S.empty)
+        S.empty
+        (A.Pin argNet A.TUnknown <| S.empty)
+        ()
 
+    resultNet <- addNet $ A.Net (name <> ".results") 0 S.empty S.empty A.TUnknown ()
+    resultLogic <- addLogic $ A.Logic (A.LkUnpack S.empty)
+        (A.Pin resultNet A.TUnknown <| S.empty)
+        S.empty
+        ()
+
+    v <- buildIfcLogic (name <> ".") ifc $ \argNames argNets resultNames resultNets -> do
+        argPins <- S.fromList <$> mapM netPin argNets
+        resultPins <- S.fromList <$> mapM netPin resultNets
+        zoom (_esCurModule . A._moduleLogic argLogic) $ do
+            A._logicInputs %= (<> argPins)
+            A._logicKind %= \(A.LkPack ns) -> A.LkPack (ns <> S.fromList argNames)
+        zoom (_esCurModule . A._moduleLogic resultLogic) $ do
+            A._logicOutputs %= (<> resultPins)
+            A._logicKind %= \(A.LkUnpack ns) -> A.LkUnpack (ns <> S.fromList resultNames)
+
+    return (v, argNet, resultNet)
+
+
+type BuildIfcHandler = [Text] -> [A.NetId] -> [Text] -> [A.NetId] -> ExtractM ()
 
 -- Generate the logic, nets, etc. for each method in `ifc`, including nested
 -- methods.  Generated names are prefixed with `prefix` (useful for qualifying
 -- the interface's method names).  Returns a `VStruct` of `VMethod` (or
 -- `VCombMethod`) objects representing the interface.
-buildIfcLogic :: Text -> Int -> IfcSpec -> ExtractM Value
-buildIfcLogic prefix instId ifc = do
+buildIfcLogic :: Text -> IfcSpec -> BuildIfcHandler -> ExtractM Value
+buildIfcLogic prefix ifc handler = do
     kvs <- forM (ifcEntries ifc) $ \(name, entry) -> do
-        v <- buildIfcItemLogic (prefix <> name) instId (ieItem entry)
+        v <- buildIfcItemLogic (prefix <> name) (ieItem entry) handler
         return (name, v)
 
     -- TODO: get the interface name so we can use `TIfc` here
     return $ VStruct TUnit (M.fromList kvs)
 
-buildIfcItemLogic :: Text -> Int -> IfcItem -> ExtractM Value
-buildIfcItemLogic qualName instId (IiSubIfc ifc) =
-    buildIfcLogic (qualName <> ".") instId ifc
-buildIfcItemLogic qualName instId (IiMethod m) = do
+buildIfcItemLogic :: Text -> IfcItem -> BuildIfcHandler -> ExtractM Value
+buildIfcItemLogic qualName (IiSubIfc ifc) handler =
+    buildIfcLogic (qualName <> ".") ifc handler
+buildIfcItemLogic qualName (IiMethod m) handler = do
     inNets <- forM (imArgNames m) $ \argName ->
         addNet $ A.mkNet (qualName <> "." <> argName) 0 A.TUnknown
     outNets <- forM [0 .. methodOutPorts m - 1] $ \_ ->
         addNet $ A.mkNet (qualName <> ".return") 0 A.TUnknown
 
-    inPins <- S.fromList <$> mapM netPin inNets
-    outPins <- S.fromList <$> mapM netPin outNets
-    zoom (_esCurModule . A._moduleLogic instId) $ do
-        A._logicInputs %= (<> inPins)
-        A._logicOutputs %= (<> outPins)
+    handler
+        (map (\n -> qualName <> "." <> n) $ imArgNames m)
+        inNets
+        (replicate (methodOutPorts m) $ qualName <> ".return")
+        outNets
 
     case imKind m of
         MkComb
@@ -1618,6 +1664,7 @@ buildIfcItemLogic qualName instId (IiMethod m) = do
           | otherwise -> return $
             VNet $ head outNets
         MkAction hasToken hasResult -> do
+            inPins <- S.fromList <$> mapM netPin inNets
             muxIdx <- addLogic $ A.Logic
                 (A.LkRuleMux S.empty (S.fromList $ imArgNames m))
                 S.empty inPins ()
@@ -1726,7 +1773,7 @@ handleAction c = go c
 
 
 -- Generate input/output ports for each parameter module.
-buildParamModPorts :: ModSpec -> ExtractM ()
+buildParamModPorts :: ModSpec -> ExtractM [(A.NetId, A.NetId)]
 buildParamModPorts ms = do
     let paramNames = indexMulti (modSpecArgNames ms) (map fst $ modSpecParamMods ms)
     inNets <- forM paramNames $ \name ->
@@ -1738,6 +1785,8 @@ buildParamModPorts ms = do
     outPorts <- S.fromList <$> mapM netPort outNets
     _esCurModule . A._moduleInputs %= (<> inPorts)
     _esCurModule . A._moduleOutputs %= (<> outPorts)
+
+    return $ zip inNets outNets
 
 -- Generate input/output ports for each method in `ifc`, and connect them up to
 -- the implementations in `impl`.  Generated port names are prefixed with
@@ -1821,3 +1870,9 @@ indexMulti xs idxs = go xs idxs 0
     go (x : xs) (idx : idxs) cur
       | cur == idx = x : go (x : xs) idxs cur
       | otherwise = go xs (idx : idxs) (cur + 1)
+
+placeMulti :: [(Int, a)] -> [Maybe a]
+placeMulti items = go 0 items
+  where
+    go _ [] = []
+    go i ((j, x) : items) = replicate (j - i - 1) Nothing ++ [Just x] ++ go j items
