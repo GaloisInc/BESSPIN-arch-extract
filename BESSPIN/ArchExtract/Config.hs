@@ -45,6 +45,7 @@ defaultConfigWithClafer = defaultConfig { configClaferOutput = Just $ defaultCla
 data Src =
       VerilogSrc Verilog
     | BSVSrc BSV
+    | ChiselSrc Chisel
     deriving (Show)
 
 data Verilog = Verilog
@@ -126,6 +127,15 @@ defaultBSV = BSV
     , bsvInternalAstDir = error "bsvInternalAstDir not yet initialized"
     , bsvInternalLibraryPackages = error "bsvInternalLibraryPackages not yet initialized"
     , bsvInternalBscFlags = error "bsvInternalBscFlags not yet initialized"
+    }
+
+data Chisel = Chisel
+    { chiselAstFile :: Text
+    }
+    deriving (Show)
+
+defaultChisel = Chisel
+    { chiselAstFile = ""
     }
 
 data Design = Design
@@ -431,6 +441,7 @@ src :: TOML.Value -> Src
 src x = tableDispatch x "type"
     [ ("verilog", \x -> VerilogSrc $ verilog x)
     , ("bsv", \x -> BSVSrc $ bsv x)
+    , ("chisel", \x -> ChiselSrc $ chisel x)
     ]
 
 verilog :: TOML.Value -> Verilog
@@ -452,6 +463,12 @@ bsv x = tableFold defaultBSV x
     , ("root-module", \c x -> c { bsvRootModule = str x })
     , ("bsc-flags", \c x -> c { bsvBscFlags = listOf str x })
     , ("bsc-config-flags", \c x -> c { bsvBscConfigFlags = listOf str x })
+    ]
+
+chisel :: TOML.Value -> Chisel
+chisel x = tableFold defaultChisel x
+    [ ("type", \c x -> c)
+    , ("ast-file", \c x -> c { chiselAstFile = str x })
     ]
 
 design :: TOML.Value -> Design
@@ -557,6 +574,10 @@ _VerilogSrc f x = pure x
 _BSVSrc :: Traversal Src Src BSV BSV
 _BSVSrc f (BSVSrc a) = BSVSrc <$> f a
 _BSVSrc f x = pure x
+
+_ChiselSrc :: Traversal Src Src Chisel Chisel
+_ChiselSrc f (ChiselSrc a) = ChiselSrc <$> f a
+_ChiselSrc f x = pure x
 
 
 postprocess :: Config -> Config

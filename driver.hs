@@ -28,6 +28,7 @@ import qualified BESSPIN.ArchExtract.Main as ArchMain
 import qualified BESSPIN.ArchExtract.Verilog as V
 import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
 import qualified BESSPIN.ArchExtract.BSV as BSV
+import qualified BESSPIN.ArchExtract.Chisel as Chisel
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer as VPP
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Parser as VPP
 import qualified BESSPIN.ArchExtract.Gen.Graphviz as G
@@ -141,6 +142,10 @@ main = do
         ("bsv-test", _) -> case M.elems $ Config.configSrcs cfg of
             [Config.BSVSrc bCfg] -> BSV.testAst bCfg
             _ -> error "expected a bsv src section"
+
+        ("chisel-test", _) -> case M.elems $ Config.configSrcs cfg of
+            [Config.ChiselSrc cCfg] -> Chisel.testAst cCfg
+            _ -> error "expected a chisel src section"
 
         ("bsv-list-package-names", []) -> case M.elems $ Config.configSrcs cfg of
             [Config.BSVSrc bCfg] -> BSV.listPackageNames bCfg >>= mapM_ T.putStrLn
