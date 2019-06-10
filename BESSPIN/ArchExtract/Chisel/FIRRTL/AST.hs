@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, DeriveGeneric, DeriveAnyClass,
-    StandaloneDeriving, OverloadedStrings #-}
+    StandaloneDeriving, OverloadedStrings, TemplateHaskell #-}
 module BESSPIN.ArchExtract.Chisel.FIRRTL.AST where
 
 import Control.DeepSeq
@@ -13,7 +13,7 @@ import Data.Sequence (Seq)
 import Data.Text (Text)
 import GHC.Generics
 
-import qualified Codec.CBOR.Term as CBOR
+import BESSPIN.ArchExtract.Lens
 
 
 data Circuit = Circuit
@@ -44,8 +44,8 @@ data ModuleKind =
     MkNormal
     { mkNormalBody :: Stmt
     } |
-    MkExt
-    { mkExtDefName :: Text
+    MkExtern
+    { mkExternDefName :: Text
     --, mkExtParams :: [?]
     }
     deriving (Show, Typeable, Data, Generic, NFData)
@@ -62,15 +62,18 @@ data Port = Port
     deriving (Show, Typeable, Data, Generic, NFData)
 
 
+data Width = WInt Int | WUnknown
+    deriving (Show, Typeable, Data, Generic, NFData)
+
 data Ty =
-      TUInt (Maybe Int)
-    | TSInt (Maybe Int)
+      TUInt Width
+    | TSInt Width
     -- Width + point position
-    | TFixed (Maybe Int) (Maybe Int)
+    | TFixed Width Width
     | TBundle [Field]
     | TVector Ty Int
     | TClock
-    | TAnalog (Maybe Int)
+    | TAnalog Width
     | TUnknown
     deriving (Show, Typeable, Data, Generic, NFData)
 
@@ -120,10 +123,14 @@ data Expr =
     deriving (Show, Typeable, Data, Generic, NFData)
 
 data Lit =
-      LUInt Integer (Maybe Int)
-    | LSInt Integer (Maybe Int)
-    | LFixed Integer (Maybe Int) (Maybe Int)
+      LUInt Integer Width
+    | LSInt Integer Width
+    | LFixed Integer Width Width
     deriving (Show, Typeable, Data, Generic, NFData)
 
 
 
+makeLenses' ''Circuit
+makeLenses' ''Module
+makeLenses' ''Port
+makeLenses' ''Field

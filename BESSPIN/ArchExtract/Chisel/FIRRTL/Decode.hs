@@ -125,7 +125,7 @@ instance Get Module where
     get (fir "Module" -> [info, name, ports, body]) =
         Module <$> try info <*> get name <*> tryList ports <*> (MkNormal <$> get body)
     get (fir "ExtModule" -> [info, name, ports, defName]) =
-        Module <$> try info <*> get name <*> tryList ports <*> (MkExt <$> get defName)
+        Module <$> try info <*> get name <*> tryList ports <*> (MkExtern <$> get defName)
     get x = bad "module" x
 
 instance Get Port where
@@ -140,15 +140,20 @@ instance Get Direction where
 
 
 instance Get Ty where
-    get (fir "UIntType" -> [width]) = TUInt <$> getWidth width
-    get (fir "SIntType" -> [width]) = TSInt <$> getWidth width
-    get (fir "FixedType" -> [width, point]) = TFixed <$> getWidth width <*> getWidth point
+    get (fir "UIntType" -> [width]) = TUInt <$> get width
+    get (fir "SIntType" -> [width]) = TSInt <$> get width
+    get (fir "FixedType" -> [width, point]) = TFixed <$> get width <*> get point
     get (fir "BundleType" -> [fields]) = TBundle <$> tryList fields
     get (fir "VectorType" -> [ty, len]) = TVector <$> get ty <*> get len
     get (fir0 "ClockType$" -> True) = return TClock
-    get (fir "AnalogType" -> [width]) = TAnalog <$> getWidth width
+    get (fir "AnalogType" -> [width]) = TAnalog <$> get width
     get (fir0 "UnknownType$" -> True) = return TUnknown
     get x = bad "type" x
+
+instance Get Width where
+    get (fir "IntWidth" -> [w]) = WInt <$> get w
+    get (fir0 "UnknownWidth$" -> True) = return WUnknown
+    get x = bad "width" x
 
 instance Get Field where
     get (fir "Field" -> [name, flip, ty]) =
@@ -159,11 +164,6 @@ getFlip :: CBOR.Term -> DecodeM Bool
 getFlip (fir0 "Default$" -> True) = return False
 getFlip (fir0 "Flip$" -> True) = return True
 getFlip x = bad "flip" x
-
-getWidth :: CBOR.Term -> DecodeM (Maybe Int)
-getWidth (fir "IntWidth" -> [w]) = Just <$> get w
-getWidth (fir0 "UnknownWidth$" -> True) = return Nothing
-getWidth x = bad "width" x
 
 instance Get Stmt where
     get (fir "DefWire" -> [info, name, ty]) = SDef <$> try info <*>
@@ -228,11 +228,11 @@ instance Get Expr where
 
 instance Get Lit where
     get (fir "UIntLiteral" -> [val, width]) =
-        LUInt <$> get val <*> getWidth width
+        LUInt <$> get val <*> get width
     get (fir "SIntLiteral" -> [val, width]) =
-        LSInt <$> get val <*> getWidth width
+        LSInt <$> get val <*> get width
     get (fir "FixedLiteral" -> [val, width, point]) =
-        LFixed <$> get val <*> getWidth width <*> getWidth point
+        LFixed <$> get val <*> get width <*> get point
     get x = bad "lit" x
 
 
