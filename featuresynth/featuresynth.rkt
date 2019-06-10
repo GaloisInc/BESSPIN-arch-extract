@@ -115,7 +115,7 @@
       (disprove ,@symbolic-fm-args)
       (boredom ,config-boredom-threshold ,@symbolic-fm-args)
       (reason ,config-reason-threshold ,@symbolic-fm-args)
-      ;(find-fixed 20 10 ,@symbolic-fm-args)
+      (find-fixed 20 200 ,@symbolic-fm-args)
       )
     `(multi-cached
        ,config-oracle-threads

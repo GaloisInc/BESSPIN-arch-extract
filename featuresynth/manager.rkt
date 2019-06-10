@@ -62,7 +62,10 @@
   (for ([inp init-inputs])
     (when (not (set-member? seen-tests inp))
       (dispatch-input `(,inp ()))))
-  (broadcast-strategies '(start))
+  ; Don't start the strategies until all `init-inputs` have been evaluated by
+  ; the oracle.
+  (define start-countdown (length init-inputs))
+  (printf "manager: waiting for ~a results before starting strategies~n" start-countdown)
 
   (define strategy-evt
     (apply choice-evt
@@ -74,24 +77,35 @@
       (handle-evt oracle-chan (lambda (x) (list 'oracle x)))))
 
   (define (loop)
-    (match (sync any-evt)
+    (define evt (sync any-evt))
+    (define result (handle evt))
+    ;(define-values (result-lst cpu-time real-time gc-time)
+    ;  (time-apply handle (list evt)))
+    ;(define result (car result-lst))
+    ;(printf "handled msg in ~a / ~a / ~a ms~n" cpu-time real-time gc-time)
+    (if (eq? result 'continue) (loop) result))
+  ; Handle a single event.  Returns 'continue if the event loop should keep
+  ; running, or any other value to indicate it should terminate and return that
+  ; value.
+  (define (handle evt)
+    (match evt
       [`(strategy ,i input ,inp ,meta)
         (when (not (set-member? seen-tests inp))
             (set-add! seen-tests inp)
             (dispatch-input `(,inp ,meta)))
-        (loop)]
+        'continue]
       [`(strategy ,i solution ,fmv)
         (vector->feature-model fmv)]
       [`(strategy ,i fix-feature ,idx ,val)
         (for ([chan strategy-chans])
           (place-channel-put chan `(fix-feature ,idx ,val)))
-        (loop)]
+        'continue]
       [`(strategy ,i property reactive ,val)
         (vector-set! strategy-reactive i val)
-        (loop)]
+        'continue]
       [`(strategy ,i property has-recovery ,val)
         (vector-set! strategy-has-recovery i val)
-        (loop)]
+        'continue]
       [`(strategy ,i property failed ,val)
         (printf "FAILED: strategy ~a (~a)~n"
                 i (list-ref strategy-specs i))
@@ -101,13 +115,19 @@
             (printf "All strategies failed, and no recovery options are available.~n")
             (printf " -- SYNTHESIS FAILED --~n")
             #f)
-          (loop))]
+          'continue)]
       [`(strategy ,i recovery-done)
         (broadcast-strategies '(start))
-        (loop)]
+        'continue]
       [`(oracle ,test)
         (dispatch-test test)
-        (loop)]
+        (when (> start-countdown 0)
+          (set! start-countdown (sub1 start-countdown))
+          (printf "manager: waiting for ~a results~n" start-countdown)
+          (when (= start-countdown 0)
+            (printf "manager: starting strategies!~n")
+            (broadcast-strategies '(start))))
+        'continue]
       [evt
         (displayln evt)
         (raise "bad event")]
