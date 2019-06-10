@@ -29,6 +29,7 @@ data Interface =
     -- The `Int` is the index of the port among the module's inputs/outputs.
       IfPort Direction Int Ty
     | IfBundle (Seq (Text, Interface)) (Map Text Interface)
+    deriving (Show)
 
 data Value =
       VNet A.NetId
@@ -44,6 +45,7 @@ data Value =
 
 data ModInfo = ModInfo
     { miName :: Text
+    , miPorts :: [Port]
     , miIfc :: Interface
     , miModId :: A.ModId
     }
@@ -83,9 +85,10 @@ extractDesign cfg circ = evalState (extractDesign' circ) initState
     firMods = circuitModules circ
     modMap = M.fromList $ zipWith mkModInfo firMods [0..]
 
-    mkModInfo m i = (name, ModInfo name ifc i)
+    mkModInfo m i = (name, ModInfo name ports ifc i)
       where
         name = moduleName m
+        ports = modulePorts m
         ifc = convertInterface $ modulePorts m
 
     initState = ExtractState
@@ -241,6 +244,42 @@ evalDef (DReg name ty _clk _res _init) = do
     inVal <- packTy ty inNet
     outVal <- unpackTy ty outNet
     bindLocal name $ VDff outVal inVal
+evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
+    Nothing ->
+        traceShow ("instantiation of unknown module", name, modName) $ return ()
+    Just mi -> do
+        let sig = TBundle
+                [ Field (portName p) (portTy p) (portDir p == Input)
+                | p <- miPorts mi ]
+        (v, ins, outs) <- buildInstNets name (miIfc mi) sig
+        buildLogic (A.LkInst $ A.Inst (miModId mi) name S.empty) ins outs
+        bindLocal name $ v
+  where
+    buildInstNets :: Text -> Interface -> Ty -> ExtractM (Value, [A.NetId], [A.NetId])
+    buildInstNets prefix (IfBundle ifcFields _) (TBundle tyFields) = do
+        parts <- forM (zip (toList ifcFields) tyFields) $ \((ifcName, subIfc), fld) -> do
+            when (ifcName /= fieldName fld) $
+                traceShowM ("buildInstNets: field name mismatch", ifcName, fieldName fld)
+            (v, ins, outs) <- buildInstNets (prefix <> "." <> ifcName) subIfc (fieldTy fld)
+            return (M.singleton ifcName (v, fieldFlip fld), ins, outs)
+        let (fs, ins, outs) = mconcat parts
+        return (VBundle fs, ins, outs)
+    buildInstNets prefix (IfPort dir _ _) ty
+      | TUInt _ <- ty = buildLeafNet prefix dir ty VNet
+      | TSInt _ <- ty = buildLeafNet prefix dir ty VNet
+      | TFixed _ _ <- ty = buildLeafNet prefix dir ty VNet
+      | TVector _ _ <- ty = buildLeafNet prefix dir ty VVector
+      | TClock <- ty = buildLeafNet prefix dir ty VNet
+    buildInstNets prefix ifc ty = do
+        traceShowM ("don't know how to build interface nets", prefix, ifc, ty)
+        return (VBundle M.empty, [], [])
+
+    buildLeafNet name dir ty ctor = do
+        n <- buildNet name 11 ty
+        if dir == Input then
+            return (ctor n, [n], [])
+        else
+            return (ctor n, [], [n])
 evalDef (DNode name expr) = bindLocal name =<< nameValue name =<< evalExpr expr
 evalDef _ = return () -- TODO
 

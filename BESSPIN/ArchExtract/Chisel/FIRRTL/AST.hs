@@ -51,7 +51,7 @@ data ModuleKind =
     deriving (Show, Typeable, Data, Generic, NFData)
 
 data Direction = Input | Output
-    deriving (Show, Typeable, Data, Generic, NFData)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 data Port = Port
     { portInfo :: SourceInfo
@@ -63,7 +63,7 @@ data Port = Port
 
 
 data Width = WInt Int | WUnknown
-    deriving (Show, Typeable, Data, Generic, NFData)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 data Ty =
       TUInt Width
@@ -108,7 +108,7 @@ data Def =
     deriving (Show, Typeable, Data, Generic, NFData)
 
 data MemPortDir = MpdInfer | MpdRead | MpdWrite | MpdReadWrite
-    deriving (Show, Typeable, Data, Generic, NFData)
+    deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
 data Expr =
       ELit Lit
