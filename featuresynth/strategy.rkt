@@ -45,6 +45,8 @@
   (define started #f)
   (define failed (fail-flag chan))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (define num-tests 0)
+  (define num-positive 0)
   (for ([msgs (in-place-channel-chunks chan)])
     (for ([msg msgs])
       (match msg
@@ -52,12 +54,16 @@
           (set! started #t)
           (failed 'reset)]
         [`(test ,inp ,out ,meta)
+          (set! num-tests (add1 num-tests))
+          (when out (set! num-positive (add1 num-positive)))
           (synth 'test `(,inp . ,out))]
         [`(fix-feature ,idx ,val)
           (synth 'fix-feature idx val)]
         [else (void)]))
 
     (when (and started (not (failed 'get)))
+      (printf "distinguish: synthesizing from ~a tests (~a positive)~n"
+              num-tests num-positive)
       (define result (synth 'synthesize))
       (cond
         [(feature-model? result)
@@ -74,7 +80,8 @@
   (define synth (oracle-guided-synthesis+ symbolic-fm))
   (define cset (make-claim-set (all-claims symbolic-fm)
                                (feature-model-num-features symbolic-fm)))
-  (printf "begin with ~a claims~n" (claim-set-count cset))
+  (printf "disprove: begin with ~a claims~n" (claim-set-count cset))
+  (define num-claims (claim-set-count cset))
   (for ([msgs (in-place-channel-chunks chan)])
     (define test-count 0)
     (define positive-count 0)
@@ -93,8 +100,9 @@
           (synth 'fix-feature idx val)]
         [else (void)]))
     (when (and started (not (failed 'get)))
-      (printf "~a/~a positive tests - ~a claims remain~n"
-              positive-count test-count (claim-set-count cset))
+      (when (not (= num-claims (claim-set-count cset)))
+        (set! num-claims (claim-set-count cset))
+        (printf "disprove: ~a claims remain~n" num-claims))
       (define result (synth 'disprove cset))
       (cond
         [(vector? result) (place-channel-put chan `(input ,result ()))]
@@ -131,7 +139,7 @@
         (when out
           (when (< (claim-set-count cset) prev-count)
             (set! counter threshold)
-            (printf "strategy-boredom: ~a claims remain; reset counter~n"
+            (printf "boredom: ~a claims remain; reset counter~n"
                     (claim-set-count cset)))
           (set! prev-count (claim-set-count cset)))
         (set! counter (- counter (if out 10 1)))]
@@ -184,7 +192,7 @@
   (define (failed-because i val)
     (define cur (hash-ref counters i 0))
     (define next (+ 1 cur))
-    (printf "reason: failed because ~a had value ~a (~a times)~n" i val next)
+    (printf "reason: test failed because ~a had value ~a (~a times)~n" i val next)
     (hash-set! counters i next)
     (when (>= next threshold)
       (printf "reason: BROADCAST: fix ~a as ~a~n" i (not val))
@@ -266,6 +274,9 @@
         (when (and (set-member? seen-enabled i) (set-member? seen-disabled i))
           (set-add! known-features i))
       )
+      (printf "find-fixed: ~a features still unknown~n"
+              (- (feature-model-num-features symbolic-fm)
+                 (set-count known-features)))
       (set! need-tests step-tests))
 
     #:break (= (feature-model-num-features symbolic-fm)
