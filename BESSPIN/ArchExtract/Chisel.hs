@@ -25,7 +25,7 @@ testAst cfg = do
 
     putStrLn $ "loaded " ++ show (length (circuitModules circ)) ++ " modules"
 
-    --T.putStrLn $ printFIRRTL circ
+    T.putStrLn $ printFIRRTL circ
 
     let d = extractDesign cfg circ
     putStrLn $ "extracted " ++ show (S.length $ A.designMods d) ++ " modules"

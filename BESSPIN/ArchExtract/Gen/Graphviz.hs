@@ -827,8 +827,10 @@ attrPos attrs = getFirst $ foldMap (\attr -> case attr of
 
 graphModule :: Design a -> Config.Graphviz -> Module Ann -> IO (DotGraph Text)
 graphModule design cfg' mod = do
+    putStrLn $ "rendering module " ++ show (moduleName mod)
     let cfg = fromConfig cfg'
-    mod' <- layoutModule design cfg mod
+    --mod' <- layoutModule design cfg mod
+    mod' <- return mod
     return $ moduleGraph design cfg mod'
 
 printGraphviz :: DotGraph Text -> String

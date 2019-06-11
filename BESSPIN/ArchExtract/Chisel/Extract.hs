@@ -35,6 +35,8 @@ data Interface =
 
 data Value =
       VNet A.NetId
+    -- TODO: should be `VVector Value`, to handle vectors of vectors, vectors
+    -- of bundles, etc.
     | VVector A.NetId
     -- `Bool` is the "flip" flag for the field.
     | VBundle (Map Text (Value, Bool))
@@ -43,6 +45,8 @@ data Value =
     --
     -- Note that `VDff` should never appear inside a `VBundle`.
     | VDff Value Value
+    -- Index of the `Logic` node.
+    | VRam Int
     | VError
     deriving (Show)
 
@@ -155,16 +159,17 @@ buildNet' name prio ty = zoom (_esCurModule . A._moduleNets) $ do
 
 buildLogic :: A.LogicKind -> [A.NetId] -> [A.NetId] -> ExtractM Int
 buildLogic kind ins outs = do
-    let mkPin :: A.NetId -> ExtractM A.Pin
-        mkPin n = do
-            ty <- use $ _esCurModule . A._moduleNet n . A._netTy
-            return $ A.Pin n ty
-    ins' <- S.fromList <$> mapM mkPin ins
-    outs' <- S.fromList <$> mapM mkPin outs
+    ins' <- S.fromList <$> mapM buildPin ins
+    outs' <- S.fromList <$> mapM buildPin outs
     zoom (_esCurModule . A._moduleLogics) $ do
         idx <- gets S.length
         modify (|> A.Logic kind ins' outs' ())
         return idx
+
+buildPin :: A.NetId -> ExtractM A.Pin
+buildPin n = do
+    ty <- use $ _esCurModule . A._moduleNet n . A._netTy
+    return $ A.Pin n ty
 
 buildNetAlias :: A.NetId -> A.NetId -> ExtractM Int
 buildNetAlias src dest = buildLogic A.LkNetAlias [src] [dest]
@@ -223,6 +228,7 @@ asNet (VNet n) = return n
 asNet (VVector n) = traceShow ("warning: casting vector to net", n) $ return n
 asNet (VBundle fs) = traceShow ("error: casting bundle to net", fs) $ buildDummyNet "<bundle>"
 asNet (VDff r l) = traceShow ("warning: casting dff to net", r, l) $ asNet r
+asNet (VRam idx) = traceShow ("error: casting ram to net", idx) $ buildDummyNet "<error>"
 -- We already reported whatever error produced this `VError`.
 asNet VError = buildDummyNet "<error>"
 
@@ -265,6 +271,7 @@ evalStmt SEmpty = return M.empty
 
 -- Evaluate a definition.  This typically adds new local variables.
 evalDef :: Def -> ExtractM ()
+-- TODO: handle `TBundle` wires (AXI4Buffer)
 evalDef (DWire name ty) = bindLocal name =<< VNet <$> buildNet name 10 ty
 evalDef (DReg name ty _clk _res _init) = do
     inNet <- buildNet (name <> ".D") 15 ty
@@ -280,8 +287,103 @@ evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
         (v, ins, outs) <- buildIfcNets name (miIfc mi) (moduleSig $ miPorts mi)
         buildLogic (A.LkInst $ A.Inst (miModId mi) name S.empty) ins outs
         bindLocal name $ v
+evalDef (DMemory name ty depth rds wrs rdwrs) = do
+    idx <- buildRam name ty depth
+    bindLocal name $ VRam idx
+
+    forM_ rds $ \rd -> do
+        (addrNet, dataNet) <- addRamReadPort idx rd ty
+        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
+                name, rd, addrNet)
+        rdVal <- unpackTy ty dataNet
+        bindLocal rd $ VDff VError rdVal
+
+    forM_ wrs $ \wr -> do
+        (addrNet, dataNet) <- addRamWritePort idx wr ty
+        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
+                name, wr, addrNet)
+        wrVal <- packTy ty dataNet
+        bindLocal wr $ VDff wrVal VError
+
+    forM_ rdwrs $ \rdwr -> do
+        (rAddrNet, rDataNet) <- addRamReadPort idx (rdwr <> ".rd") ty
+        (wAddrNet, wDataNet) <- addRamWritePort idx (rdwr <> ".wr") ty
+        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
+                name, rdwr, rAddrNet, wAddrNet)
+        rdVal <- unpackTy ty rDataNet
+        wrVal <- packTy ty wDataNet
+        bindLocal rdwr $ VDff wrVal rdVal
 evalDef (DNode name expr) = bindLocal name =<< nameValue name =<< evalExpr expr
-evalDef _ = return () -- TODO
+evalDef (DCMem name ty depth isSync) = do
+    idx <- buildRam name ty depth
+    bindLocal name $ VRam idx
+evalDef (DCMemPort name ty memName args dir)
+  | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
+    Just (VRam idx) -> do
+        addrNet <- asNet =<< evalExpr addr
+        wr <- if dir `elem` [MpdInfer, MpdWrite, MpdReadWrite] then do
+                (wAddrNet, wDataNet) <- addRamWritePort idx (name <> ".wr") ty
+                buildNetAlias addrNet wAddrNet
+                unpackTy ty wDataNet
+            else return VError
+        rd <- if dir `elem` [MpdInfer, MpdRead, MpdReadWrite] then do
+                (rAddrNet, rDataNet) <- addRamReadPort idx (name <> ".rd") ty
+                buildNetAlias addrNet rAddrNet
+                packTy ty rDataNet
+            else return VError
+        bindLocal name $ VDff wr rd
+    Just v -> traceShowM ("port references non-memory", memName, name, v)
+    Nothing -> traceShowM ("unknown local memory", memName, name)
+  | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
+
+
+buildRam :: Text -> Ty -> Int -> ExtractM Int
+buildRam name ty depth = do
+    dummyRamIn <- buildDummyNet "<ram?>"
+    dummyRamOut <- buildDummyNet "<ram?>"
+    dummyClock <- buildDummyNet "<clk?>"
+    idx <- buildLogic (A.LkRam name (A.EIntLit (A.Span 0 0) depth) 0 0 0)
+        [dummyRamIn, dummyClock] [dummyRamOut]
+    bindLocal name $ VRam idx
+    return idx
+
+-- Add a new read port to the indicated `LkRam` logic node.  Returns the nets
+-- connected to the new read-address and read-data ports.
+addRamReadPort :: Int -> Text -> Ty -> ExtractM (A.NetId, A.NetId)
+addRamReadPort idx name ty = do
+    -- TODO: infer address width from RAM depth, like FIRRTL compiler does
+    addrNet <- buildNet (name <> ".ra") 10 (TUInt $ WInt 99)
+    dataNet <- buildNet (name <> ".rd") 10 ty
+    addrPin <- buildPin addrNet
+    dataPin <- buildPin dataNet
+    zoom (_esCurModule . A._moduleLogic idx) $ do
+        numWrites <- zoom A._logicKind $ state $ \lk -> case lk of
+            A.LkRam {} ->
+                (A.lkRamWritePorts lk,
+                    lk { A.lkRamReadPorts = A.lkRamReadPorts lk + 1 })
+            _ -> (0, traceShow ("tried to add read port to non-RAM", lk, idx, name) lk)
+        A._logicInputs %= \ins -> S.insertAt (S.length ins - 3 * numWrites) addrPin ins
+        A._logicOutputs %= (|> dataPin)
+    return (addrNet, dataNet)
+
+-- Add a new write port to the indicated `LkRam` logic node.  Returns the nets
+-- connected to the new write-address and write-data ports.
+addRamWritePort :: Int -> Text -> Ty -> ExtractM (A.NetId, A.NetId)
+addRamWritePort idx name ty = do
+    -- TODO: infer address width from RAM depth, like FIRRTL compiler does
+    addrNet <- buildNet (name <> ".wa") 10 (TUInt $ WInt 99)
+    dataNet <- buildNet (name <> ".wd") 10 ty
+    enableNet <- buildNet (name <> ".we") 10 (TUInt $ WInt 1)
+    addrPin <- buildPin addrNet
+    dataPin <- buildPin dataNet
+    enablePin <- buildPin enableNet
+    zoom (_esCurModule . A._moduleLogic idx) $ do
+        A._logicKind %= \lk -> case lk of
+            A.LkRam {} -> lk { A.lkRamWritePorts = A.lkRamWritePorts lk + 1 }
+            _ -> traceShow ("tried to add write port to non-RAM", lk, idx, name) lk
+        A._logicInputs %= \x -> x |> addrPin |> dataPin |> enablePin
+    return (addrNet, dataNet)
+
 
 evalExpr :: Expr -> ExtractM Value
 evalExpr (ELit _) = VNet <$> buildDummyNet "<const>"
@@ -295,10 +397,34 @@ evalExpr (EField e name ty) = do
             Just (v, _) -> return v
             Nothing -> traceShow ("unknown field", name, e, val) $ return VError
         _ -> traceShow ("field access of non-bundle", name, e, val) $ return VError
+evalExpr (EIndex e idx ty) = do
+    val <- evalExpr e
+    idxNet <- asNet =<< evalExpr idx
+    case val of
+        VVector n -> do
+            outNet <- buildNet "<item>" 0 ty
+            buildLogic A.LkExpr [n, idxNet] [outNet]
+            return $ VNet outNet
+        _ -> traceShow ("indexed into non-vector", e, idx) $ return VError
+evalExpr (EIndexC e idx ty) = do
+    val <- evalExpr e
+    case val of
+        VVector n -> do
+            outNet <- buildNet ("<item " <> T.pack (show idx) <> ">") 0 ty
+            buildLogic A.LkExpr [n] [outNet]
+            return $ VNet outNet
+        _ -> traceShow ("indexed into non-vector", e, idx) $ return VError
 evalExpr (EMux cond then_ else_ ty) = do
     cond' <- asNet =<< evalExpr cond
     then_' <- asNet =<< evalExpr then_
     else_' <- asNet =<< evalExpr else_
+    outNet <- buildNet "<mux>" 0 ty
+    buildLogic (A.LkMux ("val" <| S.empty) 2) [cond', then_', else_'] [outNet]
+    return $ VNet outNet
+evalExpr (EValidIf cond then_ ty) = do
+    cond' <- asNet =<< evalExpr cond
+    then_' <- asNet =<< evalExpr then_
+    else_' <- buildNet "<undef>" 0 ty
     outNet <- buildNet "<mux>" 0 ty
     buildLogic (A.LkMux ("val" <| S.empty) 2) [cond', then_', else_'] [outNet]
     return $ VNet outNet
@@ -307,13 +433,12 @@ evalExpr (EPrim op args _ ty) = do
     outNet <- buildNet ("<" <> op <> ">") 0 ty
     buildLogic A.LkExpr argNets [outNet]
     return $ VNet outNet
-evalExpr _ = return $ VError    -- TODO
 
 -- Generate a new value of type `ty`, whose leaf fields are combined using an
 -- `LkPack` node and output to `outNet`.  This is used for handling registers
 -- of non-ground type.
 packTy :: Ty -> A.NetId -> ExtractM Value
-packTy ty outNet = return $ VNet outNet  -- TODO
+packTy ty outNet = return $ VNet outNet  -- TODO (Queue, and others)
 
 unpackTy :: Ty -> A.NetId -> ExtractM Value
 unpackTy ty inNet = return $ VNet inNet  -- TODO
@@ -388,6 +513,9 @@ doDisconnect v = go v False
         mapM (\(l, lFlip) -> go l (if lFlip then not f else f)) $
         M.elems lf
     go (VDff _ l) f = go l f
+    go (VRam idx) = do
+        traceShowM ("error: tried to disconnect RAM", idx)
+        return M.empty
     go VError _ = return M.empty
 
 makeConnections :: Map A.NetId (Maybe A.NetId) -> ExtractM ()
