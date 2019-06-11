@@ -180,7 +180,7 @@ data LogicKind =
     -- type.  Has `N` input ports (one for each field), and one output for the
     -- struct value.
     LkPack
-        { lkUnpackInNames :: Seq Text
+        { lkPackInNames :: Seq Text
         } |
     -- Combinational logic element for unpacking a struct or other aggregate
     -- type.  Similar to a 1-input `LkMatch`, but with no possibility of

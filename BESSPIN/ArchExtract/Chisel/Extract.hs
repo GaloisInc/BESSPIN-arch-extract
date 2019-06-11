@@ -45,8 +45,9 @@ data Value =
     --
     -- Note that `VDff` should never appear inside a `VBundle`.
     | VDff Value Value
-    -- Index of the `Logic` node.
-    | VRam Int
+    -- Index of the `Logic` node.  Also stores the element type, which often is
+    -- not provided at port definitions.
+    | VRam Int Ty
     | VError
     deriving (Show)
 
@@ -228,7 +229,7 @@ asNet (VNet n) = return n
 asNet (VVector n) = traceShow ("warning: casting vector to net", n) $ return n
 asNet (VBundle fs) = traceShow ("error: casting bundle to net", fs) $ buildDummyNet "<bundle>"
 asNet (VDff r l) = traceShow ("warning: casting dff to net", r, l) $ asNet r
-asNet (VRam idx) = traceShow ("error: casting ram to net", idx) $ buildDummyNet "<error>"
+asNet (VRam idx ty) = traceShow ("error: casting ram to net", idx, ty) $ buildDummyNet "<error>"
 -- We already reported whatever error produced this `VError`.
 asNet VError = buildDummyNet "<error>"
 
@@ -277,8 +278,8 @@ evalDef (DReg name ty _clk _res _init) = do
     inNet <- buildNet (name <> ".D") 15 ty
     outNet <- buildNet (name <> ".Q") 15 ty
     buildLogic (A.LkDFlipFlop name 0) [inNet] [outNet]
-    inVal <- packTy ty inNet
-    outVal <- unpackTy ty outNet
+    inVal <- packTy (name <> ".D") ty inNet
+    outVal <- unpackTy (name <> ".Q") ty outNet
     bindLocal name $ VDff outVal inVal
 evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
     Nothing ->
@@ -289,49 +290,54 @@ evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
         bindLocal name $ v
 evalDef (DMemory name ty depth rds wrs rdwrs) = do
     idx <- buildRam name ty depth
-    bindLocal name $ VRam idx
+    bindLocal name $ VRam idx ty
 
     forM_ rds $ \rd -> do
         (addrNet, dataNet) <- addRamReadPort idx rd ty
         traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
                 name, rd, addrNet)
-        rdVal <- unpackTy ty dataNet
-        bindLocal rd $ VDff VError rdVal
+        rdVal <- unpackTy (name <> "." <> rd) ty dataNet
+        bindLocal rd $ VDff rdVal VError
 
     forM_ wrs $ \wr -> do
         (addrNet, dataNet) <- addRamWritePort idx wr ty
         traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
                 name, wr, addrNet)
-        wrVal <- packTy ty dataNet
-        bindLocal wr $ VDff wrVal VError
+        wrVal <- packTy (name <> "." <> wr) ty dataNet
+        bindLocal wr $ VDff VError wrVal
 
     forM_ rdwrs $ \rdwr -> do
         (rAddrNet, rDataNet) <- addRamReadPort idx (rdwr <> ".rd") ty
         (wAddrNet, wDataNet) <- addRamWritePort idx (rdwr <> ".wr") ty
         traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
                 name, rdwr, rAddrNet, wAddrNet)
-        rdVal <- unpackTy ty rDataNet
-        wrVal <- packTy ty wDataNet
-        bindLocal rdwr $ VDff wrVal rdVal
+        rdVal <- unpackTy (name <> "." <> rdwr) ty rDataNet
+        wrVal <- packTy (name <> "." <> rdwr) ty wDataNet
+        bindLocal rdwr $ VDff rdVal wrVal
 evalDef (DNode name expr) = bindLocal name =<< nameValue name =<< evalExpr expr
 evalDef (DCMem name ty depth isSync) = do
     idx <- buildRam name ty depth
-    bindLocal name $ VRam idx
+    bindLocal name $ VRam idx ty
 evalDef (DCMemPort name ty memName args dir)
   | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
-    Just (VRam idx) -> do
+    Just (VRam idx ty') -> do
         addrNet <- asNet =<< evalExpr addr
+        -- TODO: "Infer" ports are usually read-only or write-only, but we
+        -- always produce both halves, usually involving big unused struct
+        -- pack/unpack nodes.  We should have a postprocessing pass remove
+        -- those from the architecture.
         wr <- if dir `elem` [MpdInfer, MpdWrite, MpdReadWrite] then do
                 (wAddrNet, wDataNet) <- addRamWritePort idx (name <> ".wr") ty
                 buildNetAlias addrNet wAddrNet
-                unpackTy ty wDataNet
+                traceShowM ("write port", name, memName, ty, ty')
+                packTy (name <> ".wr") ty' wDataNet
             else return VError
         rd <- if dir `elem` [MpdInfer, MpdRead, MpdReadWrite] then do
                 (rAddrNet, rDataNet) <- addRamReadPort idx (name <> ".rd") ty
                 buildNetAlias addrNet rAddrNet
-                packTy ty rDataNet
+                unpackTy (name <> ".rd") ty' rDataNet
             else return VError
-        bindLocal name $ VDff wr rd
+        bindLocal name $ VDff rd wr
     Just v -> traceShowM ("port references non-memory", memName, name, v)
     Nothing -> traceShowM ("unknown local memory", memName, name)
   | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
@@ -344,7 +350,7 @@ buildRam name ty depth = do
     dummyClock <- buildDummyNet "<clk?>"
     idx <- buildLogic (A.LkRam name (A.EIntLit (A.Span 0 0) depth) 0 0 0)
         [dummyRamIn, dummyClock] [dummyRamOut]
-    bindLocal name $ VRam idx
+    bindLocal name $ VRam idx ty
     return idx
 
 -- Add a new read port to the indicated `LkRam` logic node.  Returns the nets
@@ -392,11 +398,14 @@ evalExpr (ERef name ty) = use (_esLocalScope . at name) >>= \x -> case x of
     Just v -> return v
 evalExpr (EField e name ty) = do
     val <- evalExpr e
-    case val of
-        VBundle fs -> case M.lookup name fs of
-            Just (v, _) -> return v
-            Nothing -> traceShow ("unknown field", name, e, val) $ return VError
-        _ -> traceShow ("field access of non-bundle", name, e, val) $ return VError
+    return $ valueField val name
+  where
+    valueField (VBundle fs) name = case M.lookup name fs of
+        Just (v, _) -> v
+        Nothing -> traceShow ("unknown field", name, fs) VError
+    valueField (VDff r l) name = VDff (valueField r name) (valueField l name)
+    valueField val name =
+        traceShow ("field access of non-bundle", name, val) VError
 evalExpr (EIndex e idx ty) = do
     val <- evalExpr e
     idxNet <- asNet =<< evalExpr idx
@@ -437,11 +446,48 @@ evalExpr (EPrim op args _ ty) = do
 -- Generate a new value of type `ty`, whose leaf fields are combined using an
 -- `LkPack` node and output to `outNet`.  This is used for handling registers
 -- of non-ground type.
-packTy :: Ty -> A.NetId -> ExtractM Value
-packTy ty outNet = return $ VNet outNet  -- TODO (Queue, and others)
+packTy :: Text -> Ty -> A.NetId -> ExtractM Value
+packTy name ty outNet = do
+    (v, leaves) <- makeTypedValue name ty
+    let (names, nets) = unzip leaves
+    if length leaves == 1 then
+        buildNetAlias (head nets) outNet
+    else
+        buildLogic (A.LkPack $ S.fromList names) nets [outNet]
+    return v
 
-unpackTy :: Ty -> A.NetId -> ExtractM Value
-unpackTy ty inNet = return $ VNet inNet  -- TODO
+unpackTy :: Text -> Ty -> A.NetId -> ExtractM Value
+unpackTy name ty inNet = do
+    (v, leaves) <- makeTypedValue name ty
+    let (names, nets) = unzip leaves
+    if length leaves == 1 then
+        buildNetAlias inNet (head nets)
+    else
+        buildLogic (A.LkUnpack $ S.fromList names) [inNet] nets
+    return v
+
+-- Construct a `Value` that's an instance of `Ty`.  Also returns the net IDs of
+-- all the leaf values, together with names.
+makeTypedValue :: Text -> Ty -> ExtractM (Value, [(Text, A.NetId)])
+makeTypedValue prefix (TBundle fs) = do
+    (m, leaves) <- liftM mconcat $ forM fs $ \f -> do
+        -- FIRRTL spec says memories contain only passive types.  I assume
+        -- registers work the same way.
+        when (fieldFlip f) $
+            traceShowM ("unexpected flip field in bundle", f)
+        (val, leaves) <- makeTypedValue (prefix <> "." <> fieldName f) (fieldTy f)
+        return (M.singleton (fieldName f) (val, fieldFlip f), leaves)
+    return (VBundle m, leaves)
+makeTypedValue prefix (TVector ty _) = do
+    (v, leaves) <- makeTypedValue (prefix <> ".items") ty
+    let v' = case v of
+            VNet n -> VVector n
+            _ -> traceShow ("vector of non-primitive NYI", v) VError
+    return (v', leaves)
+makeTypedValue prefix ty = do
+    n <- buildNet prefix 11 ty
+    return (VNet n, [(prefix, n)])
+
 
 
 moduleSig :: [Port] -> Ty
@@ -513,8 +559,8 @@ doDisconnect v = go v False
         mapM (\(l, lFlip) -> go l (if lFlip then not f else f)) $
         M.elems lf
     go (VDff _ l) f = go l f
-    go (VRam idx) = do
-        traceShowM ("error: tried to disconnect RAM", idx)
+    go (VRam idx ty) _ = do
+        traceShowM ("error: tried to disconnect RAM", idx, ty)
         return M.empty
     go VError _ = return M.empty
 
@@ -550,4 +596,5 @@ nameValue name v = go name v False
         r' <- go name r False
         l' <- go name l True
         return $ VDff r l
+    go _ (VRam idx ty) _ = return $ VRam idx ty
     go _ VError _ = return VError
