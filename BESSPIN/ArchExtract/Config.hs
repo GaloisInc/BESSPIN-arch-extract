@@ -131,11 +131,13 @@ defaultBSV = BSV
 
 data Chisel = Chisel
     { chiselAstFile :: Text
+    , chiselBlackboxModules :: Set Text
     }
     deriving (Show)
 
 defaultChisel = Chisel
     { chiselAstFile = ""
+    , chiselBlackboxModules = Set.empty
     }
 
 data Design = Design
@@ -469,6 +471,7 @@ chisel :: TOML.Value -> Chisel
 chisel x = tableFold defaultChisel x
     [ ("type", \c x -> c)
     , ("ast-file", \c x -> c { chiselAstFile = str x })
+    , ("blackbox-modules", \c x -> c { chiselBlackboxModules = setOf str x })
     ]
 
 design :: TOML.Value -> Design

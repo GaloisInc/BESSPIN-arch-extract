@@ -79,6 +79,7 @@ loadArchitecture cfg = case M.elems $ Config.configSrcs cfg of
     [] -> error "expected at least one source section"
     [Config.VerilogSrc vCfg] -> V.readAndExtract vCfg
     [Config.BSVSrc bCfg] -> BSV.readAndExtract bCfg
+    [Config.ChiselSrc cCfg] -> Chisel.readAndExtract cCfg
     (_ : _ : _) -> error "support for multiple source sections is NYI"
 
 graphArchitecture :: Config.Graphviz -> Design () -> IO ()

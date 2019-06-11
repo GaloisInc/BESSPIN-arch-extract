@@ -14,6 +14,7 @@ import BESSPIN.ArchExtract.Chisel.FIRRTL.Decode
 import BESSPIN.ArchExtract.Chisel.FIRRTL.Print (printFIRRTL)
 import BESSPIN.ArchExtract.Chisel.Extract
 import BESSPIN.ArchExtract.Print
+import BESSPIN.ArchExtract.Verilog.Raw (FileInfo)
 
 testAst :: Config.Chisel -> IO ()
 testAst cfg = do
@@ -30,4 +31,11 @@ testAst cfg = do
     putStrLn $ "extracted " ++ show (S.length $ A.designMods d) ++ " modules"
     T.putStrLn $ printArchitecture d
 
+readAndExtract :: Config.Chisel -> IO (A.Design (), [FileInfo])
+readAndExtract cfg = do
+    bs <- BSL.readFile $ T.unpack $ Config.chiselAstFile cfg
+    circ <- case deserialize bs of
+        Left err -> error $ T.unpack err
+        Right x -> return x
 
+    return (extractDesign cfg circ, [])

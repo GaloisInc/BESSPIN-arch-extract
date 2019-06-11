@@ -8,6 +8,8 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Lens.Micro.Platform
@@ -41,6 +43,7 @@ data Value =
     --
     -- Note that `VDff` should never appear inside a `VBundle`.
     | VDff Value Value
+    | VError
     deriving (Show)
 
 data ModInfo = ModInfo
@@ -80,7 +83,7 @@ bindLocal name val = _esLocalScope %= M.insert name val
 
 
 extractDesign :: Config.Chisel -> Circuit -> A.Design ()
-extractDesign cfg circ = evalState (extractDesign' circ) initState
+extractDesign cfg circ = evalState (extractDesign' cfg circ) initState
   where
     firMods = circuitModules circ
     modMap = M.fromList $ zipWith mkModInfo firMods [0..]
@@ -97,24 +100,43 @@ extractDesign cfg circ = evalState (extractDesign' circ) initState
         , esLocalScope = M.empty
         }
 
-extractDesign' :: Circuit -> ExtractM (A.Design ())
-extractDesign' circ = do
-    mods <- S.fromList <$> mapM extractModule (circuitModules circ)
+extractDesign' :: Config.Chisel -> Circuit -> ExtractM (A.Design ())
+extractDesign' cfg circ = do
+    mods <- S.fromList <$> mapM (extractModule cfg) (circuitModules circ)
     return $ A.Design mods
 
-extractModule :: Module -> ExtractM (A.Module ())
-extractModule m = liftM snd $ withModule initMod $ do
-    let ifc = convertInterface $ modulePorts m
-    let (ins, outs) = interfacePorts ifc
-    ins' <- mapM (\(n, ty) -> buildPort (T.intercalate "." n) ty) ins
-    outs' <- mapM (\(n, ty) -> buildPort (T.intercalate "." n) ty) outs
-    _esCurModule . A._moduleInputs .= S.fromList ins'
-    _esCurModule . A._moduleOutputs .= S.fromList outs'
+extractModule :: Config.Chisel -> Module -> ExtractM (A.Module ())
+extractModule cfg m = do
+    ((), m') <- withModule initMod $ do
+        let ifc = convertInterface $ modulePorts m
 
-    case moduleKind m of
-        MkNormal body -> evalStmt body >>= makeConnections
-        MkExtern _ -> return ()
+        (v, ins, outs) <- buildIfcNets "" ifc (moduleSig $ modulePorts m)
+        ins' <- mapM buildPort ins
+        outs' <- mapM buildPort outs
+        _esCurModule . A._moduleInputs .= S.fromList ins'
+        _esCurModule . A._moduleOutputs .= S.fromList outs'
 
+        withScope $ do
+            let vars = case v of
+                    VBundle fs -> M.toList fs
+                    _ -> traceShow ("impossible: module buildIfcNets produced non-bundle?",
+                        moduleName m, v) []
+
+            forM_ vars $ \(name, (val, _)) -> bindLocal name val
+
+            case moduleKind m of
+                MkNormal body -> do
+                    let bbox = Set.member (moduleName m) (Config.chiselBlackboxModules cfg)
+                    when (not bbox) $ do
+                        conns <- evalStmt body
+                        traceShowM ("connections", conns)
+                        makeConnections conns
+                MkExtern _ -> return ()
+
+    return $
+        mergeAliasedNets $
+        reconnectNets $
+        m'
   where
     initMod = A.Module (moduleName m) (convertModuleKind $ moduleKind m)
         S.empty S.empty S.empty S.empty S.empty S.empty
@@ -147,10 +169,13 @@ buildLogic kind ins outs = do
 buildNetAlias :: A.NetId -> A.NetId -> ExtractM Int
 buildNetAlias src dest = buildLogic A.LkNetAlias [src] [dest]
 
-buildPort :: Text -> Ty -> ExtractM A.Port
-buildPort name ty = do
-    netId <- buildNet name 1 ty
-    return $ A.Port name netId (convertTy ty)
+buildPort :: A.NetId -> ExtractM A.Port
+buildPort n = do
+    (name, ty) <- zoom (_esCurModule . A._moduleNet n) $ do
+        name <- use A._netName
+        ty <- use A._netTy
+        return (head $ T.lines name, ty)
+    return $ A.Port name n ty
 
 
 
@@ -198,6 +223,8 @@ asNet (VNet n) = return n
 asNet (VVector n) = traceShow ("warning: casting vector to net", n) $ return n
 asNet (VBundle fs) = traceShow ("error: casting bundle to net", fs) $ buildDummyNet "<bundle>"
 asNet (VDff r l) = traceShow ("warning: casting dff to net", r, l) $ asNet r
+-- We already reported whatever error produced this `VError`.
+asNet VError = buildDummyNet "<error>"
 
 buildDummyNet :: Text -> ExtractM A.NetId
 buildDummyNet name = buildNet name (-10) TUnknown
@@ -217,7 +244,9 @@ evalStmt (SCond _ cond then_ else_) = do
     overlap' <- traverse (\(x, y) -> Just <$> muxNetsOpt condVal x y) overlap
     return $ overlap' <> a <> b
 evalStmt (SBlock stmts) =
-    foldM (\acc s -> M.union acc <$> evalStmt s) M.empty stmts
+    -- `M.union` is left-biased, so we `flip` it to make new connections
+    -- override the old ones.
+    foldM (\acc s -> flip M.union acc <$> evalStmt s) M.empty stmts
 evalStmt (SPartialConnect _ lhs rhs) = do
     lhsVal <- evalExpr lhs
     rhsVal <- evalExpr rhs
@@ -248,49 +277,77 @@ evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
     Nothing ->
         traceShow ("instantiation of unknown module", name, modName) $ return ()
     Just mi -> do
-        let sig = TBundle
-                [ Field (portName p) (portTy p) (portDir p == Input)
-                | p <- miPorts mi ]
-        (v, ins, outs) <- buildInstNets name (miIfc mi) sig
+        (v, ins, outs) <- buildIfcNets name (miIfc mi) (moduleSig $ miPorts mi)
         buildLogic (A.LkInst $ A.Inst (miModId mi) name S.empty) ins outs
         bindLocal name $ v
-  where
-    buildInstNets :: Text -> Interface -> Ty -> ExtractM (Value, [A.NetId], [A.NetId])
-    buildInstNets prefix (IfBundle ifcFields _) (TBundle tyFields) = do
-        parts <- forM (zip (toList ifcFields) tyFields) $ \((ifcName, subIfc), fld) -> do
-            when (ifcName /= fieldName fld) $
-                traceShowM ("buildInstNets: field name mismatch", ifcName, fieldName fld)
-            (v, ins, outs) <- buildInstNets (prefix <> "." <> ifcName) subIfc (fieldTy fld)
-            return (M.singleton ifcName (v, fieldFlip fld), ins, outs)
-        let (fs, ins, outs) = mconcat parts
-        return (VBundle fs, ins, outs)
-    buildInstNets prefix (IfPort dir _ _) ty
-      | TUInt _ <- ty = buildLeafNet prefix dir ty VNet
-      | TSInt _ <- ty = buildLeafNet prefix dir ty VNet
-      | TFixed _ _ <- ty = buildLeafNet prefix dir ty VNet
-      | TVector _ _ <- ty = buildLeafNet prefix dir ty VVector
-      | TClock <- ty = buildLeafNet prefix dir ty VNet
-    buildInstNets prefix ifc ty = do
-        traceShowM ("don't know how to build interface nets", prefix, ifc, ty)
-        return (VBundle M.empty, [], [])
-
-    buildLeafNet name dir ty ctor = do
-        n <- buildNet name 11 ty
-        if dir == Input then
-            return (ctor n, [n], [])
-        else
-            return (ctor n, [], [n])
 evalDef (DNode name expr) = bindLocal name =<< nameValue name =<< evalExpr expr
 evalDef _ = return () -- TODO
 
 evalExpr :: Expr -> ExtractM Value
-evalExpr _ = return $ VBundle M.empty -- TODO
+evalExpr (ELit _) = VNet <$> buildDummyNet "<const>"
+evalExpr (ERef name ty) = use (_esLocalScope . at name) >>= \x -> case x of
+    Nothing -> traceShow ("unknown local variable", name, ty) $ return VError
+    Just v -> return v
+evalExpr (EField e name ty) = do
+    val <- evalExpr e
+    case val of
+        VBundle fs -> case M.lookup name fs of
+            Just (v, _) -> return v
+            Nothing -> traceShow ("unknown field", name, e, val) $ return VError
+        _ -> traceShow ("field access of non-bundle", name, e, val) $ return VError
+evalExpr (EMux cond then_ else_ ty) = do
+    cond' <- asNet =<< evalExpr cond
+    then_' <- asNet =<< evalExpr then_
+    else_' <- asNet =<< evalExpr else_
+    outNet <- buildNet "<mux>" 0 ty
+    buildLogic (A.LkMux ("val" <| S.empty) 2) [cond', then_', else_'] [outNet]
+    return $ VNet outNet
+evalExpr (EPrim op args _ ty) = do
+    argNets <- mapM asNet =<< mapM evalExpr args
+    outNet <- buildNet ("<" <> op <> ">") 0 ty
+    buildLogic A.LkExpr argNets [outNet]
+    return $ VNet outNet
+evalExpr _ = return $ VError    -- TODO
 
+-- Generate a new value of type `ty`, whose leaf fields are combined using an
+-- `LkPack` node and output to `outNet`.  This is used for handling registers
+-- of non-ground type.
 packTy :: Ty -> A.NetId -> ExtractM Value
 packTy ty outNet = return $ VNet outNet  -- TODO
 
 unpackTy :: Ty -> A.NetId -> ExtractM Value
 unpackTy ty inNet = return $ VNet inNet  -- TODO
+
+
+moduleSig :: [Port] -> Ty
+moduleSig ps = TBundle $ map (\p ->
+    Field (portName p) (portTy p) (portDir p == Input)) ps
+
+buildIfcNets :: Text -> Interface -> Ty -> ExtractM (Value, [A.NetId], [A.NetId])
+buildIfcNets prefix (IfBundle ifcFields _) (TBundle tyFields) = do
+    parts <- forM (zip (toList ifcFields) tyFields) $ \((ifcName, subIfc), fld) -> do
+        when (ifcName /= fieldName fld) $
+            traceShowM ("buildIfcNets: field name mismatch", ifcName, fieldName fld)
+        (v, ins, outs) <- buildIfcNets (prefix <> "." <> ifcName) subIfc (fieldTy fld)
+        return (M.singleton ifcName (v, fieldFlip fld), ins, outs)
+    let (fs, ins, outs) = mconcat parts
+    return (VBundle fs, ins, outs)
+buildIfcNets prefix (IfPort dir _ _) ty
+  | TUInt _ <- ty = buildLeafNet prefix dir ty VNet
+  | TSInt _ <- ty = buildLeafNet prefix dir ty VNet
+  | TFixed _ _ <- ty = buildLeafNet prefix dir ty VNet
+  | TVector _ _ <- ty = buildLeafNet prefix dir ty VVector
+  | TClock <- ty = buildLeafNet prefix dir ty VNet
+buildIfcNets prefix ifc ty = do
+    traceShowM ("don't know how to build interface nets", prefix, ifc, ty)
+    return (VError, [], [])
+
+buildLeafNet name dir ty ctor = do
+    n <- buildNet name 11 ty
+    if dir == Input then
+        return (ctor n, [n], [])
+    else
+        return (ctor n, [], [n])
 
 
 muxNets :: A.NetId -> A.NetId -> A.NetId -> ExtractM A.NetId
@@ -331,6 +388,7 @@ doDisconnect v = go v False
         mapM (\(l, lFlip) -> go l (if lFlip then not f else f)) $
         M.elems lf
     go (VDff _ l) f = go l f
+    go VError _ = return M.empty
 
 makeConnections :: Map A.NetId (Maybe A.NetId) -> ExtractM ()
 makeConnections m = forM_ (M.toList m) $ \(l, optR) -> case optR of
@@ -364,3 +422,4 @@ nameValue name v = go name v False
         r' <- go name r False
         l' <- go name l True
         return $ VDff r l
+    go _ VError _ = return VError
