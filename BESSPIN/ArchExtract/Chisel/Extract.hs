@@ -272,8 +272,9 @@ evalStmt SEmpty = return M.empty
 
 -- Evaluate a definition.  This typically adds new local variables.
 evalDef :: Def -> ExtractM ()
--- TODO: handle `TBundle` wires (AXI4Buffer)
-evalDef (DWire name ty) = bindLocal name =<< VNet <$> buildNet name 10 ty
+evalDef (DWire name ty) = do
+    (v, _) <- makeTypedValue name ty
+    bindLocal name v
 evalDef (DReg name ty _clk _res _init) = do
     inNet <- buildNet (name <> ".D") 15 ty
     outNet <- buildNet (name <> ".Q") 15 ty
