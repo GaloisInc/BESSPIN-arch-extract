@@ -827,7 +827,7 @@ evalDef' (DCMemPort name ty memName args dir)
 evalStmt' :: Stmt -> ExtractM ConnTree
 evalStmt' (SDef _ d) = evalDef' d >> return M.empty
 evalStmt' (SCond _ cond then_ else_) = do
-    c <- evalRvalue' cond
+    c <- evalRvalue cond
     t <- evalStmt' then_
     e <- evalStmt' else_
     return $ connTreeJoin c t e
@@ -835,8 +835,6 @@ evalStmt' (SBlock stmts) =
     -- `M.union` is left-biased, so we `flip` it to make new connections
     -- override the old ones.
     foldM (\acc s -> connTreeAppend acc <$> evalStmt' s) M.empty stmts
--- TODO: implement with some combination of unrollAggregates + evalLvalue +
--- evalRvalue'
 evalStmt' (SPartialConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
 evalStmt' (SConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
 evalStmt' (SIsInvalid _ e) = unrollInvalidate e >>= assignTree
@@ -905,45 +903,58 @@ vectorLen :: Ty -> Int
 vectorLen (TVector _ len) = len
 vectorLen ty = traceShow ("can't get len of non-vector", ty) 0
 
-evalRvalue' :: Expr -> ExtractM Rvalue
-evalRvalue' (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
-evalRvalue' (ERef name _) = do
-    isSplit <- Set.member name <$> use _esSplitDefs
-    let name' = if isSplit then name <> ".R" else name
-    return $ RvExpr $ ConnExpr name' S.empty
-evalRvalue' (EField e name _) = projectRvalue (PrField name) <$> evalRvalue' e
-evalRvalue' (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
-evalRvalue' (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> evalRvalue' e
-evalRvalue' (EMux cond then_ else_ _) =
-    RvMux <$> evalRvalue' cond <*> evalRvalue' then_ <*> evalRvalue' else_
-evalRvalue' (EValidIf cond then_ _) =
-    RvMux <$> evalRvalue' cond <*> evalRvalue' then_ <*> pure RvInvalid
-evalRvalue' (EPrim op args _ ty) = return $ RvExpr $ ConnExpr ("<" <> op <> ">") S.empty
+evalRvalue :: Expr -> ExtractM Rvalue
+evalRvalue e = evalRvalue' False e
+
+evalRvalue' :: Bool -> Expr -> ExtractM Rvalue
+evalRvalue' flipSplit e = go e
+  where
+    go :: Expr -> ExtractM Rvalue
+    go (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
+    go (ERef name _) = do
+        isSplit <- Set.member name <$> use _esSplitDefs
+        let name' = if not isSplit then name else
+                if flipSplit then name <> ".L" else name <> ".R"
+        return $ RvExpr $ ConnExpr name' S.empty
+    go (EField e name _) = projectRvalue (PrField name) <$> go e
+    go (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
+    go (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> go e
+    go (EMux cond then_ else_ _) =
+        RvMux <$> go cond <*> go then_ <*> go else_
+    go (EValidIf cond then_ _) =
+        RvMux <$> go cond <*> go then_ <*> pure RvInvalid
+    go (EPrim op args _ ty) = return $ RvExpr $ ConnExpr ("<" <> op <> ">") S.empty
 
 
 -- Expand a (possibly) aggregate-typed assignment into a list of ground-typed
 -- assignments.  This is the part where we handle flipped connections inside of
 -- bundles.
-unrollAggregates :: Ty -> Expr -> Ty -> Expr -> [(Expr, Expr)]
-unrollAggregates (TBundle fs) l (TBundle fs') r = do
-    let fsMap' = M.fromList [(fieldName f, f) | f <- fs']
-    f <- fs
-    Just f' <- return $ M.lookup (fieldName f) fsMap'
-    let name = fieldName f
-    let ty = fieldTy f
-    let ty' = fieldTy f'
-    if not $ fieldFlip f then
-        unrollAggregates ty (EField l name ty) ty' (EField r name ty)
-    else
-        unrollAggregates ty (EField r name ty) ty' (EField l name ty)
-unrollAggregates (TVector ty len) l (TVector ty' len') r = do
-    idx <- [0 .. min len len' - 1]
-    unrollAggregates ty (EIndexC l idx ty) ty' (EIndexC r idx ty)
-unrollAggregates lty l rty r | isGroundTy lty, isGroundTy rty = return (l, r)
-unrollAggregates lty _ rty _ =
-    traceShow ("unrollAggregates: type mismatch", lty, rty) []
+--
+-- The `Bool` in each result indicates whether this part of the assignment was
+-- flipped.  For two-sided nodes (wires and regs), this is used to determine
+-- whether each expr was on the right or the left of the original assignment.
+unrollAggregates :: Ty -> Expr -> Ty -> Expr -> [(Expr, Expr, Bool)]
+unrollAggregates lty l rty r = go lty l rty r False
+  where
+    go (TBundle fs) l (TBundle fs') r flipped = do
+        let fsMap' = M.fromList [(fieldName f, f) | f <- fs']
+        f <- fs
+        Just f' <- return $ M.lookup (fieldName f) fsMap'
+        let name = fieldName f
+        let ty = fieldTy f
+        let ty' = fieldTy f'
+        if not $ fieldFlip f then
+            go ty (EField l name ty) ty' (EField r name ty) flipped
+        else
+            go ty (EField r name ty) ty' (EField l name ty) (not flipped)
+    go (TVector ty len) l (TVector ty' len') r flipped = do
+        idx <- [0 .. min len len' - 1]
+        go ty (EIndexC l idx ty) ty' (EIndexC r idx ty) flipped
+    go lty l rty r flipped | isGroundTy lty, isGroundTy rty = return (l, r, flipped)
+    go lty _ rty _ _ =
+        traceShow ("go: type mismatch", lty, rty) []
 
--- Expand a singnle aggregate-typed expression.
+-- Expand a single aggregate-typed expression.
 unrollAggregate :: Ty -> Expr -> Bool -> [Expr]
 unrollAggregate ty e flipped = go ty e flipped
   where
@@ -981,7 +992,7 @@ evalLvalue' flipSplit e = go e
         return (ty', lvs')
     go (EIndex e idx _) = do
         (ty, lvs) <- go e
-        idxRv <- evalRvalue' idx
+        idxRv <- evalRvalue idx
         let ty' = vectorItemTy ty
         let lvs' = do
                 (ce, f) <- lvs
@@ -998,14 +1009,14 @@ evalLvalue' flipSplit e = go e
     go (EMux c t e _) = do
         (ty1, lvs1) <- go t
         (ty2, lvs2) <- go e
-        condRv <- evalRvalue' c
+        condRv <- evalRvalue c
         let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs1]
                 ++ [(ce, \rv -> RvMux condRv RvUnset (f rv)) | (ce, f) <- lvs2]
         return (ty1, lvs')
     -- c ? t : undef <= r  -->  when c: t <= r
     go (EValidIf c t _) = do
         (ty, lvs) <- go t
-        condRv <- evalRvalue' c
+        condRv <- evalRvalue c
         let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs]
         return (ty, lvs')
     go e@(ELit _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
@@ -1014,10 +1025,10 @@ evalLvalue' flipSplit e = go e
 unrollAssign :: Expr -> Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollAssign l r = do
     assigns <- unrollAggregates <$> exprTy l <*> pure l <*> exprTy r <*> pure r
-    liftM concat $ forM assigns $ \(l', r') -> do
+    liftM concat $ forM assigns $ \(l', r', flipped) -> do
         traceShowM ("unrolled assign", l', r')
-        r'' <- evalRvalue' r'
-        (ty, lfs'') <- evalLvalue l'
+        r'' <- evalRvalue' flipped r'
+        (ty, lfs'') <- evalLvalue' flipped l'
         return [(ty, l'', f r'') | (l'', f) <- lfs'']
 
 unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
