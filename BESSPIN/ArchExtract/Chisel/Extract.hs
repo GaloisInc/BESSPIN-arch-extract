@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell, PatternSynonyms, DeriveFunctor #-}
 module BESSPIN.ArchExtract.Chisel.Extract where
 
 import Control.Monad
@@ -54,13 +54,30 @@ data Rvalue =
     | RvUnset
     deriving (Show)
 
-data Connection =
-      CGround Ty Rvalue
-    | CBundle [Field] (Map Text Connection)
-    | CVector Ty Int (Map Int Connection)
-    deriving (Show)
+data GConnection a =
+      CGround' Ty Rvalue a
+    | CBundle [Field] (Map Text (GConnection a))
+    | CVector Ty Int (Map Int (GConnection a))
+    deriving (Show, Functor)
 
-type ConnTree = Map NodeId Connection
+type GConnTree a = Map NodeId (GConnection a)
+
+
+-- "Normal" connection trees, with no annotations on the ground nodes.
+type Connection = GConnection ()
+pattern CGround ty rv = CGround' ty rv ()
+type ConnTree = GConnTree ()
+{-# COMPLETE CGround, CBundle, CVector #-}
+
+-- Bidirectional connection trees, where ground connections can be either
+-- forward or reversed.  These are used when rerolling bundle connections.
+data ConnDir = Fwd | Rev
+    deriving (Show, Eq)
+type BiConnection = GConnection ConnDir
+type BiConnTree = GConnTree ConnDir
+
+flipConnDir Fwd = Rev
+flipConnDir Rev = Fwd
 
 
 connForType :: Ty -> Connection
@@ -68,8 +85,8 @@ connForType (TBundle fs) = CBundle fs M.empty
 connForType (TVector ty len) = CVector ty len M.empty
 connForType ty = CGround ty RvUnset
 
-connTy :: Connection -> Ty
-connTy (CGround ty _) = ty
+connTy :: GConnection a -> Ty
+connTy (CGround' ty _ _) = ty
 connTy (CBundle fs _) = TBundle fs
 connTy (CVector ty len _) = TVector ty len
 
@@ -102,34 +119,63 @@ connTreeAdjustRvalue (ConnExpr n ps) f m = M.alter (\x -> case x of
             Just $ go ps $ fromMaybe (connForType $ fieldTy f) x) (fieldName f) m'
     go ps c = traceShow ("connTreeAdjustRvalue: bad projection", ps) c
 
-mapConn :: (Ty -> Rvalue -> Rvalue) -> Connection -> Connection
-mapConn f (CGround ty rv) = CGround ty $ f ty rv
-mapConn f (CBundle fs m) = CBundle fs $ fmap (mapConn f) m
-mapConn f (CVector ty len m) = CVector ty len $ fmap (mapConn f) m
+mapConn' :: (Ty -> Rvalue -> a -> (Rvalue, a)) -> GConnection a -> GConnection a
+mapConn' f (CGround' ty rv ann) =
+    let (rv', ann') = f ty rv ann in
+    CGround' ty rv' ann'
+mapConn' f (CBundle fs m) = CBundle fs $ fmap (mapConn' f) m
+mapConn' f (CVector ty len m) = CVector ty len $ fmap (mapConn' f) m
 
-mergeConn ::
-    (Ty -> Rvalue -> Rvalue) ->
-    (Ty -> Rvalue -> Rvalue) ->
-    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
-    Connection -> Connection -> Connection
-mergeConn _ _ g (CGround ty rv1) (CGround _ rv2) =
-    CGround ty $ g ty rv1 rv2
-mergeConn fl fr g (CBundle fs m1) (CBundle _ m2) =
-    CBundle fs $ mergeConnMap fl fr g m1 m2
-mergeConn fl fr g (CVector ty idx m1) (CVector _ _ m2) =
-    CVector ty idx $ mergeConnMap fl fr g m1 m2
-mergeConn _ _ _ c1 c2 = error "mergeConn: tried to merge mismatched connections"
+mapConn :: (Ty -> Rvalue -> Rvalue) -> GConnection a -> GConnection a
+mapConn f c = mapConn' (\ty rv ann -> (f ty rv, ann)) c
 
-mergeConnMap :: (Show k, Ord k) =>
-    (Ty -> Rvalue -> Rvalue) ->
-    (Ty -> Rvalue -> Rvalue) ->
-    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
-    Map k Connection -> Map k Connection -> Map k Connection
-mergeConnMap fl fr g m1 m2 = M.merge
-    (M.mapMissing $ \k c -> mapConn fl c)
-    (M.mapMissing $ \k c -> mapConn fr c)
-    (M.zipWithMatched $ \k c1 c2-> mergeConn fl fr g c1 c2)
+mergeConn' ::
+    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
+    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
+    (Ty -> Rvalue -> a -> Rvalue -> a -> (Rvalue, a)) ->
+    GConnection a -> GConnection a -> GConnection a
+mergeConn' _ _ g (CGround' ty rv1 ann1) (CGround' _ rv2 ann2) =
+    let (rv', ann') = g ty rv1 ann1 rv2 ann2 in
+    CGround' ty rv' ann'
+mergeConn' fl fr g (CBundle fs m1) (CBundle _ m2) =
+    CBundle fs $ mergeConnMap' fl fr g m1 m2
+mergeConn' fl fr g (CVector ty idx m1) (CVector _ _ m2) =
+    CVector ty idx $ mergeConnMap' fl fr g m1 m2
+mergeConn' _ _ _ c1 c2 = error "mergeConn: tried to merge mismatched connections"
+
+mergeConnMap' :: Ord k =>
+    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
+    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
+    (Ty -> Rvalue -> a -> Rvalue -> a -> (Rvalue, a)) ->
+    Map k (GConnection a) -> Map k (GConnection a) -> Map k (GConnection a)
+mergeConnMap' fl fr g m1 m2 = M.merge
+    (M.mapMissing $ \k c -> mapConn' fl c)
+    (M.mapMissing $ \k c -> mapConn' fr c)
+    (M.zipWithMatched $ \k c1 c2-> mergeConn' fl fr g c1 c2)
     m1 m2
+
+mergeConn :: Semigroup a =>
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
+    GConnection a -> GConnection a -> GConnection a
+mergeConn fl fr g c1 c2 = mergeConn'
+    (\ty rv ann -> (fl ty rv, ann))
+    (\ty rv ann -> (fr ty rv, ann))
+    (\ty rv1 ann1 rv2 ann2 -> (g ty rv1 rv2, ann1 <> ann2))
+    c1 c2
+
+mergeConnMap :: (Ord k, Semigroup a) =>
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
+    Map k (GConnection a) -> Map k (GConnection a) -> Map k (GConnection a)
+mergeConnMap fl fr g m1 m2 = mergeConnMap'
+    (\ty rv ann -> (fl ty rv, ann))
+    (\ty rv ann -> (fr ty rv, ann))
+    (\ty rv1 ann1 rv2 ann2 -> (g ty rv1 rv2, ann1 <> ann2))
+    m1 m2
+
 
 -- Join a pair of conditional branches.  Each ground/leaf node is assigned its
 -- `tm` ("then") value when `c` is 1, and its `em` ("else") value when `c` is
@@ -187,7 +233,76 @@ connTreePrint cm = go cm
     indent :: [Text] -> [Text]
     indent ts = map ("  " <>) ts
 
+biConnTreePrint :: (Ord k, Show k) => Map k BiConnection -> [Text]
+biConnTreePrint cm = go cm
+  where
+    go :: (Ord k, Show k) => Map k BiConnection -> [Text]
+    go m = concatMap (\(k, c) -> header k c : indent (body c)) (M.toList m)
 
+    header :: Show k => k -> BiConnection -> Text
+    header k c = T.pack (show k) <> case c of
+        CGround' _ rv Fwd -> " <- " <> T.pack (show rv)
+        CGround' _ rv Rev -> " -> " <> T.pack (show rv)
+        CBundle fs m -> ": bundle " <> T.intercalate ", "
+            [(if fieldFlip f then "FLIP " else "") <> fieldName f | f <- fs]
+        CVector ty len m -> ": vector " <> T.pack (show len)
+
+    body :: BiConnection -> [Text]
+    body c = case c of
+        CGround' _ _ _ -> []
+        CBundle _ m -> go m
+        CVector _ _ m -> go m
+
+    indent :: [Text] -> [Text]
+    indent ts = map ("  " <>) ts
+
+
+
+allSame :: Eq a => [a] -> Maybe a
+allSame [] = Nothing
+allSame [x] = Just x
+allSame (x : x' : xs)
+  | x == x' = allSame $ x' : xs
+  | otherwise = Nothing
+
+-- Description of a child node: connected (forward), connected (reversed),
+-- invalid.  Only applies to `CGround'` children.  The `ConnDir` here gives the
+-- direction of the enclosing aggregate: a `CGround' _ _ Rev` in a flipped
+-- field produces a `CdConn _ Fwd`.
+data ChildDesc = CdConn ConnExpr ConnDir | CdInvalid
+    deriving (Show, Eq)
+
+describeChild :: Projection -> Bool -> BiConnection -> Maybe ChildDesc
+describeChild p flipped (CGround' _ (RvExpr (ConnExpr n ps)) dir)
+  | ps' S.:> p' <- S.viewr ps, p == p'
+  = Just $ CdConn (ConnExpr n ps') (if flipped then flipConnDir dir else dir)
+describeChild p False (CGround' _ RvInvalid Fwd) = Just $ CdInvalid
+describeChild _ _ _ = Nothing
+
+describeChildren :: BiConnection -> Maybe ChildDesc
+describeChildren (CBundle fs m) = join $ allSame $ map (\f -> do
+    c <- M.lookup (fieldName f) m
+    describeChild (PrField $ fieldName f) (fieldFlip f) c) fs
+describeChildren (CVector _ len m) = join $ allSame $ map (\i -> do
+    c <- M.lookup i m
+    describeChild (PrIndex i) False c) [0 .. len - 1]
+describeChildren _ = Nothing
+
+rerollConnChildren :: BiConnection -> BiConnection
+rerollConnChildren c@(CGround' _ _ _) = c
+rerollConnChildren (CBundle fs m) = CBundle fs $ rerollConn <$> m
+rerollConnChildren (CVector ty len m) = CVector ty len $ rerollConn <$> m
+
+rerollConn :: BiConnection -> BiConnection
+rerollConn c =
+    let c' = rerollConnChildren c in
+    case describeChildren c' of
+        Just (CdConn ce dir) -> CGround' (connTy c) (RvExpr ce) dir
+        Just CdInvalid -> CGround' (connTy c) RvInvalid Fwd
+        Nothing -> c'
+
+rerollConnTree :: BiConnTree -> BiConnTree
+rerollConnTree ct = rerollConn <$> ct
 
 
 data Interface =
@@ -309,7 +424,11 @@ extractModule cfg m = do
                         makeConnections conns
 
                         conns' <- evalStmt' body
-                        traceM (T.unpack $ "new-style connections: \n" <> T.unlines (connTreePrint conns'))
+                        let biconns' = rerollConnTree $ fmap (fmap $ const Fwd) conns'
+                        traceM (T.unpack $ "new-style connections (orig): \n" <>
+                            T.unlines (connTreePrint conns'))
+                        traceM (T.unpack $ "new-style connections (rerolled): \n" <>
+                            T.unlines (biConnTreePrint biconns'))
 
                 MkExtern _ -> return ()
 
@@ -896,6 +1015,7 @@ unrollAssign :: Expr -> Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollAssign l r = do
     assigns <- unrollAggregates <$> exprTy l <*> pure l <*> exprTy r <*> pure r
     liftM concat $ forM assigns $ \(l', r') -> do
+        traceShowM ("unrolled assign", l', r')
         r'' <- evalRvalue' r'
         (ty, lfs'') <- evalLvalue l'
         return [(ty, l'', f r'') | (l'', f) <- lfs'']
