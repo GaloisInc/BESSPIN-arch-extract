@@ -6,6 +6,8 @@ import Control.Monad.State
 import Data.Foldable
 import Data.Map (Map)
 import qualified Data.Map as M
+import qualified Data.Map.Merge.Lazy as M
+import Data.Maybe
 import Data.Sequence (Seq, (<|), (|>))
 import qualified Data.Sequence as S
 import Data.Set (Set)
@@ -24,6 +26,167 @@ import BESSPIN.ArchExtract.Simplify (reconnectNets, mergeAliasedNets)
 
 
 TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "Chisel.Extract"
+
+
+type NodeId = Text
+
+data Projection = PrIndex Int | PrField Text
+    deriving (Show, Eq, Ord)
+
+data ConnExpr = ConnExpr NodeId (Seq Projection)
+    deriving (Show, Eq)
+
+data Rvalue =
+      RvExpr ConnExpr
+    | RvMux Rvalue Rvalue Rvalue
+    -- Specialized `RvMux` used for assignment to a non-constant index:
+    -- `array[idx_expr] <= value`.  Such statements unroll into many copies of
+    -- `when idx_expr == <i>: array[<i>] <= value`.  The unrolled form turns
+    -- into an assignment `array[<i>] <= RvIndexMux idx_expr <i> value <prev>`.
+    | RvIndexMux Rvalue Int Rvalue Rvalue
+    -- Initial value of every node.  Also, the assignment RHS for `x is
+    -- invalid` statements.
+    | RvInvalid
+    -- Marker indicating that the value is unset / unconnected.  This often
+    -- appears on the `else` side of `RvMux`, to handle `when` with no `else`.
+    -- When unioning `ConnTree`s, `RvUnset` will be replaced with the value
+    -- from the older tree.
+    | RvUnset
+    deriving (Show)
+
+data Connection =
+      CGround Ty Rvalue
+    | CBundle [Field] (Map Text Connection)
+    | CVector Ty Int (Map Int Connection)
+    deriving (Show)
+
+type ConnTree = Map NodeId Connection
+
+
+connForType :: Ty -> Connection
+connForType (TBundle fs) = CBundle fs M.empty
+connForType (TVector ty len) = CVector ty len M.empty
+connForType ty = CGround ty RvUnset
+
+connTy :: Connection -> Ty
+connTy (CGround ty _) = ty
+connTy (CBundle fs _) = TBundle fs
+connTy (CVector ty len _) = TVector ty len
+
+connExprNode :: ConnExpr -> NodeId
+connExprNode (ConnExpr n _) = n
+
+connTreeInsertNode :: NodeId -> Ty -> ConnTree -> ConnTree
+connTreeInsertNode n ty m = M.insert n (connForType ty) m
+
+connTreeEnsureNode :: NodeId -> Ty -> ConnTree -> ConnTree
+connTreeEnsureNode n ty m = M.alter (\x -> case x of
+    Nothing -> Just $ connForType ty
+    Just x -> Just x) n m
+
+connTreeInsertRvalue :: ConnExpr -> Rvalue -> ConnTree -> ConnTree
+connTreeInsertRvalue l r m = connTreeAdjustRvalue l (\_ _ -> r) m
+
+connTreeAdjustRvalue :: ConnExpr -> (Ty -> Rvalue -> Rvalue) -> ConnTree -> ConnTree
+connTreeAdjustRvalue (ConnExpr n ps) f m = M.alter (\x -> case x of
+    Nothing -> traceShow ("connTreeAdjustRvalue: bad node ID", n) Nothing
+    Just x -> Just $ go (toList ps) x) n m
+  where
+    go :: [Projection] -> Connection -> Connection
+    go [] (CGround ty rv) = CGround ty $ f ty rv
+    go (PrIndex idx : ps) (CVector ty len m') | 0 <= idx, idx < len =
+        CVector ty len $ M.alter (\x ->
+            Just $ go ps $ fromMaybe (connForType ty) x) idx m'
+    go (PrField name : ps) (CBundle fs m') | Just f <- find (\f -> fieldName f == name) fs =
+        CBundle fs $ M.alter (\x ->
+            Just $ go ps $ fromMaybe (connForType $ fieldTy f) x) (fieldName f) m'
+    go ps c = traceShow ("connTreeAdjustRvalue: bad projection", ps) c
+
+mapConn :: (Ty -> Rvalue -> Rvalue) -> Connection -> Connection
+mapConn f (CGround ty rv) = CGround ty $ f ty rv
+mapConn f (CBundle fs m) = CBundle fs $ fmap (mapConn f) m
+mapConn f (CVector ty len m) = CVector ty len $ fmap (mapConn f) m
+
+mergeConn ::
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
+    Connection -> Connection -> Connection
+mergeConn _ _ g (CGround ty rv1) (CGround _ rv2) =
+    CGround ty $ g ty rv1 rv2
+mergeConn fl fr g (CBundle fs m1) (CBundle _ m2) =
+    CBundle fs $ mergeConnMap fl fr g m1 m2
+mergeConn fl fr g (CVector ty idx m1) (CVector _ _ m2) =
+    CVector ty idx $ mergeConnMap fl fr g m1 m2
+mergeConn _ _ _ c1 c2 = error "mergeConn: tried to merge mismatched connections"
+
+mergeConnMap :: (Show k, Ord k) =>
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue) ->
+    (Ty -> Rvalue -> Rvalue -> Rvalue) ->
+    Map k Connection -> Map k Connection -> Map k Connection
+mergeConnMap fl fr g m1 m2 = M.merge
+    (M.mapMissing $ \k c -> mapConn fl c)
+    (M.mapMissing $ \k c -> mapConn fr c)
+    (M.zipWithMatched $ \k c1 c2-> mergeConn fl fr g c1 c2)
+    m1 m2
+
+-- Join a pair of conditional branches.  Each ground/leaf node is assigned its
+-- `tm` ("then") value when `c` is 1, and its `em` ("else") value when `c` is
+-- 0.  If either value is missing, `RvUnset` is used.
+connTreeJoin :: Rvalue -> ConnTree -> ConnTree -> ConnTree
+connTreeJoin c tm em = mergeConnMap
+    (\_ rv1 -> RvMux c rv1 RvUnset)
+    (\_ rv2 -> RvMux c RvUnset rv2)
+    (\_ rv1 rv2 -> RvMux c rv1 rv2)
+    tm em
+
+rvalueSubstUnset :: Rvalue -> Rvalue -> Rvalue
+rvalueSubstUnset old rv = go rv
+  where
+    go (RvExpr ce) = RvExpr ce
+    go (RvMux c t e) = RvMux (go c) (go t) (go e)
+    go (RvIndexMux ie ic t e) = RvIndexMux (go ie) ic (go t) (go e)
+    go RvInvalid = RvInvalid
+    go RvUnset = old
+
+-- Apply the updates in `new` atop those in `old`.  If `new` contains `RvUnset`
+-- anywhere in some leaf, the `RvUnset` is replaced by the `old` value for the
+-- same leaf; in all other cases, the `new` value replaces the `old`.
+connTreeAppend :: ConnTree -> ConnTree -> ConnTree
+connTreeAppend old new = mergeConnMap
+    (\_ rv1 -> rv1)
+    (\_ rv2 -> rv2)
+    (\_ rv1 rv2 -> rvalueSubstUnset rv1 rv2)
+    old new
+
+traceTree :: (Ord k, Show k) => Text -> Map k Connection -> a -> a
+traceTree name ct x = trace (T.unpack $
+    "conn tree " <> name <> ":\n" <> T.unlines (connTreePrint ct)) x
+
+
+connTreePrint :: (Ord k, Show k) => Map k Connection -> [Text]
+connTreePrint cm = go cm
+  where
+    go :: (Ord k, Show k) => Map k Connection -> [Text]
+    go m = concatMap (\(k, c) -> header k c : indent (body c)) (M.toList m)
+
+    header :: Show k => k -> Connection -> Text
+    header k c = T.pack (show k) <> case c of
+        CGround _ rv -> " <- " <> T.pack (show rv)
+        CBundle fs m -> ": bundle " <> T.intercalate ", "
+            [(if fieldFlip f then "FLIP " else "") <> fieldName f | f <- fs]
+        CVector ty len m -> ": vector " <> T.pack (show len)
+
+    body :: Connection -> [Text]
+    body c = case c of
+        CGround _ _ -> []
+        CBundle _ m -> go m
+        CVector _ _ m -> go m
+
+    indent :: [Text] -> [Text]
+    indent ts = map ("  " <>) ts
+
 
 
 
@@ -62,6 +225,8 @@ data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esModMap :: Map Text ModInfo
     , esLocalScope :: Map Text Value
+    , esDefTy :: Map Text Ty
+    , esSplitDefs :: Set Text
     }
 
 makeLenses' ''ModInfo
@@ -103,6 +268,8 @@ extractDesign cfg circ = evalState (extractDesign' cfg circ) initState
         { esCurModule = error $ "current module is unset"
         , esModMap = modMap
         , esLocalScope = M.empty
+        , esDefTy = M.empty
+        , esSplitDefs = Set.empty
         }
 
 extractDesign' :: Config.Chisel -> Circuit -> ExtractM (A.Design ())
@@ -113,6 +280,7 @@ extractDesign' cfg circ = do
 extractModule :: Config.Chisel -> Module -> ExtractM (A.Module ())
 extractModule cfg m = do
     ((), m') <- withModule initMod $ do
+        traceM (T.unpack $ " --- begin extracting " <> moduleName m <> " ---")
         let ifc = convertInterface $ modulePorts m
 
         (v, ins, outs) <- buildIfcNets "" ifc (moduleSig $ modulePorts m)
@@ -120,6 +288,9 @@ extractModule cfg m = do
         outs' <- mapM buildPort outs
         _esCurModule . A._moduleInputs .= S.fromList ins'
         _esCurModule . A._moduleOutputs .= S.fromList outs'
+
+        forM_ (modulePorts m) $ \p -> do
+            bindDef (portName p) (portTy p)
 
         withScope $ do
             let vars = case v of
@@ -136,6 +307,10 @@ extractModule cfg m = do
                         conns <- evalStmt body
                         traceShowM ("connections", conns)
                         makeConnections conns
+
+                        conns' <- evalStmt' body
+                        traceM (T.unpack $ "new-style connections: \n" <> T.unlines (connTreePrint conns'))
+
                 MkExtern _ -> return ()
 
     return $
@@ -488,6 +663,256 @@ makeTypedValue prefix (TVector ty _) = do
 makeTypedValue prefix ty = do
     n <- buildNet prefix 11 ty
     return (VNet n, [(prefix, n)])
+
+
+
+bindDef :: Text -> Ty -> ExtractM ()
+bindDef name ty = _esDefTy %= M.insert name ty
+
+splitDef :: Text -> ExtractM ()
+splitDef name = do
+    _esSplitDefs %= Set.insert name
+    optTy <- use $ _esDefTy . at name
+    let ty = case optTy of
+            Nothing -> traceShow ("splitDef: missing DefTy entry", name) TUnknown
+            Just x -> x
+    bindDef (name <> ".L") ty
+    bindDef (name <> ".R") ty
+
+evalDef' :: Def -> ExtractM ()
+evalDef' (DWire name ty) = bindDef name ty >> splitDef name
+evalDef' (DReg name ty _clk _res _init) = bindDef name ty >> splitDef name
+evalDef' (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
+    Nothing ->
+        traceShow ("instantiation of unknown module", name, modName) $ return ()
+    Just mi -> bindDef name $ moduleSig $ miPorts mi
+evalDef' (DMemory name ty depth rds wrs rdwrs) = do
+    forM_ rds $ \rd -> bindDef rd ty
+    forM_ wrs $ \wr -> bindDef wr ty
+    forM_ rdwrs $ \rdwr -> bindDef rdwr ty >> splitDef rdwr
+evalDef' (DNode name expr) = bindDef name =<< exprTy expr
+evalDef' (DCMem name ty depth isSync) = return ()
+evalDef' (DCMemPort name ty memName args dir)
+  | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
+    Just (VRam idx ty') -> do
+        bindDef name ty'
+        when (dir `elem` [MpdInfer, MpdReadWrite]) $ splitDef name
+    Just v -> traceShowM ("port references non-memory", memName, name, v)
+    Nothing -> traceShowM ("unknown local memory", memName, name)
+  | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
+
+-- Compute the set of net connections made by a `Stmt`.  (A statement can also
+-- disconnect nets, represented as connecting the net to `Nothing`.)  Statement
+-- evaluation can also have side effects on the extraction state, such as
+-- producing new logic nodes or adding variables to the current scope.
+evalStmt' :: Stmt -> ExtractM ConnTree
+evalStmt' (SDef _ d) = evalDef' d >> return M.empty
+evalStmt' (SCond _ cond then_ else_) = do
+    c <- evalRvalue' cond
+    t <- evalStmt' then_
+    e <- evalStmt' else_
+    return $ connTreeJoin c t e
+evalStmt' (SBlock stmts) =
+    -- `M.union` is left-biased, so we `flip` it to make new connections
+    -- override the old ones.
+    foldM (\acc s -> connTreeAppend acc <$> evalStmt' s) M.empty stmts
+-- TODO: implement with some combination of unrollAggregates + evalLvalue +
+-- evalRvalue'
+evalStmt' (SPartialConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
+evalStmt' (SConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
+evalStmt' (SIsInvalid _ e) = unrollInvalidate e >>= assignTree
+evalStmt' (SAttach src es) = traceShow ("evalStmt SAttach NYI", src, es) $ return M.empty
+evalStmt' (SStop _ _ _ _) = return M.empty
+evalStmt' (SPrint _ _ _ _ _) = return M.empty
+evalStmt' SEmpty = return M.empty
+
+ensureNode :: NodeId -> ConnTree -> ExtractM ConnTree
+ensureNode n ct = connTreeEnsureNode n <$> nodeTy n <*> pure ct
+
+assignTree :: [(Ty, ConnExpr, Rvalue)] -> ExtractM ConnTree
+assignTree assigns = foldM (\acc (_ty, l, r) -> do
+    acc' <- ensureNode (connExprNode l) acc
+    return $ connTreeInsertRvalue l r acc') M.empty assigns
+
+defTy :: Text -> ExtractM Ty
+defTy name = use (_esDefTy . at name) >>= \x -> case x of
+    Nothing -> traceShow ("failed to resolve def", name) $ return TUnknown
+    Just x -> return x
+
+nodeTy :: NodeId -> ExtractM Ty
+nodeTy n = defTy n
+
+exprTy :: Expr -> ExtractM Ty
+exprTy (ELit (LUInt _ w)) = return $ TUInt w
+exprTy (ELit (LSInt _ w)) = return $ TSInt w
+exprTy (ELit (LFixed _ w p)) = return $ TFixed w p
+exprTy (ERef name _) = defTy name
+exprTy (EField e name _) = bundleFieldTy name <$> exprTy e
+exprTy (EIndex e _ _) = vectorItemTy <$> exprTy e
+exprTy (EIndexC e _ _) = vectorItemTy <$> exprTy e
+exprTy (EMux _ t _ _) = exprTy t
+exprTy (EValidIf _ t _) = exprTy t
+-- TODO: EPrim ty is probably TUnknown in most case, just like the others
+exprTy (EPrim _ _ _ ty) = return ty
+
+projectConnExpr p (ConnExpr n ps) = ConnExpr n (ps |> p)
+
+projectRvalue :: Projection -> Rvalue -> Rvalue
+projectRvalue p rv = go rv
+  where
+    go (RvExpr (ConnExpr n ps)) = RvExpr $ ConnExpr n (ps |> p)
+    go (RvMux c t e) = RvMux c (go t) (go e)
+    go (RvIndexMux ie ic t e) = RvIndexMux ie ic (go t) (go e)
+    go RvInvalid = RvInvalid
+    go RvUnset = RvUnset
+
+projectTy :: Projection -> Ty -> Ty
+projectTy (PrIndex idx) (TVector ty len)
+  | 0 <= idx && idx < len = ty
+projectTy (PrField name) (TBundle fs)
+  | Just f <- find (\f -> fieldName f == name) fs = fieldTy f
+projectTy p t = traceShow ("bad projection (Ty)", p, t) TUnknown
+
+bundleFieldTy :: Text -> Ty -> Ty
+bundleFieldTy name (TBundle fs)
+  | Just f <- find (\f -> fieldName f == name) fs = fieldTy f
+bundleFieldTy name ty = traceShow ("bad projection: field not found", name, ty) TUnknown
+
+vectorItemTy :: Ty -> Ty
+vectorItemTy (TVector ty _) = ty
+vectorItemTy ty = traceShow ("bad projection: not a vector", ty) TUnknown
+
+vectorLen :: Ty -> Int
+vectorLen (TVector _ len) = len
+vectorLen ty = traceShow ("can't get len of non-vector", ty) 0
+
+evalRvalue' :: Expr -> ExtractM Rvalue
+evalRvalue' (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
+evalRvalue' (ERef name _) = do
+    isSplit <- Set.member name <$> use _esSplitDefs
+    let name' = if isSplit then name <> ".R" else name
+    return $ RvExpr $ ConnExpr name' S.empty
+evalRvalue' (EField e name _) = projectRvalue (PrField name) <$> evalRvalue' e
+evalRvalue' (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
+evalRvalue' (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> evalRvalue' e
+evalRvalue' (EMux cond then_ else_ _) =
+    RvMux <$> evalRvalue' cond <*> evalRvalue' then_ <*> evalRvalue' else_
+evalRvalue' (EValidIf cond then_ _) =
+    RvMux <$> evalRvalue' cond <*> evalRvalue' then_ <*> pure RvInvalid
+evalRvalue' (EPrim op args _ ty) = return $ RvExpr $ ConnExpr ("<" <> op <> ">") S.empty
+
+
+-- Expand a (possibly) aggregate-typed assignment into a list of ground-typed
+-- assignments.  This is the part where we handle flipped connections inside of
+-- bundles.
+unrollAggregates :: Ty -> Expr -> Ty -> Expr -> [(Expr, Expr)]
+unrollAggregates (TBundle fs) l (TBundle fs') r = do
+    let fsMap' = M.fromList [(fieldName f, f) | f <- fs']
+    f <- fs
+    Just f' <- return $ M.lookup (fieldName f) fsMap'
+    let name = fieldName f
+    let ty = fieldTy f
+    let ty' = fieldTy f'
+    if not $ fieldFlip f then
+        unrollAggregates ty (EField l name ty) ty' (EField r name ty)
+    else
+        unrollAggregates ty (EField r name ty) ty' (EField l name ty)
+unrollAggregates (TVector ty len) l (TVector ty' len') r = do
+    idx <- [0 .. min len len' - 1]
+    unrollAggregates ty (EIndexC l idx ty) ty' (EIndexC r idx ty)
+unrollAggregates lty l rty r | isGroundTy lty, isGroundTy rty = return (l, r)
+unrollAggregates lty _ rty _ =
+    traceShow ("unrollAggregates: type mismatch", lty, rty) []
+
+-- Expand a singnle aggregate-typed expression.
+unrollAggregate :: Ty -> Expr -> Bool -> [Expr]
+unrollAggregate ty e flipped = go ty e flipped
+  where
+    go (TBundle fs) e flipped = do
+        f <- fs
+        let name = fieldName f
+        let ty = fieldTy f
+        let flipped' = if fieldFlip f then not flipped else flipped
+        go ty (EField e name ty) flipped'
+    go (TVector ty len) e flipped = do
+        idx <- [0 .. len - 1]
+        go ty (EIndexC e idx ty) flipped
+    go _ e False = return e
+    go _ e True = []
+
+evalLvalue :: Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
+evalLvalue e = evalLvalue' False e
+
+-- Convert an lvalue `Expr` to a `ConnExpr`.  This can produce multiple
+-- `ConnExpr`s in some cases, and also sometimes generates a transformation to
+-- apply to the `Rvalue` of the assignment.
+evalLvalue' :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
+evalLvalue' flipSplit e = go e
+  where
+    go (ERef name _) = do
+        isSplit <- Set.member name <$> use _esSplitDefs
+        let name' = if not isSplit then name else
+                if flipSplit then name <> ".R" else name <> ".L"
+        ty <- defTy name
+        return (ty, [(ConnExpr name' S.empty, id)])
+    go (EField e name _) = do
+        (ty, lvs) <- go e
+        let ty' = bundleFieldTy name ty
+        let lvs' = [(projectConnExpr (PrField name) ce, f) | (ce, f) <- lvs]
+        return (ty', lvs')
+    go (EIndex e idx _) = do
+        (ty, lvs) <- go e
+        idxRv <- evalRvalue' idx
+        let ty' = vectorItemTy ty
+        let lvs' = do
+                (ce, f) <- lvs
+                i <- [0 .. vectorLen ty - 1]
+                return (projectConnExpr (PrIndex i) ce,
+                    \rv -> RvIndexMux idxRv i (f rv) RvUnset)
+        return (ty', lvs')
+    go (EIndexC e idx _) = do
+        (ty, lvs) <- go e
+        let ty' = vectorItemTy ty
+        let lvs' = [(projectConnExpr (PrIndex idx) ce, f) | (ce, f) <- lvs]
+        return (ty', lvs')
+    -- c ? t : e <= r  -->  when c: t <= r; else: e <= r
+    go (EMux c t e _) = do
+        (ty1, lvs1) <- go t
+        (ty2, lvs2) <- go e
+        condRv <- evalRvalue' c
+        let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs1]
+                ++ [(ce, \rv -> RvMux condRv RvUnset (f rv)) | (ce, f) <- lvs2]
+        return (ty1, lvs')
+    -- c ? t : undef <= r  -->  when c: t <= r
+    go (EValidIf c t _) = do
+        (ty, lvs) <- go t
+        condRv <- evalRvalue' c
+        let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs]
+        return (ty, lvs')
+    go e@(ELit _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
+    go e@(EPrim _ _ _ _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
+
+unrollAssign :: Expr -> Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
+unrollAssign l r = do
+    assigns <- unrollAggregates <$> exprTy l <*> pure l <*> exprTy r <*> pure r
+    liftM concat $ forM assigns $ \(l', r') -> do
+        r'' <- evalRvalue' r'
+        (ty, lfs'') <- evalLvalue l'
+        return [(ty, l'', f r'') | (l'', f) <- lfs'']
+
+unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
+unrollInvalidate l = do
+    assignsL <- unrollAggregate <$> exprTy l <*> pure l <*> pure False
+    ls <- liftM concat $ forM assignsL $ \(l') -> do
+        (ty, lfs'') <- evalLvalue' False l'
+        return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
+
+    assignsR <- unrollAggregate <$> exprTy l <*> pure l <*> pure True
+    rs <- liftM concat $ forM assignsR $ \(l') -> do
+        (ty, lfs'') <- evalLvalue' True l'
+        return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
+
+    return $ ls ++ rs
 
 
 

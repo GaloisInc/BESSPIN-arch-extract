@@ -129,6 +129,12 @@ data Lit =
     deriving (Show, Typeable, Data, Generic, NFData)
 
 
+isGroundTy ty = case ty of
+    TBundle _ -> False
+    TVector _ _ -> False
+    _ -> True
+
+
 
 makeLenses' ''Circuit
 makeLenses' ''Module
