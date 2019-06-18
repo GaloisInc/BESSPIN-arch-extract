@@ -34,7 +34,7 @@ data Projection = PrIndex Int | PrField Text
     deriving (Show, Eq, Ord)
 
 data ConnExpr = ConnExpr NodeId (Seq Projection)
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 data Rvalue =
       RvExpr ConnExpr
@@ -119,7 +119,7 @@ connTreeAdjustRvalue (ConnExpr n ps) f m = M.alter (\x -> case x of
             Just $ go ps $ fromMaybe (connForType $ fieldTy f) x) (fieldName f) m'
     go ps c = traceShow ("connTreeAdjustRvalue: bad projection", ps) c
 
-mapConn' :: (Ty -> Rvalue -> a -> (Rvalue, a)) -> GConnection a -> GConnection a
+mapConn' :: (Ty -> Rvalue -> a -> (Rvalue, b)) -> GConnection a -> GConnection b
 mapConn' f (CGround' ty rv ann) =
     let (rv', ann') = f ty rv ann in
     CGround' ty rv' ann'
@@ -130,10 +130,10 @@ mapConn :: (Ty -> Rvalue -> Rvalue) -> GConnection a -> GConnection a
 mapConn f c = mapConn' (\ty rv ann -> (f ty rv, ann)) c
 
 mergeConn' ::
-    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
-    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
-    (Ty -> Rvalue -> a -> Rvalue -> a -> (Rvalue, a)) ->
-    GConnection a -> GConnection a -> GConnection a
+    (Ty -> Rvalue -> a -> (Rvalue, c)) ->
+    (Ty -> Rvalue -> b -> (Rvalue, c)) ->
+    (Ty -> Rvalue -> a -> Rvalue -> b -> (Rvalue, c)) ->
+    GConnection a -> GConnection b -> GConnection c
 mergeConn' _ _ g (CGround' ty rv1 ann1) (CGround' _ rv2 ann2) =
     let (rv', ann') = g ty rv1 ann1 rv2 ann2 in
     CGround' ty rv' ann'
@@ -144,10 +144,10 @@ mergeConn' fl fr g (CVector ty idx m1) (CVector _ _ m2) =
 mergeConn' _ _ _ c1 c2 = error "mergeConn: tried to merge mismatched connections"
 
 mergeConnMap' :: Ord k =>
-    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
-    (Ty -> Rvalue -> a -> (Rvalue, a)) ->
-    (Ty -> Rvalue -> a -> Rvalue -> a -> (Rvalue, a)) ->
-    Map k (GConnection a) -> Map k (GConnection a) -> Map k (GConnection a)
+    (Ty -> Rvalue -> a -> (Rvalue, c)) ->
+    (Ty -> Rvalue -> b -> (Rvalue, c)) ->
+    (Ty -> Rvalue -> a -> Rvalue -> b -> (Rvalue, c)) ->
+    Map k (GConnection a) -> Map k (GConnection b) -> Map k (GConnection c)
 mergeConnMap' fl fr g m1 m2 = M.merge
     (M.mapMissing $ \k c -> mapConn' fl c)
     (M.mapMissing $ \k c -> mapConn' fr c)
@@ -305,6 +305,45 @@ rerollConnTree :: BiConnTree -> BiConnTree
 rerollConnTree ct = rerollConn <$> ct
 
 
+
+collectFlippableConns :: GConnTree a -> [(ConnExpr, ConnExpr)]
+collectFlippableConns ct = concatMap (\(n,c) -> go n S.empty c) $ M.toList ct
+  where
+    go n ps (CGround' _ (RvExpr ce) _) = [(ConnExpr n ps, ce)]
+    go n ps (CGround' _ _ _) = []
+    go n ps (CBundle _ m) =
+        concatMap (\(name, c) -> go n (ps |> PrField name) c) $ M.toList m
+    go n ps (CVector _ _ m) =
+        concatMap (\(idx, c) -> go n (ps |> PrIndex idx) c) $ M.toList m
+
+clearConn :: GConnection a -> Connection
+clearConn (CGround' ty _ _) = CGround ty RvUnset
+clearConn (CBundle fs _) = CBundle fs M.empty
+clearConn (CVector ty len _) = CVector ty len M.empty
+
+buildFlippedConnMap :: GConnTree a -> ConnTree
+buildFlippedConnMap ct = ct'
+  where
+    conns = collectFlippableConns ct
+    counts = M.fromListWith (+) $ map (\(_,ce) -> (ce, 1)) conns
+    conns' = filter (\(_,ce) -> counts M.! ce == 1) conns
+
+    base = fmap clearConn ct
+    ct' = foldl' (\ct (l,r) -> connTreeInsertRvalue r (RvExpr l) ct) base conns'
+
+addRevConns :: BiConnTree -> BiConnTree
+addRevConns ct = mergeConnMap'
+    (\_ rv ann -> (rv, ann))
+    (\_ rv _ -> (rv, Rev))
+    (\_ rv ann rv' _ -> case rv of
+        -- TODO/HACK: fix IsInvalid handling to not assign RvInvalid to
+        -- non-assignable nodes, then remove this check
+        RvInvalid -> (rv', Rev)
+        _ -> traceShow ("addRevConns: duplicate entry", rv, rv') (rv, ann))
+    ct (buildFlippedConnMap ct)
+
+
+
 data Interface =
     -- The `Int` is the index of the port among the module's inputs/outputs.
       IfPort Direction Int Ty
@@ -424,11 +463,14 @@ extractModule cfg m = do
                         makeConnections conns
 
                         conns' <- evalStmt' body
-                        let biconns' = rerollConnTree $ fmap (fmap $ const Fwd) conns'
+                        let biconns' = addRevConns $ fmap (fmap $ const Fwd) conns'
+                        let biconns'' = rerollConnTree biconns'
                         traceM (T.unpack $ "new-style connections (orig): \n" <>
                             T.unlines (connTreePrint conns'))
-                        traceM (T.unpack $ "new-style connections (rerolled): \n" <>
+                        traceM (T.unpack $ "new-style connections (with rev): \n" <>
                             T.unlines (biConnTreePrint biconns'))
+                        traceM (T.unpack $ "new-style connections (rerolled): \n" <>
+                            T.unlines (biConnTreePrint biconns''))
 
                 MkExtern _ -> return ()
 
@@ -872,6 +914,19 @@ exprTy (EValidIf _ t _) = exprTy t
 -- TODO: EPrim ty is probably TUnknown in most case, just like the others
 exprTy (EPrim _ _ _ ty) = return ty
 
+exprTyFlip :: Expr -> ExtractM (Ty, Bool)
+exprTyFlip (ELit (LUInt _ w)) = return $ (TUInt w, False)
+exprTyFlip (ELit (LSInt _ w)) = return $ (TSInt w, False)
+exprTyFlip (ELit (LFixed _ w p)) = return $ (TFixed w p, False)
+exprTyFlip (ERef name _) = defTy name >>= \ty -> return (ty, False)
+exprTyFlip (EField e name _) = bundleFieldTyFlip name <$> exprTyFlip e
+exprTyFlip (EIndex e _ _) = vectorItemTyFlip <$> exprTyFlip e
+exprTyFlip (EIndexC e _ _) = vectorItemTyFlip <$> exprTyFlip e
+exprTyFlip (EMux _ t _ _) = exprTyFlip t
+exprTyFlip (EValidIf _ t _) = exprTyFlip t
+-- TODO: EPrim ty is probably TUnknown in most case, just like the others
+exprTyFlip (EPrim _ _ _ ty) = return (ty, False)
+
 projectConnExpr p (ConnExpr n ps) = ConnExpr n (ps |> p)
 
 projectRvalue :: Projection -> Rvalue -> Rvalue
@@ -895,9 +950,21 @@ bundleFieldTy name (TBundle fs)
   | Just f <- find (\f -> fieldName f == name) fs = fieldTy f
 bundleFieldTy name ty = traceShow ("bad projection: field not found", name, ty) TUnknown
 
+bundleFieldTyFlip :: Text -> (Ty, Bool) -> (Ty, Bool)
+bundleFieldTyFlip name (TBundle fs, flipped)
+  | Just f <- find (\f -> fieldName f == name) fs
+  = (fieldTy f, if fieldFlip f then not flipped else flipped)
+bundleFieldTyFlip name (ty, flipped) =
+    traceShow ("bad projection: field not found", name, ty) (TUnknown, flipped)
+
 vectorItemTy :: Ty -> Ty
 vectorItemTy (TVector ty _) = ty
 vectorItemTy ty = traceShow ("bad projection: not a vector", ty) TUnknown
+
+vectorItemTyFlip :: (Ty, Bool) -> (Ty, Bool)
+vectorItemTyFlip (TVector ty _, flipped) = (ty, flipped)
+vectorItemTyFlip (ty, flipped) =
+    traceShow ("bad projection: not a vector", ty) (TUnknown, flipped)
 
 vectorLen :: Ty -> Int
 vectorLen (TVector _ len) = len
@@ -1024,11 +1091,16 @@ evalLvalue' flipSplit e = go e
 
 unrollAssign :: Expr -> Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollAssign l r = do
-    assigns <- unrollAggregates <$> exprTy l <*> pure l <*> exprTy r <*> pure r
+    (lty, lFlipped) <- exprTyFlip l
+    (rty, rFlipped) <- exprTyFlip r
+    let assigns = unrollAggregates lty l rty r
     liftM concat $ forM assigns $ \(l', r', flipped) -> do
         traceShowM ("unrolled assign", l', r')
-        r'' <- evalRvalue' flipped r'
-        (ty, lfs'') <- evalLvalue' flipped l'
+        let (lFlipped', rFlipped') =
+                if flipped then (rFlipped, lFlipped) else (lFlipped, rFlipped)
+        r'' <- evalRvalue' (flipped /= rFlipped') r'
+        (ty, lfs'') <- evalLvalue' (flipped /= lFlipped') l'
+        traceShowM ("directions", l, r, lFlipped, rFlipped, flipped)
         return [(ty, l'', f r'') | (l'', f) <- lfs'']
 
 unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
