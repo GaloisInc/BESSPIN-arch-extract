@@ -126,8 +126,53 @@ mapConn' f (CGround' ty rv ann) =
 mapConn' f (CBundle fs m) = CBundle fs $ fmap (mapConn' f) m
 mapConn' f (CVector ty len m) = CVector ty len $ fmap (mapConn' f) m
 
+mapConnTree' :: Ord k => (Ty -> Rvalue -> a -> (Rvalue, b)) ->
+    Map k (GConnection a) -> Map k (GConnection b)
+mapConnTree' f m = fmap (mapConn' f) m
+
 mapConn :: (Ty -> Rvalue -> Rvalue) -> GConnection a -> GConnection a
 mapConn f c = mapConn' (\ty rv ann -> (f ty rv, ann)) c
+
+mapConnTree :: Ord k => (Ty -> Rvalue -> Rvalue) -> Map k (GConnection a) -> Map k (GConnection a)
+mapConnTree f m = mapConnTree' (\ty rv ann -> (f ty rv, ann)) m
+
+
+mapMaybeConn' :: (Ty -> Rvalue -> a -> Maybe (Rvalue, b)) -> GConnection a -> Maybe (GConnection b)
+mapMaybeConn' f c@(CGround' ty rv ann) = case f ty rv ann of
+    Just (rv', ann') -> Just $ CGround' ty rv' ann'
+    Nothing -> Nothing
+mapMaybeConn' f (CBundle fs m) = Just $ CBundle fs $ mapMaybeConnTree' f m
+mapMaybeConn' f (CVector ty len m) = Just $ CVector ty len $ mapMaybeConnTree' f m
+
+mapMaybeConnTree' :: Ord k => (Ty -> Rvalue -> a -> Maybe (Rvalue, b)) ->
+    Map k (GConnection a) -> Map k (GConnection b)
+mapMaybeConnTree' f m = M.mapMaybe (mapMaybeConn' f) m
+
+mapMaybeConn :: (Ty -> Rvalue -> Maybe Rvalue) -> GConnection a -> Maybe (GConnection a)
+mapMaybeConn f c =
+    mapMaybeConn' (\ty rv ann -> f ty rv >>= \rv' -> return (rv', ann)) c
+
+mapMaybeConnTree :: Ord k => (Ty -> Rvalue -> Maybe Rvalue) ->
+    Map k (GConnection a) -> Map k (GConnection a)
+mapMaybeConnTree f m =
+    mapMaybeConnTree' (\ty rv ann -> f ty rv >>= \rv' -> return (rv', ann)) m
+
+
+filterConn' :: (Ty -> Rvalue -> a -> Bool) -> GConnection a -> Maybe (GConnection a)
+filterConn' f c@(CGround' ty rv ann)
+  | f ty rv ann = Just c
+  | otherwise = Nothing
+filterConn' f (CBundle fs m) = Just $ CBundle fs $ filterConnTree' f m
+filterConn' f (CVector ty len m) = Just $ CVector ty len $ filterConnTree' f m
+
+filterConnTree' :: (Ty -> Rvalue -> a -> Bool) -> Map k (GConnection a) -> Map k (GConnection a)
+filterConnTree' f m = M.mapMaybe (filterConn' f) m
+
+filterConn :: (Ty -> Rvalue -> Bool) -> GConnection a -> Maybe (GConnection a)
+filterConn f c = filterConn' (\ty rv ann -> f ty rv) c
+
+filterConnTree :: (Ty -> Rvalue -> Bool) -> Map k (GConnection a) -> Map k (GConnection a)
+filterConnTree f m = filterConnTree' (\ty rv ann -> f ty rv) m
 
 mergeConn' ::
     (Ty -> Rvalue -> a -> (Rvalue, c)) ->
@@ -288,21 +333,21 @@ describeChildren (CVector _ len m) = join $ allSame $ map (\i -> do
     describeChild (PrIndex i) False c) [0 .. len - 1]
 describeChildren _ = Nothing
 
-rerollConnChildren :: BiConnection -> BiConnection
-rerollConnChildren c@(CGround' _ _ _) = c
-rerollConnChildren (CBundle fs m) = CBundle fs $ rerollConn <$> m
-rerollConnChildren (CVector ty len m) = CVector ty len $ rerollConn <$> m
+rerollBiConnChildren :: BiConnection -> BiConnection
+rerollBiConnChildren c@(CGround' _ _ _) = c
+rerollBiConnChildren (CBundle fs m) = CBundle fs $ rerollBiConn <$> m
+rerollBiConnChildren (CVector ty len m) = CVector ty len $ rerollBiConn <$> m
 
-rerollConn :: BiConnection -> BiConnection
-rerollConn c =
-    let c' = rerollConnChildren c in
+rerollBiConn :: BiConnection -> BiConnection
+rerollBiConn c =
+    let c' = rerollBiConnChildren c in
     case describeChildren c' of
         Just (CdConn ce dir) -> CGround' (connTy c) (RvExpr ce) dir
         Just CdInvalid -> CGround' (connTy c) RvInvalid Fwd
         Nothing -> c'
 
-rerollConnTree :: BiConnTree -> BiConnTree
-rerollConnTree ct = rerollConn <$> ct
+rerollBiConnTree :: BiConnTree -> BiConnTree
+rerollBiConnTree ct = rerollBiConn <$> ct
 
 
 
@@ -341,6 +386,22 @@ addRevConns ct = mergeConnMap'
         RvInvalid -> (rv', Rev)
         _ -> traceShow ("addRevConns: duplicate entry", rv, rv') (rv, ann))
     ct (buildFlippedConnMap ct)
+
+
+
+rerollConnTree :: ConnTree -> ConnTree
+rerollConnTree ct =
+    mapMaybeConnTree' (\ty rv dir -> case dir of
+        Fwd -> Just (rv, ())
+        Rev -> Nothing) $
+    rerollConnTree' ct
+
+rerollConnTree' :: ConnTree -> BiConnTree
+rerollConnTree' ct =
+    rerollBiConnTree $
+    addRevConns $
+    mapConnTree' (\ty rv () -> (rv, Fwd)) $
+    ct
 
 
 
@@ -463,14 +524,11 @@ extractModule cfg m = do
                         makeConnections conns
 
                         conns' <- evalStmt' body
-                        let biconns' = addRevConns $ fmap (fmap $ const Fwd) conns'
-                        let biconns'' = rerollConnTree biconns'
+                        let conns'' = rerollConnTree conns'
                         traceM (T.unpack $ "new-style connections (orig): \n" <>
                             T.unlines (connTreePrint conns'))
-                        traceM (T.unpack $ "new-style connections (with rev): \n" <>
-                            T.unlines (biConnTreePrint biconns'))
                         traceM (T.unpack $ "new-style connections (rerolled): \n" <>
-                            T.unlines (biConnTreePrint biconns''))
+                            T.unlines (connTreePrint conns''))
 
                 MkExtern _ -> return ()
 
