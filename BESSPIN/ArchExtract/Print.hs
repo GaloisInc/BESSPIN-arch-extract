@@ -56,6 +56,8 @@ instance Pretty (Logic x) where
                 LkRuleEnable name -> "ruleEnable" <+> pretty name
                 LkPack _ -> "pack"
                 LkUnpack _ -> "unpack"
+                LkRepack (Just name) _ _ -> "repack" <+> pretty name
+                LkRepack Nothing _ _ -> "repack"
                 LkExpr -> "expr"
                 LkOther -> emptyDoc
         in
@@ -91,6 +93,10 @@ instance Pretty (Logic x) where
                     ]
                 LkPack names -> [ "names" <+> pretty (toList names) ]
                 LkUnpack names -> [ "names" <+> pretty (toList names) ]
+                LkRepack _ ins outs ->
+                    [ "inputs" <+> pretty (toList ins)
+                    , "outputs" <+> pretty (toList outs)
+                    ]
                 _ -> []
         in
         labeled header $ vsep $

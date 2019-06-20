@@ -1,9 +1,12 @@
-{-# LANGUAGE OverloadedStrings, TemplateHaskell, PatternSynonyms, DeriveFunctor #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell, PatternSynonyms, DeriveFunctor,
+    DeriveDataTypeable #-}
 module BESSPIN.ArchExtract.Chisel.Extract where
 
 import Control.Monad
 import Control.Monad.State
 import Data.Foldable
+import Data.Generics
+import Data.List
 import Data.Map (Map)
 import qualified Data.Map as M
 import qualified Data.Map.Merge.Lazy as M
@@ -31,10 +34,10 @@ TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "Chi
 type NodeId = Text
 
 data Projection = PrIndex Int | PrField Text
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq, Ord, Data)
 
 data ConnExpr = ConnExpr NodeId (Seq Projection)
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq, Ord, Data)
 
 data Rvalue =
       RvExpr ConnExpr
@@ -52,7 +55,7 @@ data Rvalue =
     -- When unioning `ConnTree`s, `RvUnset` will be replaced with the value
     -- from the older tree.
     | RvUnset
-    deriving (Show)
+    deriving (Show, Data)
 
 data GConnection a =
       CGround' Ty Rvalue a
@@ -439,9 +442,20 @@ data ModInfo = ModInfo
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esModMap :: Map Text ModInfo
-    , esLocalScope :: Map Text Value
-    , esDefTy :: Map Text Ty
-    , esSplitDefs :: Set Text
+    , esLocalScope :: Map Text NodeId
+    , esNodeTy :: Map NodeId Ty
+    -- List of all defs in the current module.  Hack: for defs that produce
+    -- multiple nodes, such as `DWire`, the `NodeId` is the ID of the first
+    -- node.  The other nodes' IDs are derived by applying a transformation to
+    -- the ID, depending on the kind of def.
+    , esDefs :: Seq (Def, NodeId)
+    -- Set of "split nodes".  A reference to a node `n` in this set gets turned
+    -- into a reference to either the "left" or "right" variant of `n`,
+    -- depending on whether the reference is in an lvalue or rvalue position.
+    , esSplitNodes :: Set NodeId
+    -- Gives the `NetId` assigned to each expression that appears in the
+    -- `ConnTree`.  Populated by `buildNodes`.
+    , esNetMap :: Map ConnExpr A.NetId
     }
 
 makeLenses' ''ModInfo
@@ -449,11 +463,17 @@ makeLenses' ''ExtractState
 
 type ExtractM a = State ExtractState a
 
+-- Enter a new module scope.  `esCurModule` is initalized to `initMod` at the
+-- start, and the final value of `esCurModule` is returned at the end.  All
+-- `ExtractState` fields are restored to their previous values after running
+-- `act`.
 withModule :: A.Module () -> ExtractM a -> ExtractM (a, A.Module ())
 withModule initMod act = do
-    oldMod <- _esCurModule <<.= initMod
+    old <- get
+    _esCurModule .= initMod
     r <- act
-    newMod <- _esCurModule <<.= oldMod
+    newMod <- use _esCurModule
+    put old
     return (r, newMod)
 
 withScope :: ExtractM a -> ExtractM a
@@ -463,8 +483,26 @@ withScope act = do
     _esLocalScope .= oldScope
     return r
 
-bindLocal :: Text -> Value -> ExtractM ()
-bindLocal name val = _esLocalScope %= M.insert name val
+bindDef' :: Text -> Def -> Ty -> Int -> ExtractM NodeId
+bindDef' name def ty _count = do
+    i <- return name    -- TODO: switch to numeric ids
+    _esDefs %= (|> (def, i))
+    _esNodeTy %= M.insert i ty
+    _esLocalScope %= M.insert name i
+    return i
+
+bindDef :: Text -> Def -> Ty -> ExtractM NodeId
+bindDef name def ty = bindDef' name def ty 1
+
+bindSplitDef :: Text -> Def -> Ty -> ExtractM NodeId
+bindSplitDef name def ty = do
+    i <- bindDef' name def ty 2
+    _esSplitNodes %= Set.insert i
+    -- TODO: generalize this
+    -- Types are needed for ensureNode
+    _esNodeTy %= M.insert (splitLeftId i) ty
+    _esNodeTy %= M.insert (splitRightId i) ty
+    return i
 
 
 extractDesign :: Config.Chisel -> Circuit -> A.Design ()
@@ -483,8 +521,10 @@ extractDesign cfg circ = evalState (extractDesign' cfg circ) initState
         { esCurModule = error $ "current module is unset"
         , esModMap = modMap
         , esLocalScope = M.empty
-        , esDefTy = M.empty
-        , esSplitDefs = Set.empty
+        , esNodeTy = M.empty
+        , esDefs = S.empty
+        , esSplitNodes = Set.empty
+        , esNetMap = M.empty
         }
 
 extractDesign' :: Config.Chisel -> Circuit -> ExtractM (A.Design ())
@@ -498,6 +538,8 @@ extractModule cfg m = do
         traceM (T.unpack $ " --- begin extracting " <> moduleName m <> " ---")
         let ifc = convertInterface $ modulePorts m
 
+-- TODO: ports
+{-
         (v, ins, outs) <- buildIfcNets "" ifc (moduleSig $ modulePorts m)
         ins' <- mapM buildPort ins
         outs' <- mapM buildPort outs
@@ -506,23 +548,22 @@ extractModule cfg m = do
 
         forM_ (modulePorts m) $ \p -> do
             bindDef (portName p) (portTy p)
+-}
 
         withScope $ do
+        {-
             let vars = case v of
                     VBundle fs -> M.toList fs
                     _ -> traceShow ("impossible: module buildIfcNets produced non-bundle?",
                         moduleName m, v) []
 
             forM_ vars $ \(name, (val, _)) -> bindLocal name val
+-}
 
             case moduleKind m of
                 MkNormal body -> do
                     let bbox = Set.member (moduleName m) (Config.chiselBlackboxModules cfg)
                     when (not bbox) $ do
-                        conns <- evalStmt body
-                        traceShowM ("connections", conns)
-                        makeConnections conns
-
                         conns' <- evalStmt' body
                         let conns'' = rerollConnTree conns'
                         traceM (T.unpack $ "new-style connections (orig): \n" <>
@@ -530,10 +571,14 @@ extractModule cfg m = do
                         traceM (T.unpack $ "new-style connections (rerolled): \n" <>
                             T.unlines (connTreePrint conns''))
 
+                        void $ buildNodes conns''
+                        void $ makeConnections conns''
+                        -- TODO
+
                 MkExtern _ -> return ()
 
     return $
-        mergeAliasedNets $
+        --mergeAliasedNets $
         reconnectNets $
         m'
   where
@@ -549,6 +594,7 @@ buildNet name prio ty = buildNet' name prio (convertTy ty)
 buildNet' :: Text -> Int -> A.Ty -> ExtractM A.NetId
 buildNet' name prio ty = zoom (_esCurModule . A._moduleNets) $ do
     idx <- gets S.length
+    traceShowM ("buildNet", idx, name, prio, ty)
     modify (|> A.Net name prio S.empty S.empty ty ())
     return $ A.NetId idx
 
@@ -618,300 +664,51 @@ convertTy :: Ty -> A.Ty
 convertTy _ = A.TUnknown
 
 
-asNet :: Value -> ExtractM A.NetId
-asNet (VNet n) = return n
-asNet (VVector n) = traceShow ("warning: casting vector to net", n) $ return n
-asNet (VBundle fs) = traceShow ("error: casting bundle to net", fs) $ buildDummyNet "<bundle>"
-asNet (VDff r l) = traceShow ("warning: casting dff to net", r, l) $ asNet r
-asNet (VRam idx ty) = traceShow ("error: casting ram to net", idx, ty) $ buildDummyNet "<error>"
--- We already reported whatever error produced this `VError`.
-asNet VError = buildDummyNet "<error>"
-
 buildDummyNet :: Text -> ExtractM A.NetId
 buildDummyNet name = buildNet name (-10) TUnknown
 
 
--- Compute the set of net connections made by a `Stmt`.  (A statement can also
--- disconnect nets, represented as connecting the net to `Nothing`.)  Statement
--- evaluation can also have side effects on the extraction state, such as
--- producing new logic nodes or adding variables to the current scope.
-evalStmt :: Stmt -> ExtractM (Map A.NetId (Maybe A.NetId))
-evalStmt (SDef _ d) = evalDef d >> return M.empty
-evalStmt (SCond _ cond then_ else_) = do
-    condVal <- asNet =<< evalExpr cond
-    a <- evalStmt then_
-    b <- evalStmt else_
-    let overlap = M.intersectionWith (\x y -> (x, y)) a b
-    overlap' <- traverse (\(x, y) -> Just <$> muxNetsOpt condVal x y) overlap
-    return $ overlap' <> a <> b
-evalStmt (SBlock stmts) =
-    -- `M.union` is left-biased, so we `flip` it to make new connections
-    -- override the old ones.
-    foldM (\acc s -> flip M.union acc <$> evalStmt s) M.empty stmts
-evalStmt (SPartialConnect _ lhs rhs) = do
-    lhsVal <- evalExpr lhs
-    rhsVal <- evalExpr rhs
-    doConnect lhsVal rhsVal
-evalStmt (SConnect _ lhs rhs) = do
-    lhsVal <- evalExpr lhs
-    rhsVal <- evalExpr rhs
-    doConnect lhsVal rhsVal
-evalStmt (SIsInvalid _ e) = do
-    val <- evalExpr e
-    doDisconnect val
-evalStmt (SAttach src es) = traceShow ("evalStmt SAttach NYI", src, es) $ return M.empty
-evalStmt (SStop _ _ _ _) = return M.empty
-evalStmt (SPrint _ _ _ _ _) = return M.empty
-evalStmt SEmpty = return M.empty
+splitLeftId :: NodeId -> NodeId
+splitLeftId base = base <> ".L"
 
--- Evaluate a definition.  This typically adds new local variables.
-evalDef :: Def -> ExtractM ()
-evalDef (DWire name ty) = do
-    (v, _) <- makeTypedValue name ty
-    bindLocal name v
-evalDef (DReg name ty _clk _res _init) = do
-    inNet <- buildNet (name <> ".D") 15 ty
-    outNet <- buildNet (name <> ".Q") 15 ty
-    buildLogic (A.LkDFlipFlop name 0) [inNet] [outNet]
-    inVal <- packTy (name <> ".D") ty inNet
-    outVal <- unpackTy (name <> ".Q") ty outNet
-    bindLocal name $ VDff outVal inVal
-evalDef (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
-    Nothing ->
-        traceShow ("instantiation of unknown module", name, modName) $ return ()
-    Just mi -> do
-        (v, ins, outs) <- buildIfcNets name (miIfc mi) (moduleSig $ miPorts mi)
-        buildLogic (A.LkInst $ A.Inst (miModId mi) name S.empty) ins outs
-        bindLocal name $ v
-evalDef (DMemory name ty depth rds wrs rdwrs) = do
-    idx <- buildRam name ty depth
-    bindLocal name $ VRam idx ty
+splitRightId :: NodeId -> NodeId
+splitRightId base = base <> ".R"
 
-    forM_ rds $ \rd -> do
-        (addrNet, dataNet) <- addRamReadPort idx rd ty
-        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
-                name, rd, addrNet)
-        rdVal <- unpackTy (name <> "." <> rd) ty dataNet
-        bindLocal rd $ VDff rdVal VError
-
-    forM_ wrs $ \wr -> do
-        (addrNet, dataNet) <- addRamWritePort idx wr ty
-        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
-                name, wr, addrNet)
-        wrVal <- packTy (name <> "." <> wr) ty dataNet
-        bindLocal wr $ VDff VError wrVal
-
-    forM_ rdwrs $ \rdwr -> do
-        (rAddrNet, rDataNet) <- addRamReadPort idx (rdwr <> ".rd") ty
-        (wAddrNet, wDataNet) <- addRamWritePort idx (rdwr <> ".wr") ty
-        traceShowM ("NYI: don't know how to connect up address lines of DMemory ports",
-                name, rdwr, rAddrNet, wAddrNet)
-        rdVal <- unpackTy (name <> "." <> rdwr) ty rDataNet
-        wrVal <- packTy (name <> "." <> rdwr) ty wDataNet
-        bindLocal rdwr $ VDff rdVal wrVal
-evalDef (DNode name expr) = bindLocal name =<< nameValue name =<< evalExpr expr
-evalDef (DCMem name ty depth isSync) = do
-    idx <- buildRam name ty depth
-    bindLocal name $ VRam idx ty
-evalDef (DCMemPort name ty memName args dir)
-  | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
-    Just (VRam idx ty') -> do
-        addrNet <- asNet =<< evalExpr addr
-        -- TODO: "Infer" ports are usually read-only or write-only, but we
-        -- always produce both halves, usually involving big unused struct
-        -- pack/unpack nodes.  We should have a postprocessing pass remove
-        -- those from the architecture.
-        wr <- if dir `elem` [MpdInfer, MpdWrite, MpdReadWrite] then do
-                (wAddrNet, wDataNet) <- addRamWritePort idx (name <> ".wr") ty
-                buildNetAlias addrNet wAddrNet
-                traceShowM ("write port", name, memName, ty, ty')
-                packTy (name <> ".wr") ty' wDataNet
-            else return VError
-        rd <- if dir `elem` [MpdInfer, MpdRead, MpdReadWrite] then do
-                (rAddrNet, rDataNet) <- addRamReadPort idx (name <> ".rd") ty
-                buildNetAlias addrNet rAddrNet
-                unpackTy (name <> ".rd") ty' rDataNet
-            else return VError
-        bindLocal name $ VDff rd wr
-    Just v -> traceShowM ("port references non-memory", memName, name, v)
-    Nothing -> traceShowM ("unknown local memory", memName, name)
-  | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
-
-
-buildRam :: Text -> Ty -> Int -> ExtractM Int
-buildRam name ty depth = do
-    dummyRamIn <- buildDummyNet "<ram?>"
-    dummyRamOut <- buildDummyNet "<ram?>"
-    dummyClock <- buildDummyNet "<clk?>"
-    idx <- buildLogic (A.LkRam name (A.EIntLit (A.Span 0 0) depth) 0 0 0)
-        [dummyRamIn, dummyClock] [dummyRamOut]
-    bindLocal name $ VRam idx ty
-    return idx
-
--- Add a new read port to the indicated `LkRam` logic node.  Returns the nets
--- connected to the new read-address and read-data ports.
-addRamReadPort :: Int -> Text -> Ty -> ExtractM (A.NetId, A.NetId)
-addRamReadPort idx name ty = do
-    -- TODO: infer address width from RAM depth, like FIRRTL compiler does
-    addrNet <- buildNet (name <> ".ra") 10 (TUInt $ WInt 99)
-    dataNet <- buildNet (name <> ".rd") 10 ty
-    addrPin <- buildPin addrNet
-    dataPin <- buildPin dataNet
-    zoom (_esCurModule . A._moduleLogic idx) $ do
-        numWrites <- zoom A._logicKind $ state $ \lk -> case lk of
-            A.LkRam {} ->
-                (A.lkRamWritePorts lk,
-                    lk { A.lkRamReadPorts = A.lkRamReadPorts lk + 1 })
-            _ -> (0, traceShow ("tried to add read port to non-RAM", lk, idx, name) lk)
-        A._logicInputs %= \ins -> S.insertAt (S.length ins - 3 * numWrites) addrPin ins
-        A._logicOutputs %= (|> dataPin)
-    return (addrNet, dataNet)
-
--- Add a new write port to the indicated `LkRam` logic node.  Returns the nets
--- connected to the new write-address and write-data ports.
-addRamWritePort :: Int -> Text -> Ty -> ExtractM (A.NetId, A.NetId)
-addRamWritePort idx name ty = do
-    -- TODO: infer address width from RAM depth, like FIRRTL compiler does
-    addrNet <- buildNet (name <> ".wa") 10 (TUInt $ WInt 99)
-    dataNet <- buildNet (name <> ".wd") 10 ty
-    enableNet <- buildNet (name <> ".we") 10 (TUInt $ WInt 1)
-    addrPin <- buildPin addrNet
-    dataPin <- buildPin dataNet
-    enablePin <- buildPin enableNet
-    zoom (_esCurModule . A._moduleLogic idx) $ do
-        A._logicKind %= \lk -> case lk of
-            A.LkRam {} -> lk { A.lkRamWritePorts = A.lkRamWritePorts lk + 1 }
-            _ -> traceShow ("tried to add write port to non-RAM", lk, idx, name) lk
-        A._logicInputs %= \x -> x |> addrPin |> dataPin |> enablePin
-    return (addrNet, dataNet)
-
-
-evalExpr :: Expr -> ExtractM Value
-evalExpr (ELit _) = VNet <$> buildDummyNet "<const>"
-evalExpr (ERef name ty) = use (_esLocalScope . at name) >>= \x -> case x of
-    Nothing -> traceShow ("unknown local variable", name, ty) $ return VError
-    Just v -> return v
-evalExpr (EField e name ty) = do
-    val <- evalExpr e
-    return $ valueField val name
-  where
-    valueField (VBundle fs) name = case M.lookup name fs of
-        Just (v, _) -> v
-        Nothing -> traceShow ("unknown field", name, fs) VError
-    valueField (VDff r l) name = VDff (valueField r name) (valueField l name)
-    valueField val name =
-        traceShow ("field access of non-bundle", name, val) VError
-evalExpr (EIndex e idx ty) = do
-    val <- evalExpr e
-    idxNet <- asNet =<< evalExpr idx
-    case val of
-        VVector n -> do
-            outNet <- buildNet "<item>" 0 ty
-            buildLogic A.LkExpr [n, idxNet] [outNet]
-            return $ VNet outNet
-        _ -> traceShow ("indexed into non-vector", e, idx) $ return VError
-evalExpr (EIndexC e idx ty) = do
-    val <- evalExpr e
-    case val of
-        VVector n -> do
-            outNet <- buildNet ("<item " <> T.pack (show idx) <> ">") 0 ty
-            buildLogic A.LkExpr [n] [outNet]
-            return $ VNet outNet
-        _ -> traceShow ("indexed into non-vector", e, idx) $ return VError
-evalExpr (EMux cond then_ else_ ty) = do
-    cond' <- asNet =<< evalExpr cond
-    then_' <- asNet =<< evalExpr then_
-    else_' <- asNet =<< evalExpr else_
-    outNet <- buildNet "<mux>" 0 ty
-    buildLogic (A.LkMux ("val" <| S.empty) 2) [cond', then_', else_'] [outNet]
-    return $ VNet outNet
-evalExpr (EValidIf cond then_ ty) = do
-    cond' <- asNet =<< evalExpr cond
-    then_' <- asNet =<< evalExpr then_
-    else_' <- buildNet "<undef>" 0 ty
-    outNet <- buildNet "<mux>" 0 ty
-    buildLogic (A.LkMux ("val" <| S.empty) 2) [cond', then_', else_'] [outNet]
-    return $ VNet outNet
-evalExpr (EPrim op args _ ty) = do
-    argNets <- mapM asNet =<< mapM evalExpr args
-    outNet <- buildNet ("<" <> op <> ">") 0 ty
-    buildLogic A.LkExpr argNets [outNet]
-    return $ VNet outNet
-
--- Generate a new value of type `ty`, whose leaf fields are combined using an
--- `LkPack` node and output to `outNet`.  This is used for handling registers
--- of non-ground type.
-packTy :: Text -> Ty -> A.NetId -> ExtractM Value
-packTy name ty outNet = do
-    (v, leaves) <- makeTypedValue name ty
-    let (names, nets) = unzip leaves
-    if length leaves == 1 then
-        buildNetAlias (head nets) outNet
+nodeIdForSide :: NodeId -> Bool -> ExtractM NodeId
+nodeIdForSide base right = do
+    isSplit <- Set.member base <$> use _esSplitNodes
+    if isSplit then
+        if right then
+            return $ splitRightId base
+        else
+            return $ splitLeftId base
     else
-        buildLogic (A.LkPack $ S.fromList names) nets [outNet]
-    return v
+        return base
 
-unpackTy :: Text -> Ty -> A.NetId -> ExtractM Value
-unpackTy name ty inNet = do
-    (v, leaves) <- makeTypedValue name ty
-    let (names, nets) = unzip leaves
-    if length leaves == 1 then
-        buildNetAlias inNet (head nets)
-    else
-        buildLogic (A.LkUnpack $ S.fromList names) [inNet] nets
-    return v
-
--- Construct a `Value` that's an instance of `Ty`.  Also returns the net IDs of
--- all the leaf values, together with names.
-makeTypedValue :: Text -> Ty -> ExtractM (Value, [(Text, A.NetId)])
-makeTypedValue prefix (TBundle fs) = do
-    (m, leaves) <- liftM mconcat $ forM fs $ \f -> do
-        -- FIRRTL spec says memories contain only passive types.  I assume
-        -- registers work the same way.
-        when (fieldFlip f) $
-            traceShowM ("unexpected flip field in bundle", f)
-        (val, leaves) <- makeTypedValue (prefix <> "." <> fieldName f) (fieldTy f)
-        return (M.singleton (fieldName f) (val, fieldFlip f), leaves)
-    return (VBundle m, leaves)
-makeTypedValue prefix (TVector ty _) = do
-    (v, leaves) <- makeTypedValue (prefix <> ".items") ty
-    let v' = case v of
-            VNet n -> VVector n
-            _ -> traceShow ("vector of non-primitive NYI", v) VError
-    return (v', leaves)
-makeTypedValue prefix ty = do
-    n <- buildNet prefix 11 ty
-    return (VNet n, [(prefix, n)])
-
-
-
-bindDef :: Text -> Ty -> ExtractM ()
-bindDef name ty = _esDefTy %= M.insert name ty
-
-splitDef :: Text -> ExtractM ()
-splitDef name = do
-    _esSplitDefs %= Set.insert name
-    optTy <- use $ _esDefTy . at name
-    let ty = case optTy of
-            Nothing -> traceShow ("splitDef: missing DefTy entry", name) TUnknown
-            Just x -> x
-    bindDef (name <> ".L") ty
-    bindDef (name <> ".R") ty
-
-evalDef' :: Def -> ExtractM ()
-evalDef' (DWire name ty) = bindDef name ty >> splitDef name
-evalDef' (DReg name ty _clk _res _init) = bindDef name ty >> splitDef name
-evalDef' (DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
+-- Process a `Def`.  This updates `esDefs` and so on, but can also produce
+-- connections in some cases, like the implicit connection on the RHS of a
+-- `DNode`.
+evalDef' :: Def -> ExtractM ConnTree
+evalDef' d@(DWire name ty) = bindSplitDef name d ty >> return M.empty
+evalDef' d@(DReg name ty _clk _res _init) = bindSplitDef name d ty >> return M.empty
+evalDef' d@(DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
     Nothing ->
-        traceShow ("instantiation of unknown module", name, modName) $ return ()
-    Just mi -> bindDef name $ moduleSig $ miPorts mi
-evalDef' (DMemory name ty depth rds wrs rdwrs) = do
-    forM_ rds $ \rd -> bindDef rd ty
-    forM_ wrs $ \wr -> bindDef wr ty
-    forM_ rdwrs $ \rdwr -> bindDef rdwr ty >> splitDef rdwr
-evalDef' (DNode name expr) = bindDef name =<< exprTy expr
-evalDef' (DCMem name ty depth isSync) = return ()
-evalDef' (DCMemPort name ty memName args dir)
+        traceShow ("instantiation of unknown module", name, modName) $ return M.empty
+    Just mi -> bindDef name d (moduleSig $ miPorts mi) >> return M.empty
+-- TODO: memory
+evalDef' d@(DMemory name ty depth rds wrs rdwrs) = return M.empty
+{-
+    forM_ rds $ \rd -> bindDef rd d ty
+    forM_ wrs $ \wr -> bindDef wr d ty
+    forM_ rdwrs $ \rdwr -> bindSplitDef rdwr d ty
+-}
+evalDef' d@(DNode name expr) = do
+    bindSplitDef name d =<< exprTy expr
+    evalStmt' $ SConnect mempty (ERef name TUnknown) expr
+-- TODO: memory
+evalDef' d@(DCMem name ty depth isSync) = return M.empty
+evalDef' d@(DCMemPort name ty memName args dir) = return M.empty
+{-
   | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
     Just (VRam idx ty') -> do
         bindDef name ty'
@@ -919,13 +716,14 @@ evalDef' (DCMemPort name ty memName args dir)
     Just v -> traceShowM ("port references non-memory", memName, name, v)
     Nothing -> traceShowM ("unknown local memory", memName, name)
   | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
+-}
 
 -- Compute the set of net connections made by a `Stmt`.  (A statement can also
 -- disconnect nets, represented as connecting the net to `Nothing`.)  Statement
 -- evaluation can also have side effects on the extraction state, such as
 -- producing new logic nodes or adding variables to the current scope.
 evalStmt' :: Stmt -> ExtractM ConnTree
-evalStmt' (SDef _ d) = evalDef' d >> return M.empty
+evalStmt' (SDef _ d) = evalDef' d
 evalStmt' (SCond _ cond then_ else_) = do
     c <- evalRvalue cond
     t <- evalStmt' then_
@@ -951,19 +749,24 @@ assignTree assigns = foldM (\acc (_ty, l, r) -> do
     acc' <- ensureNode (connExprNode l) acc
     return $ connTreeInsertRvalue l r acc') M.empty assigns
 
-defTy :: Text -> ExtractM Ty
-defTy name = use (_esDefTy . at name) >>= \x -> case x of
-    Nothing -> traceShow ("failed to resolve def", name) $ return TUnknown
+nodeTy :: NodeId -> ExtractM Ty
+nodeTy i = use (_esNodeTy . at i) >>= \x -> case x of
+    Nothing -> traceShow ("no type for node", i) $ return TUnknown
     Just x -> return x
 
-nodeTy :: NodeId -> ExtractM Ty
-nodeTy n = defTy n
+varNode :: Text -> ExtractM NodeId
+varNode name = use (_esLocalScope . at name) >>= \x -> case x of
+    Nothing -> traceShow ("failed to resolve var", name) $ return $ "<" <> name <> ">"
+    Just i -> return i
+
+varTy :: Text -> ExtractM Ty
+varTy name = varNode name >>= nodeTy
 
 exprTy :: Expr -> ExtractM Ty
 exprTy (ELit (LUInt _ w)) = return $ TUInt w
 exprTy (ELit (LSInt _ w)) = return $ TSInt w
 exprTy (ELit (LFixed _ w p)) = return $ TFixed w p
-exprTy (ERef name _) = defTy name
+exprTy (ERef name _) = varTy name
 exprTy (EField e name _) = bundleFieldTy name <$> exprTy e
 exprTy (EIndex e _ _) = vectorItemTy <$> exprTy e
 exprTy (EIndexC e _ _) = vectorItemTy <$> exprTy e
@@ -976,7 +779,7 @@ exprTyFlip :: Expr -> ExtractM (Ty, Bool)
 exprTyFlip (ELit (LUInt _ w)) = return $ (TUInt w, False)
 exprTyFlip (ELit (LSInt _ w)) = return $ (TSInt w, False)
 exprTyFlip (ELit (LFixed _ w p)) = return $ (TFixed w p, False)
-exprTyFlip (ERef name _) = defTy name >>= \ty -> return (ty, False)
+exprTyFlip (ERef name _) = varTy name >>= \ty -> return (ty, False)
 exprTyFlip (EField e name _) = bundleFieldTyFlip name <$> exprTyFlip e
 exprTyFlip (EIndex e _ _) = vectorItemTyFlip <$> exprTyFlip e
 exprTyFlip (EIndexC e _ _) = vectorItemTyFlip <$> exprTyFlip e
@@ -986,6 +789,8 @@ exprTyFlip (EValidIf _ t _) = exprTyFlip t
 exprTyFlip (EPrim _ _ _ ty) = return (ty, False)
 
 projectConnExpr p (ConnExpr n ps) = ConnExpr n (ps |> p)
+
+projectConnExpr' ps' (ConnExpr n ps) = ConnExpr n (ps <> ps')
 
 projectRvalue :: Projection -> Rvalue -> Rvalue
 projectRvalue p rv = go rv
@@ -1002,6 +807,21 @@ projectTy (PrIndex idx) (TVector ty len)
 projectTy (PrField name) (TBundle fs)
   | Just f <- find (\f -> fieldName f == name) fs = fieldTy f
 projectTy p t = traceShow ("bad projection (Ty)", p, t) TUnknown
+
+projectTyFlip :: Projection -> Ty -> (Ty, Bool)
+projectTyFlip (PrIndex idx) (TVector ty len)
+  | 0 <= idx && idx < len = (ty, False)
+projectTyFlip (PrField name) (TBundle fs)
+  | Just f <- find (\f -> fieldName f == name) fs = (fieldTy f, fieldFlip f)
+projectTyFlip p t = traceShow ("bad projection (Ty)", p, t) (TUnknown, False)
+
+projectTyFlip' :: Seq Projection -> Ty -> (Ty, Bool)
+projectTyFlip' ps t = case S.viewl ps of
+    S.EmptyL -> (t, False)
+    p S.:< ps ->
+        let (t1, f1) = projectTyFlip p t in
+        let (t2, f2) = projectTyFlip' ps t1 in
+        (t2, f1 /= f2)
 
 bundleFieldTy :: Text -> Ty -> Ty
 bundleFieldTy name (TBundle fs)
@@ -1037,17 +857,18 @@ evalRvalue' flipSplit e = go e
     go :: Expr -> ExtractM Rvalue
     go (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
     go (ERef name _) = do
-        isSplit <- Set.member name <$> use _esSplitDefs
-        let name' = if not isSplit then name else
-                if flipSplit then name <> ".L" else name <> ".R"
-        return $ RvExpr $ ConnExpr name' S.empty
+        i <- varNode name
+        i' <- nodeIdForSide i (not flipSplit)
+        return $ RvExpr $ ConnExpr i' S.empty
     go (EField e name _) = projectRvalue (PrField name) <$> go e
+    -- TODO: gen combinational logic nodes for EIndex
     go (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
     go (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> go e
     go (EMux cond then_ else_ _) =
         RvMux <$> go cond <*> go then_ <*> go else_
     go (EValidIf cond then_ _) =
         RvMux <$> go cond <*> go then_ <*> pure RvInvalid
+    -- TODO: gen combinational logic nodes for EPrim
     go (EPrim op args _ ty) = return $ RvExpr $ ConnExpr ("<" <> op <> ">") S.empty
 
 
@@ -1105,11 +926,10 @@ evalLvalue' :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
 evalLvalue' flipSplit e = go e
   where
     go (ERef name _) = do
-        isSplit <- Set.member name <$> use _esSplitDefs
-        let name' = if not isSplit then name else
-                if flipSplit then name <> ".R" else name <> ".L"
-        ty <- defTy name
-        return (ty, [(ConnExpr name' S.empty, id)])
+        i <- varNode name
+        i' <- nodeIdForSide i flipSplit
+        ty <- nodeTy i
+        return (ty, [(ConnExpr i' S.empty, id)])
     go (EField e name _) = do
         (ty, lvs) <- go e
         let ty' = bundleFieldTy name ty
@@ -1181,32 +1001,6 @@ moduleSig :: [Port] -> Ty
 moduleSig ps = TBundle $ map (\p ->
     Field (portName p) (portTy p) (portDir p == Input)) ps
 
-buildIfcNets :: Text -> Interface -> Ty -> ExtractM (Value, [A.NetId], [A.NetId])
-buildIfcNets prefix (IfBundle ifcFields _) (TBundle tyFields) = do
-    parts <- forM (zip (toList ifcFields) tyFields) $ \((ifcName, subIfc), fld) -> do
-        when (ifcName /= fieldName fld) $
-            traceShowM ("buildIfcNets: field name mismatch", ifcName, fieldName fld)
-        (v, ins, outs) <- buildIfcNets (prefix <> "." <> ifcName) subIfc (fieldTy fld)
-        return (M.singleton ifcName (v, fieldFlip fld), ins, outs)
-    let (fs, ins, outs) = mconcat parts
-    return (VBundle fs, ins, outs)
-buildIfcNets prefix (IfPort dir _ _) ty
-  | TUInt _ <- ty = buildLeafNet prefix dir ty VNet
-  | TSInt _ <- ty = buildLeafNet prefix dir ty VNet
-  | TFixed _ _ <- ty = buildLeafNet prefix dir ty VNet
-  | TVector _ _ <- ty = buildLeafNet prefix dir ty VVector
-  | TClock <- ty = buildLeafNet prefix dir ty VNet
-buildIfcNets prefix ifc ty = do
-    traceShowM ("don't know how to build interface nets", prefix, ifc, ty)
-    return (VError, [], [])
-
-buildLeafNet name dir ty ctor = do
-    n <- buildNet name 11 ty
-    if dir == Input then
-        return (ctor n, [n], [])
-    else
-        return (ctor n, [], [n])
-
 
 muxNets :: A.NetId -> A.NetId -> A.NetId -> ExtractM A.NetId
 muxNets c t e = do
@@ -1220,68 +1014,263 @@ muxNetsOpt c t e = do
     e' <- maybe (buildDummyNet "<undef>") return e
     muxNets c t' e'
 
-doConnect :: Value -> Value -> ExtractM (Map A.NetId (Maybe A.NetId))
-doConnect l (VDff r _) = doConnect l r
-doConnect (VDff _ l) r = doConnect l r
-doConnect (VNet l) (VNet r) = return $ M.singleton l (Just r)
-doConnect (VVector l) (VVector r) = return $ M.singleton l (Just r)
-doConnect (VBundle lf) (VBundle rf) =
-    liftM mconcat $
-    mapM (\(a, b) -> doConnect a b) $
-    M.elems $
-    M.intersectionWithKey (\k (l, lFlip) (r, rFlip) ->
-        (if lFlip /= rFlip then
-            traceShow ("flip mismatch on field", k, lFlip, rFlip)
-        else id) $ if lFlip then (r, l) else (l, r)) lf rf
-doConnect lv rv = traceShow ("error: bad connection", lv, rv) $ return M.empty
 
-doDisconnect :: Value -> ExtractM (Map A.NetId (Maybe A.NetId))
-doDisconnect v = go v False
+
+
+newtype MultiMap a b = MultiMap { getMultiMap :: Map a (Set b) }
+
+instance (Ord a, Ord b) => Semigroup (MultiMap a b) where
+    MultiMap a <> MultiMap b = MultiMap $ M.unionWith Set.union a b
+
+instance (Ord a, Ord b) => Monoid (MultiMap a b) where
+    mempty = MultiMap M.empty
+
+multiMapInsert :: (Ord k, Ord v) => k -> v -> MultiMap k v -> MultiMap k v
+multiMapInsert k v (MultiMap m) = MultiMap $
+    M.alter (\x -> Just $ Set.insert v $ fromMaybe Set.empty x) k m
+
+multiMapSingleton :: (Ord k, Ord v) => k -> v -> MultiMap k v
+multiMapSingleton k v = MultiMap $ M.singleton k (Set.singleton v)
+
+multiMapGet :: (Ord k, Ord v) => k -> MultiMap k v -> Set v
+multiMapGet k (MultiMap m) = fromMaybe Set.empty $ M.lookup k m
+
+
+rvalueConnExprs :: Rvalue -> MultiMap NodeId (Seq Projection)
+rvalueConnExprs rv = everything (<>) (mempty `mkQ` go) rv
   where
-    go :: Value -> Bool -> ExtractM (Map A.NetId (Maybe A.NetId))
-    go (VNet l) f = return $ if f then M.empty else M.singleton l Nothing
-    go (VVector l) f = return $ if f then M.empty else M.singleton l Nothing
-    go (VBundle lf) f =
-        liftM mconcat $
-        mapM (\(l, lFlip) -> go l (if lFlip then not f else f)) $
-        M.elems lf
-    go (VDff _ l) f = go l f
-    go (VRam idx ty) _ = do
-        traceShowM ("error: tried to disconnect RAM", idx, ty)
-        return M.empty
-    go VError _ = return M.empty
+    go (RvExpr (ConnExpr n ps)) = multiMapSingleton n ps
+    go _ = mempty
 
-makeConnections :: Map A.NetId (Maybe A.NetId) -> ExtractM ()
-makeConnections m = forM_ (M.toList m) $ \(l, optR) -> case optR of
-    Just r -> void $ buildNetAlias r l
-    Nothing -> return ()
-
-nameValue :: Text -> Value -> ExtractM Value
-nameValue name v = go name v False
+treeConnExprs :: GConnTree a -> MultiMap NodeId (Seq Projection)
+treeConnExprs ct = mconcat $ map (\(n, c) -> go n S.empty c) $ M.toList ct
   where
-    -- `nameValue` is used on the RHS of `wire` statements.  For unflipped leaf
-    -- nodes, we alias the original net `n` to a new, named net `n'`.  For
-    -- flipped nodes, we do the aliasing the other way around - `n'` flows into
-    -- `n`.
-    go name (VNet n) f = do
-        ty <- use $ _esCurModule . A._moduleNet n . A._netTy
-        n' <- buildNet' name 5 ty
-        if f then buildNetAlias n' n else buildNetAlias n n'
-        return $ VNet n'
-    go name (VVector n) f = do
-        ty <- use $ _esCurModule . A._moduleNet n . A._netTy
-        n' <- buildNet' name 5 ty
-        if f then buildNetAlias n' n else buildNetAlias n n'
-        return $ VVector n'
-    go name (VBundle fs) f' = do
-        VBundle <$> M.traverseWithKey (\k (v, f) ->
-            go (name <> "." <> k) v (f /= f') >>= \v' -> return (v', f)) fs
-    go name (VDff r l) True =
-        traceShow ("impossible: naming VDff in flipped context?", r, l) $
-        return $ VDff r l
-    go name (VDff r l) False = do
-        r' <- go name r False
-        l' <- go name l True
-        return $ VDff r l
-    go _ (VRam idx ty) _ = return $ VRam idx ty
-    go _ VError _ = return VError
+    go n ps (CGround' _ rv _) = multiMapInsert n ps $ rvalueConnExprs rv
+    go n ps (CBundle _ m) = mconcat $ map (\(name, c) ->
+        go n (ps |> PrField name) c) $ M.toList m
+    go n ps (CVector _ _ m) = mconcat $ map (\(idx, c) ->
+        go n (ps |> PrIndex idx) c) $ M.toList m
+
+
+data ProjTrie = PtNode Bool (Map Projection ProjTrie)
+    deriving (Show)
+
+instance Semigroup ProjTrie where
+    PtNode p1 m1 <> PtNode p2 m2 = PtNode (p1 || p2) (M.unionWith (<>) m1 m2)
+
+instance Monoid ProjTrie where
+    mempty = PtNode False M.empty
+
+projTrieInsert :: [Projection] -> ProjTrie -> ProjTrie
+projTrieInsert ps t = go ps t
+  where
+    go [] (PtNode _ m) = PtNode True m
+    go (p : ps) (PtNode pres m) = PtNode pres $
+        M.alter (\x -> Just $ go ps $ fromMaybe mempty x) p m
+
+projTrieFromList :: [[Projection]] -> ProjTrie
+projTrieFromList pss = foldl' (\acc ps -> projTrieInsert ps acc) mempty pss
+
+
+-- Collect the topmost `present` node from each branch of the `ProjTrie`.  That
+-- is, it returns a pair for each node that is present and has no present
+-- parents.  Each pair has the path to the node in question and its child map
+-- (which may be empty).
+gatherPresent :: ProjTrie -> [(Seq Projection, ProjTrie)]
+gatherPresent t = go' S.empty t
+  where
+    go' ps t@(PtNode pres m)
+      | pres = [(ps, t)]
+      | otherwise = concatMap (\(p', t') -> go' (ps |> p') t') $ M.toList m
+
+-- Like `gatherPresent`, but ignores the top node itself.
+gatherPresent' :: ProjTrie -> [(Seq Projection, ProjTrie)]
+gatherPresent' (PtNode _ m) = gatherPresent $ PtNode False m
+
+-- Find nodes that are topmost-present in one or both input tries.
+zipGatherPresent :: ProjTrie -> ProjTrie -> [(Seq Projection, ProjTrie, ProjTrie)]
+zipGatherPresent t = go S.empty t
+  where
+    go ps t1@(PtNode pres1 m1) t2@(PtNode pres2 m2)
+      | pres1 || pres2 = [(ps, t1, t2)]
+      | otherwise = concat $ M.elems $ M.merge
+        (M.mapMissing $ \p c1 -> map (\(ps', t') -> (ps', t', absent)) $ go' (ps |> p) c1)
+        (M.mapMissing $ \p c2 -> map (\(ps', t') -> (ps', absent, t')) $ go' (ps |> p) c2)
+        (M.zipWithMatched $ \p c1 c2 -> go (ps |> p) c1 c2)
+        m1 m2
+
+    go' ps t@(PtNode pres m)
+      | pres = [(ps, t)]
+      | otherwise = concatMap (\(p', t') -> go' (ps |> p') t') $ M.toList m
+
+    absent = PtNode False M.empty
+
+
+projName :: Projection -> Text
+projName (PrField name) = name
+projName (PrIndex idx) = T.pack $ show idx
+
+pathName :: Seq Projection -> Text
+pathName ps = T.intercalate "." $ map projName $ toList ps
+
+nodeName :: NodeId -> ExtractM Text
+nodeName n = return n
+
+exprName :: ConnExpr -> ExtractM Text
+exprName (ConnExpr n ps)
+  | S.null ps = nodeName n
+  | otherwise = do
+    a <- nodeName n
+    let b = pathName ps
+    return $ a <> "." <> b
+
+repackPortName :: Text -> Text
+repackPortName "" = "(all)"
+repackPortName n = n
+
+recordNet :: ConnExpr -> A.NetId -> ExtractM ()
+recordNet ce net = _esNetMap %= M.insert ce net
+
+-- Construct a net for the root of the given `ProjTrie`.  Generates additional
+-- nets and a `repack` node if the `ProjTrie` has children.
+--
+-- By default, the generated `repack` takes the bundle's (unflipped) fields as
+-- inputs and produces the full bundle as an output (meaning the returned net
+-- can be used as an input to another logic element).  If `flipped`, then the
+-- sides are reversed.
+buildProjTrieNet :: ConnExpr -> Ty -> Bool -> ProjTrie -> ExtractM A.NetId
+buildProjTrieNet ce ty flipped t = do
+    name <- exprName ce
+    i <- buildNet name 10 ty
+    recordNet ce i
+    -- _2 is True for outputs and False for inputs.
+    flds <- forM (gatherPresent' t) $ \(ps, t') -> do
+        let (ty', flipped') = projectTyFlip' ps ty
+        let ce' = projectConnExpr' ps ce
+        -- If the field and the top level are both unflipped, this field
+        -- appears as an input (False)
+        let f = flipped /= flipped'
+        i' <- buildProjTrieNet ce' ty' f t'
+        return (i', f, pathName ps)
+    when (not $ null flds) $ do
+        -- If the top level is unflipped, the `bundle` field appears as an
+        -- output (True)
+        buildWireRepack name $ (i, not flipped, "(all)") : flds
+    return i
+
+buildWireRepack :: Text -> [(A.NetId, Bool, Text)] -> ExtractM ()
+buildWireRepack name flds = void $ do
+    let (outs, ins) = partition (^. _2) flds
+    let lk = A.LkRepack (Just name)
+            (S.fromList $ map (repackPortName . (^. _3)) ins)
+            (S.fromList $ map (repackPortName . (^. _3)) outs)
+    buildLogic lk (map (^. _1) ins) (map (^. _1) outs)
+
+{-
+    if shortcutWire ins outs then do
+        let inNet = head ins ^. _1
+        let outNet = head outs ^. _1
+        buildNetAlias inNet outNet
+-}
+
+buildNodes :: ConnTree -> ExtractM ()
+buildNodes ct = do
+    defs <- use _esDefs
+    liftM mconcat $ forM (toList defs) $ \(def, nodeId) -> case def of
+        DWire _ _ -> goWire nodeId
+        DReg _ _ _ _ _ -> goReg nodeId
+        DNode _ _ -> goWire nodeId
+        _ -> return ()
+  where
+    allExprs = treeConnExprs ct
+
+    goWire nodeId = do
+        let l = splitLeftId nodeId
+        let r = splitRightId nodeId
+        let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
+        let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
+        ty <- nodeTy l
+
+        -- This `zipGatherPresent` splits the wire apart into as many
+        -- disjoint pieces as possible.  For example, if neither the L nor
+        -- the R side uses the whole bundle, this will split the bundle
+        -- into (at least) one piece per bundle field.  The goal is to
+        -- avoid forcing unrelated connections through a shared `repack`
+        -- node in the output graph.
+        forM_ (zipGatherPresent lpt rpt) $ \(ps, lt, rt) -> do
+            let (ty', flipped) = projectTyFlip' ps ty
+
+            if shortcutWire lt rt then do
+                lnet <- buildProjTrieNet (ConnExpr l ps) ty' flipped lt
+                rnet <- buildProjTrieNet (ConnExpr r ps) ty' (not flipped) rt
+                void $ if not flipped then
+                    buildNetAlias lnet rnet
+                else
+                    buildNetAlias rnet lnet
+            else do
+                -- Topmost present nodes of `lt`/`rt` (which may be `lt`/`rt`
+                -- itself) become fields of the main repack node for this wire.
+                let present =
+                        map (\(ps, t) -> (l, ps, t, False)) (gatherPresent lt)
+                        <> map (\(ps, t) -> (r, ps, t, True)) (gatherPresent rt)
+
+                flds <- forM present $ \(n', ps', t', flipped') -> do
+                    let (ty'', flipped'') = projectTyFlip' ps' ty'
+                    let f = flipped /= (flipped' /= flipped'')
+                    i <- buildProjTrieNet (ConnExpr n' (ps <> ps')) ty'' f t'
+                    return (i, f, pathName ps')
+
+                name <- exprName $ ConnExpr nodeId ps
+                buildWireRepack name flds
+
+    goReg nodeId = do
+        let l = splitLeftId nodeId
+        let r = splitRightId nodeId
+        let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
+        let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
+        ty <- nodeTy l
+
+        forM_ (zipGatherPresent lpt rpt) $ \(ps, lt, rt) -> do
+            let (ty', flipped) = projectTyFlip' ps ty
+
+            lnet <- buildProjTrieNet (ConnExpr l ps) ty' flipped lt
+            rnet <- buildProjTrieNet (ConnExpr r ps) ty' (not flipped) rt
+            let (inNet, outNet) = if not flipped then (lnet, rnet) else (rnet, lnet)
+            name <- exprName $ ConnExpr nodeId ps
+            buildLogic (A.LkDFlipFlop name 0) [inNet] [outNet]
+
+
+    shortcutWire (PtNode True _) (PtNode True _) = True
+    shortcutWire _ _ = False
+
+
+
+connTreeToList' :: GConnTree a -> [(ConnExpr, Ty, Rvalue, a)]
+connTreeToList' ct = mconcat $ map (\(n, c) -> go n S.empty c) $ M.toList ct
+  where
+    go n ps (CGround' ty rv ann) = [(ConnExpr n ps, ty, rv, ann)]
+    go n ps (CBundle _ m) = mconcat $ map (\(name, c) ->
+        go n (ps |> PrField name) c) $ M.toList m
+    go n ps (CVector _ _ m) = mconcat $ map (\(idx, c) ->
+        go n (ps |> PrIndex idx) c) $ M.toList m
+
+connTreeToList :: ConnTree -> [(ConnExpr, Ty, Rvalue)]
+connTreeToList ct = map (\(ce, ty, rv, ann) -> (ce, ty, rv)) $ connTreeToList' ct
+
+makeConnection :: A.NetId -> Ty -> Rvalue -> ExtractM ()
+makeConnection dest ty (RvExpr ce) = do
+    src <- use $ _esNetMap . at ce
+    case src of
+        Just src -> do
+            traceShowM ("connect", src, dest)
+            void $ buildNetAlias src dest
+        Nothing -> traceShowM ("failed to resolve net for rvalue", ce)
+makeConnection dest ty rv = traceShowM ("rvalue kind NYI", rv)
+
+-- Generate a NetAlias for each connection described in the `ConnTree`.
+makeConnections :: ConnTree -> ExtractM ()
+makeConnections ct = forM_ (connTreeToList ct) $ \(ce, ty, rv) -> do
+    net <- use $ _esNetMap . at ce
+    case net of
+        Just net -> makeConnection net ty rv
+        Nothing -> traceShowM ("failed to resolve net for lvalue", ce)

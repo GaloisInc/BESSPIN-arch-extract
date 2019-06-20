@@ -134,6 +134,11 @@ isGroundTy ty = case ty of
     TVector _ _ -> False
     _ -> True
 
+isPassiveTy ty = case ty of
+    TBundle fs -> all (\f -> not (fieldFlip f) && isPassiveTy (fieldTy f)) fs
+    TVector ty _ -> isPassiveTy ty
+    _ -> True
+
 
 
 makeLenses' ''Circuit
