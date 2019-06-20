@@ -564,7 +564,7 @@ extractModule cfg m = do
                 MkNormal body -> do
                     let bbox = Set.member (moduleName m) (Config.chiselBlackboxModules cfg)
                     when (not bbox) $ do
-                        conns' <- evalStmt' body
+                        conns' <- evalStmt body
                         let conns'' = rerollConnTree conns'
                         traceM (T.unpack $ "new-style connections (orig): \n" <>
                             T.unlines (connTreePrint conns'))
@@ -688,26 +688,26 @@ nodeIdForSide base right = do
 -- Process a `Def`.  This updates `esDefs` and so on, but can also produce
 -- connections in some cases, like the implicit connection on the RHS of a
 -- `DNode`.
-evalDef' :: Def -> ExtractM ConnTree
-evalDef' d@(DWire name ty) = bindSplitDef name d ty >> return M.empty
-evalDef' d@(DReg name ty _clk _res _init) = bindSplitDef name d ty >> return M.empty
-evalDef' d@(DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
+evalDef :: Def -> ExtractM ConnTree
+evalDef d@(DWire name ty) = bindSplitDef name d ty >> return M.empty
+evalDef d@(DReg name ty _clk _res _init) = bindSplitDef name d ty >> return M.empty
+evalDef d@(DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
     Nothing ->
         traceShow ("instantiation of unknown module", name, modName) $ return M.empty
     Just mi -> bindDef name d (moduleSig $ miPorts mi) >> return M.empty
 -- TODO: memory
-evalDef' d@(DMemory name ty depth rds wrs rdwrs) = return M.empty
+evalDef d@(DMemory name ty depth rds wrs rdwrs) = return M.empty
 {-
     forM_ rds $ \rd -> bindDef rd d ty
     forM_ wrs $ \wr -> bindDef wr d ty
     forM_ rdwrs $ \rdwr -> bindSplitDef rdwr d ty
 -}
-evalDef' d@(DNode name expr) = do
+evalDef d@(DNode name expr) = do
     bindSplitDef name d =<< exprTy expr
-    evalStmt' $ SConnect mempty (ERef name TUnknown) expr
+    evalStmt $ SConnect mempty (ERef name TUnknown) expr
 -- TODO: memory
-evalDef' d@(DCMem name ty depth isSync) = return M.empty
-evalDef' d@(DCMemPort name ty memName args dir) = return M.empty
+evalDef d@(DCMem name ty depth isSync) = return M.empty
+evalDef d@(DCMemPort name ty memName args dir) = return M.empty
 {-
   | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
     Just (VRam idx ty') -> do
@@ -722,24 +722,24 @@ evalDef' d@(DCMemPort name ty memName args dir) = return M.empty
 -- disconnect nets, represented as connecting the net to `Nothing`.)  Statement
 -- evaluation can also have side effects on the extraction state, such as
 -- producing new logic nodes or adding variables to the current scope.
-evalStmt' :: Stmt -> ExtractM ConnTree
-evalStmt' (SDef _ d) = evalDef' d
-evalStmt' (SCond _ cond then_ else_) = do
+evalStmt :: Stmt -> ExtractM ConnTree
+evalStmt (SDef _ d) = evalDef d
+evalStmt (SCond _ cond then_ else_) = do
     c <- evalRvalue cond
-    t <- evalStmt' then_
-    e <- evalStmt' else_
+    t <- evalStmt then_
+    e <- evalStmt else_
     return $ connTreeJoin c t e
-evalStmt' (SBlock stmts) =
+evalStmt (SBlock stmts) =
     -- `M.union` is left-biased, so we `flip` it to make new connections
     -- override the old ones.
-    foldM (\acc s -> connTreeAppend acc <$> evalStmt' s) M.empty stmts
-evalStmt' (SPartialConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
-evalStmt' (SConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
-evalStmt' (SIsInvalid _ e) = unrollInvalidate e >>= assignTree
-evalStmt' (SAttach src es) = traceShow ("evalStmt SAttach NYI", src, es) $ return M.empty
-evalStmt' (SStop _ _ _ _) = return M.empty
-evalStmt' (SPrint _ _ _ _ _) = return M.empty
-evalStmt' SEmpty = return M.empty
+    foldM (\acc s -> connTreeAppend acc <$> evalStmt s) M.empty stmts
+evalStmt (SPartialConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
+evalStmt (SConnect _ lhs rhs) = unrollAssign lhs rhs >>= assignTree
+evalStmt (SIsInvalid _ e) = unrollInvalidate e >>= assignTree
+evalStmt (SAttach src es) = traceShow ("evalStmt SAttach NYI", src, es) $ return M.empty
+evalStmt (SStop _ _ _ _) = return M.empty
+evalStmt (SPrint _ _ _ _ _) = return M.empty
+evalStmt SEmpty = return M.empty
 
 ensureNode :: NodeId -> ConnTree -> ExtractM ConnTree
 ensureNode n ct = connTreeEnsureNode n <$> nodeTy n <*> pure ct
@@ -916,14 +916,11 @@ unrollAggregate ty e flipped = go ty e flipped
     go _ e False = return e
     go _ e True = []
 
-evalLvalue :: Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
-evalLvalue e = evalLvalue' False e
-
 -- Convert an lvalue `Expr` to a `ConnExpr`.  This can produce multiple
 -- `ConnExpr`s in some cases, and also sometimes generates a transformation to
 -- apply to the `Rvalue` of the assignment.
-evalLvalue' :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
-evalLvalue' flipSplit e = go e
+evalLvalue :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
+evalLvalue flipSplit e = go e
   where
     go (ERef name _) = do
         i <- varNode name
@@ -977,7 +974,7 @@ unrollAssign l r = do
         let (lFlipped', rFlipped') =
                 if flipped then (rFlipped, lFlipped) else (lFlipped, rFlipped)
         r'' <- evalRvalue' (flipped /= rFlipped') r'
-        (ty, lfs'') <- evalLvalue' (flipped /= lFlipped') l'
+        (ty, lfs'') <- evalLvalue (flipped /= lFlipped') l'
         traceShowM ("directions", l, r, lFlipped, rFlipped, flipped)
         return [(ty, l'', f r'') | (l'', f) <- lfs'']
 
@@ -985,12 +982,12 @@ unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollInvalidate l = do
     assignsL <- unrollAggregate <$> exprTy l <*> pure l <*> pure False
     ls <- liftM concat $ forM assignsL $ \(l') -> do
-        (ty, lfs'') <- evalLvalue' False l'
+        (ty, lfs'') <- evalLvalue False l'
         return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
 
     assignsR <- unrollAggregate <$> exprTy l <*> pure l <*> pure True
     rs <- liftM concat $ forM assignsR $ \(l') -> do
-        (ty, lfs'') <- evalLvalue' True l'
+        (ty, lfs'') <- evalLvalue True l'
         return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
 
     return $ ls ++ rs
