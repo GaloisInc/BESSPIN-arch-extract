@@ -478,10 +478,18 @@ withModule initMod act = do
 
 withScope :: ExtractM a -> ExtractM a
 withScope act = do
-    oldScope <- _esLocalScope <<.= M.empty
+    oldScope <- use _esLocalScope
     r <- act
     _esLocalScope .= oldScope
     return r
+
+-- Create a new `Node` of the given type, with no `Def` and no entry in
+-- `esLocalScope`.
+addNode :: Text -> Ty -> ExtractM NodeId
+addNode name ty = do
+    i <- return name
+    _esNodeTy %= M.insert i ty
+    return i
 
 bindDef' :: Text -> Def -> Ty -> Int -> ExtractM NodeId
 bindDef' name def ty _count = do
@@ -538,6 +546,8 @@ extractModule cfg m = do
         traceM (T.unpack $ " --- begin extracting " <> moduleName m <> " ---")
         let ifc = convertInterface $ modulePorts m
 
+        portConns <- foldl' connTreeAppend M.empty <$> mapM evalExtPort (modulePorts m)
+
 -- TODO: ports
 {-
         (v, ins, outs) <- buildIfcNets "" ifc (moduleSig $ modulePorts m)
@@ -565,9 +575,9 @@ extractModule cfg m = do
                     let bbox = Set.member (moduleName m) (Config.chiselBlackboxModules cfg)
                     when (not bbox) $ do
                         conns' <- evalStmt body
-                        let conns'' = rerollConnTree conns'
+                        let conns'' = rerollConnTree $ connTreeAppend portConns conns'
                         traceM (T.unpack $ "new-style connections (orig): \n" <>
-                            T.unlines (connTreePrint conns'))
+                            T.unlines (connTreePrint $ connTreeAppend portConns conns'))
                         traceM (T.unpack $ "new-style connections (rerolled): \n" <>
                             T.unlines (connTreePrint conns''))
 
@@ -615,14 +625,16 @@ buildPin n = do
 buildNetAlias :: A.NetId -> A.NetId -> ExtractM Int
 buildNetAlias src dest = buildLogic A.LkNetAlias [src] [dest]
 
-buildPort :: A.NetId -> ExtractM A.Port
-buildPort n = do
+buildPort :: A.NetId -> Bool -> ExtractM ()
+buildPort n output = do
     (name, ty) <- zoom (_esCurModule . A._moduleNet n) $ do
         name <- use A._netName
         ty <- use A._netTy
         return (head $ T.lines name, ty)
-    return $ A.Port name n ty
-
+    if output then
+        _esCurModule . A._moduleOutputs %= (|> A.Port name n ty)
+    else
+        _esCurModule . A._moduleInputs %= (|> A.Port name n ty)
 
 
 flipDir :: Direction -> Direction
@@ -992,6 +1004,73 @@ unrollInvalidate l = do
 
     return $ ls ++ rs
 
+
+
+-- List all leaf fields of `ty`.  For each field, returns the projections to
+-- reach that field, the type of the field, and a flag indicating whether the
+-- field is flipped or not.  For each entry `(ps, ty', flipped)`, it should hold
+-- that `projectTyFlip ps ty = (ty', flipped)`.
+listLeafFields :: Ty -> [(Seq Projection, Ty, Bool)]
+listLeafFields ty = go S.empty False ty
+  where
+    go ps flipped (TBundle fs) = do
+        f <- fs
+        go (ps |> PrField (fieldName f)) (flipped /= fieldFlip f) (fieldTy f)
+    go ps flipped (TVector ty len) = do
+        idx <- [0 .. len - 1]
+        go (ps |> PrIndex idx) flipped ty
+    go ps flipped ty = [(ps, ty, flipped)]
+
+-- Handle an external module port.
+--
+--  1. Unroll the port type, and add appropriate `Architecture` ports for all
+--     ground-typed / leaf fields.
+--  2. Generate a `DWire` for the entire port.
+--  3. For each leaf field:
+--      a. Generate a new `NodeId` (with no associated def, but with a name and
+--         `Ty`).
+--      b. Connect the node to the appropriate subelement of the `DWire`.
+--      c. Add an `esNetMap` entry, mapping the leaf node to the `A.NetId` used
+--         for the corresponding `Architecture` port.
+--
+-- The leaf ports have `NodeId`s, so they can appear in the `ConnTree`, but
+-- they have no `Def` (so they don't get handled by `buildNodes`) and no entry
+-- in `esLocalScope` (so they don't affect name resolution).  The `DWire`
+-- representing the port as a whole works exactly like a normal `Def` (except
+-- for the implicit connections to the leaf ports), so it introduces no special
+-- cases for evaluation, and `buildNodes` will apply the normal splitting and
+-- repacking as it does for all `DWire`s.
+evalExtPort :: Port -> ExtractM ConnTree
+evalExtPort p = do
+    -- DWire node
+    ct <- evalDef $ DWire (portName p) (portTy p)
+    wi <- varNode $ portName p
+    let ct' = connTreeEnsureNode (splitLeftId wi) (portTy p) ct
+
+    let output = portDir p == Output
+
+    foldM (\ct (ps, ty, flipped) -> do
+        let name = "." <> portName p <>
+                (if not $ S.null ps then "." <> pathName ps else "")
+        let f = output /= flipped
+
+        -- Architecture net + port
+        net <- buildNet name 10 ty
+        buildPort net f
+
+        -- Leaf `NodeId` + `esNetMap` entry
+        pi <- addNode name ty
+        let pe = ConnExpr pi S.empty
+        _esNetMap %= M.insert pe net
+
+        -- Connection from leaf node to wire
+        let we = ConnExpr (if not f then splitLeftId wi else splitRightId wi) ps
+        let (l, r) = if not f then (we, pe) else (pe, we)
+
+        return $
+            connTreeInsertRvalue l (RvExpr r) $
+            connTreeEnsureNode pi ty ct
+        ) ct' (listLeafFields $ portTy p)
 
 
 moduleSig :: [Port] -> Ty
