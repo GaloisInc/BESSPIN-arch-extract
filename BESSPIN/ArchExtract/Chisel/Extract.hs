@@ -415,34 +415,9 @@ rerollConnTree' ct =
 
 
 
-data Interface =
-    -- The `Int` is the index of the port among the module's inputs/outputs.
-      IfPort Direction Int Ty
-    | IfBundle (Seq (Text, Interface)) (Map Text Interface)
-    deriving (Show)
-
-data Value =
-      VNet A.NetId
-    -- TODO: should be `VVector Value`, to handle vectors of vectors, vectors
-    -- of bundles, etc.
-    | VVector A.NetId
-    -- `Bool` is the "flip" flag for the field.
-    | VBundle (Map Text (Value, Bool))
-    -- Acts like `.0` when used on the RHS and `.1` when used on the LHS of a
-    -- connection statement.
-    --
-    -- Note that `VDff` should never appear inside a `VBundle`.
-    | VDff Value Value
-    -- Index of the `Logic` node.  Also stores the element type, which often is
-    -- not provided at port definitions.
-    | VRam Int Ty
-    | VError
-    deriving (Show)
-
 data ModInfo = ModInfo
     { miName :: Text
     , miPorts :: [Port]
-    , miIfc :: Interface
     , miModId :: A.ModId
     }
 
@@ -554,11 +529,10 @@ extractDesign cfg circ = evalState (extractDesign' cfg circ) initState
     firMods = circuitModules circ
     modMap = M.fromList $ zipWith mkModInfo firMods [0..]
 
-    mkModInfo m i = (name, ModInfo name ports ifc i)
+    mkModInfo m i = (name, ModInfo name ports i)
       where
         name = moduleName m
         ports = modulePorts m
-        ifc = convertInterface $ modulePorts m
 
     initState = ExtractState
         { esCurModule = error $ "current module is unset"
@@ -580,7 +554,6 @@ extractModule :: Config.Chisel -> Module -> ExtractM (A.Module ())
 extractModule cfg m = do
     ((), m') <- withModule initMod $ do
         traceM (T.unpack $ " --- begin extracting " <> moduleName m <> " ---")
-        let ifc = convertInterface $ modulePorts m
 
         portConns <- foldl' connTreeAppend M.empty <$> mapM evalExtPort (modulePorts m)
 
@@ -650,53 +623,17 @@ buildPort n output = do
     else
         _esCurModule . A._moduleInputs %= (|> A.Port name n ty)
 
-
-flipDir :: Direction -> Direction
-flipDir Input = Output
-flipDir Output = Input
-
-mkIfBundle :: [(Text, Interface)] -> Interface
-mkIfBundle xs = IfBundle (S.fromList xs) (M.fromList xs)
-
-convertInterface :: [Port] -> Interface
-convertInterface ps = evalState (mkIfBundle <$> mapM goPort ps) (0, 0)
-  where
-    goPort :: Port -> State (Int, Int) (Text, Interface)
-    goPort (Port _ name dir ty) = go dir ty >>= \ifc -> return (name, ifc)
-
-    goField :: Direction -> Field -> State (Int, Int) (Text, Interface)
-    goField dir (Field name ty flip) = go dir' ty >>= \ifc -> return (name, ifc)
-      where dir' = if flip then flipDir dir else dir
-
-    go :: Direction -> Ty -> State (Int, Int) Interface
-    go dir (TBundle fs) = mkIfBundle <$> mapM (goField dir) fs
-    go dir ty = do
-        i <- assignId dir
-        return $ IfPort dir i ty
-
-    assignId Input = _1 <<%= (+1)
-    assignId Output = _2 <<%= (+1)
-
--- Return all the input and output ports of `ifc`, in order.
-interfacePorts :: Interface -> ([([Text], Ty)], [([Text], Ty)])
-interfacePorts (IfPort Input _ ty) = ([([], ty)], [])
-interfacePorts (IfPort Output _ ty) = ([], [([], ty)])
-interfacePorts (IfBundle xs _) =
-    mconcat $ map (\(name, ifc) ->
-        interfacePorts ifc & each . each . _1 %~ (name :)) $ toList xs
+buildDummyNet :: Text -> ExtractM A.NetId
+buildDummyNet name = buildNet name (-10) TUnknown
 
 
 convertTy :: Ty -> A.Ty
 convertTy _ = A.TUnknown
 
-
-buildDummyNet :: Text -> ExtractM A.NetId
-buildDummyNet name = buildNet name (-10) TUnknown
-
-
 nodeIdForSide :: Bool -> ResolvedNode -> NodeId
 nodeIdForSide _ (RnSingle i) = i
 nodeIdForSide right (RnSplit l r) = if right then r else l
+
 
 -- Process a `Def`.  This updates `esDefs` and so on, but can also produce
 -- connections in some cases, like the implicit connection on the RHS of a
