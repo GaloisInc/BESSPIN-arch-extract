@@ -254,6 +254,9 @@ connTreeAppend old new = mergeConnMap
     (\_ rv1 rv2 -> rvalueSubstUnset rv1 rv2)
     old new
 
+connTreeConcat :: [ConnTree] -> ConnTree
+connTreeConcat cts = foldl' (\acc ct -> connTreeAppend acc ct) M.empty cts
+
 traceTree :: (Ord k, Show k) => Text -> Map k Connection -> a -> a
 traceTree name ct x = trace (T.unpack $
     "conn tree " <> name <> ":\n" <> T.unlines (connTreePrint ct)) x
@@ -706,7 +709,7 @@ evalDef d@(DReg name ty _clk _res _init) = bindSplitDef name d ty >> return M.em
 evalDef d@(DInst name modName) = use (_esModMap . at modName) >>= \x -> case x of
     Nothing ->
         traceShow ("instantiation of unknown module", name, modName) $ return M.empty
-    Just mi -> bindDef name d (moduleSig $ miPorts mi) >> return M.empty
+    Just mi -> evalInst name (miModId mi) (moduleSig $ miPorts mi)
 -- TODO: memory
 evalDef d@(DMemory name ty depth rds wrs rdwrs) = return M.empty
 {-
@@ -1023,15 +1026,15 @@ listLeafFields ty = go S.empty False ty
 
 -- Handle an external module port.
 --
---  1. Unroll the port type, and add appropriate `Architecture` ports for all
---     ground-typed / leaf fields.
---  2. Generate a `DWire` for the entire port.
---  3. For each leaf field:
+--  1. Generate a `DWire` for the entire port.
+--  2. Unroll the port type, and for each leaf field:
 --      a. Generate a new `NodeId` (with no associated def, but with a name and
 --         `Ty`).
 --      b. Connect the node to the appropriate subelement of the `DWire`.
---      c. Add an `esNetMap` entry, mapping the leaf node to the `A.NetId` used
---         for the corresponding `Architecture` port.
+--      c. Generate a new `A.NetId`, and add an `esNetMap` entry to map the
+--         leaf node to the new net.
+--      d. Run `act`, which usually will connect the new net to something in
+--          `esCurModule`.
 --
 -- The leaf ports have `NodeId`s, so they can appear in the `ConnTree`, but
 -- they have no `Def` (so they don't get handled by `buildNodes`) and no entry
@@ -1040,23 +1043,60 @@ listLeafFields ty = go S.empty False ty
 -- for the implicit connections to the leaf ports), so it introduces no special
 -- cases for evaluation, and `buildNodes` will apply the normal splitting and
 -- repacking as it does for all `DWire`s.
+--
+-- This function always traverses the fields of `portTy p` in order, so results
+-- should be consistent between different runs.
 evalExtPort :: Port -> ExtractM ConnTree
 evalExtPort p = do
     -- DWire node
     ct <- evalDef $ DWire (portName p) (portTy p)
     wi <- varNode $ portName p
-    let ct' = connTreeEnsureNode (splitLeftId wi) (portTy p) ct
 
     let output = portDir p == Output
+    let we = ConnExpr (if not output then splitLeftId wi else splitRightId wi) S.empty
 
-    foldM (\ct (ps, ty, flipped) -> do
-        let name = "." <> portName p <>
+    connectLeaves ("." <> portName p) (portTy p) output we $ \net f ->
+        buildPort net f
+
+-- Handle a module instance.
+--
+-- Works by generating a `DWire` whose rvalue side is accessible to other
+-- expressions and whose lvalue side is connected to the Architecture module
+-- instance.
+evalInst :: Text -> Int -> Ty -> ExtractM ConnTree
+evalInst name modId sig = do
+    nodeId <- bindSplitDef name (DWire name sig) sig
+    _esLocalScope %= M.insert name (splitRightId nodeId)
+
+    let inst = A.Inst modId name S.empty
+    instId <- buildLogic (A.LkInst inst) [] []
+
+    connectLeaves name sig False (ConnExpr (splitLeftId nodeId) S.empty) $ \net f -> do
+        let output = not f
+        ty <- use $ _esCurModule . A._moduleNet net . A._netTy
+        zoom (_esCurModule . A._moduleLogic instId) $ do
+            if not output then
+                A._logicInputs %= (|> A.Pin net ty)
+            else
+                A._logicOutputs %= (|> A.Pin net ty)
+
+-- The "for each leaf field" part of `evalExtPort`.  Also used for instance
+-- ports, with slightly different arguments.
+--
+-- Note that `portDir p` is ignored - only `flipped` is considered.  The
+-- default is to connect the leaf node to the wire, which is appropriate for an
+-- external input port.
+connectLeaves :: Text -> Ty -> Bool -> ConnExpr ->
+    (A.NetId -> Bool -> ExtractM ()) -> ExtractM ConnTree
+connectLeaves prefix ty flipped wireExpr act =
+    liftM connTreeConcat $ forM (listLeafFields ty) $ \(ps, ty, flipped') -> do
+        let name = prefix <>
                 (if not $ S.null ps then "." <> pathName ps else "")
-        let f = output /= flipped
+        let f = flipped /= flipped'
 
         -- Architecture net + port
         net <- buildNet name 10 ty
-        buildPort net f
+        act net f
 
         -- Leaf `NodeId` + `esNetMap` entry
         pi <- addNode name ty
@@ -1064,13 +1104,11 @@ evalExtPort p = do
         _esNetMap %= M.insert pe net
 
         -- Connection from leaf node to wire
-        let we = ConnExpr (if not f then splitLeftId wi else splitRightId wi) ps
+        let we = projectConnExpr' ps wireExpr
         let (l, r) = if not f then (we, pe) else (pe, we)
 
-        return $
-            connTreeInsertRvalue l (RvExpr r) $
-            connTreeEnsureNode pi ty ct
-        ) ct' (listLeafFields $ portTy p)
+        ct <- ensureNode (connExprNode wireExpr) M.empty >>= ensureNode pi
+        return $ connTreeInsertRvalue l (RvExpr r) ct
 
 
 moduleSig :: [Port] -> Ty
