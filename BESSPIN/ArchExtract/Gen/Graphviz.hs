@@ -125,6 +125,7 @@ logicShowsPorts cfg l =
         LkRuleEnable _ -> False
         LkPack _ -> True
         LkUnpack _ -> True
+        LkRepack _ _ _ -> True
         _ -> False
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
@@ -237,6 +238,7 @@ drawLogicNode cfg logic =
         LkRuleEnable _ -> True
         LkPack _ -> True
         LkUnpack _ -> True
+        LkRepack _ _ _ -> True
         _ -> False
 
 drawNetEdges cfg net =
@@ -348,6 +350,8 @@ logicLabel (LkMatch _ _) = "(match)"
 logicLabel (LkRuleEnable name) = "(rule enable " <> name <> ")"
 logicLabel (LkPack _) = "(pack)"
 logicLabel (LkUnpack _) = "(unpack)"
+logicLabel (LkRepack (Just name) _ _) = "(repack " <> name <> ")"
+logicLabel (LkRepack Nothing _ _) = "(repack)"
 logicLabel LkNetAlias = T.pack "(net alias)"
 logicLabel (LkInst inst) = "(inst " <> instName inst <> ")"
 
@@ -405,6 +409,8 @@ logicPortNames d l@(Logic { logicKind = LkPack names }) =
     ( names, "struct" <| S.empty )
 logicPortNames d l@(Logic { logicKind = LkUnpack names }) =
     ( "struct" <| S.empty, names )
+logicPortNames d l@(Logic { logicKind = LkRepack _ ins outs }) =
+    (ins, outs)
 logicPortNames d l =
     (S.fromList $ map (T.pack . show) [0 .. maxInput],
         S.fromList $ map (T.pack . show) [0 .. maxOutput])

@@ -188,6 +188,12 @@ data LogicKind =
     LkUnpack
         { lkUnpackOutNames :: Seq Text
         } |
+    -- Combination of unpack and repack.  Used for manipulating Chisel bundles.
+    LkRepack
+        { lkRepackName :: Maybe Text
+        , lkRepackInNames :: Seq Text
+        , lkRepackOutNames :: Seq Text
+        } |
     LkExpr |
     LkOther
     deriving (Show, Eq, Typeable, Data, Generic, NFData)

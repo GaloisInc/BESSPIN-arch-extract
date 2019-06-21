@@ -129,6 +129,17 @@ data Lit =
     deriving (Show, Typeable, Data, Generic, NFData)
 
 
+isGroundTy ty = case ty of
+    TBundle _ -> False
+    TVector _ _ -> False
+    _ -> True
+
+isPassiveTy ty = case ty of
+    TBundle fs -> all (\f -> not (fieldFlip f) && isPassiveTy (fieldTy f)) fs
+    TVector ty _ -> isPassiveTy ty
+    _ -> True
+
+
 
 makeLenses' ''Circuit
 makeLenses' ''Module
