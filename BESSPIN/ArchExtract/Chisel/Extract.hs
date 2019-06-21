@@ -1452,7 +1452,28 @@ makeConnection dest ty (RvExpr ce) = do
             traceShowM ("connect", src, dest)
             void $ buildNetAlias src dest
         Nothing -> traceShowM ("failed to resolve net for rvalue", ce)
-makeConnection dest ty rv = traceShowM ("rvalue kind NYI", rv)
+makeConnection dest ty (RvMux c t e) = do
+    cNet <- buildNet "<mux-cond>" 0 (TUInt $ WInt 1)
+    tNet <- buildNet "<mux-then>" 0 ty
+    eNet <- buildNet "<mux-else>" 0 ty
+    makeConnection cNet ty c
+    makeConnection tNet ty t
+    makeConnection eNet ty e
+    void $ buildLogic (A.LkMux ("val" <| S.empty) 2) [cNet, tNet, eNet] [dest]
+makeConnection dest ty (RvIndexMux ie _ic t e) = do
+    let idxTy = TUInt $ WInt 1  -- TODO: compute actual type of ie
+    ieNet <- buildNet "<imux-idx>" 0 idxTy
+    tNet <- buildNet "<imux-then>" 0 ty
+    eNet <- buildNet "<imux-else>" 0 ty
+    makeConnection ieNet ty ie
+    makeConnection tNet ty t
+    makeConnection eNet ty e
+    void $ buildLogic (A.LkMux ("val" <| S.empty) 2) [ieNet, tNet, eNet] [dest]
+-- For `RvInvalid`, leave the destination net unconnected.  The destination net
+-- should then disappear from the visualization when `draw-onesided-nets` is
+-- false (the default).
+makeConnection _dest _ty RvInvalid = return ()
+makeConnection dest ty RvUnset = traceShowM ("unexpected RvUnset", dest, ty)
 
 -- Generate a NetAlias for each connection described in the `ConnTree`.
 makeConnections :: ConnTree -> ExtractM ()
