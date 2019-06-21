@@ -47,6 +47,9 @@ data Rvalue =
     -- `when idx_expr == <i>: array[<i>] <= value`.  The unrolled form turns
     -- into an assignment `array[<i>] <= RvIndexMux idx_expr <i> value <prev>`.
     | RvIndexMux Rvalue Int Rvalue Rvalue
+    -- Combinational logic node.  Takes zero or more inputs, and produces one
+    -- output.
+    | RvComb Text [Rvalue]
     -- Initial value of every node.  Also, the assignment RHS for `x is
     -- invalid` statements.
     | RvInvalid
@@ -241,6 +244,7 @@ rvalueSubstUnset old rv = go rv
     go (RvExpr ce) = RvExpr ce
     go (RvMux c t e) = RvMux (go c) (go t) (go e)
     go (RvIndexMux ie ic t e) = RvIndexMux (go ie) ic (go t) (go e)
+    go (RvComb op args) = RvComb op (map go args)
     go RvInvalid = RvInvalid
     go RvUnset = old
 
@@ -803,6 +807,12 @@ projectRvalue p rv = go rv
     go (RvExpr (ConnExpr n ps)) = RvExpr $ ConnExpr n (ps |> p)
     go (RvMux c t e) = RvMux c (go t) (go e)
     go (RvIndexMux ie ic t e) = RvIndexMux ie ic (go t) (go e)
+    -- TODO: this can happen when taking a field of a vector element at a
+    -- non-constant index: `v[idx].f`.  (Though it's probably better to make
+    -- EIndex produce something other than RvComb, instead of changing this
+    -- code - all other uses of RvComb produce only ground values.)
+    go (RvComb op args) =
+        traceShow ("projectRvalue: RvComb NYI", op, args, p) RvInvalid
     go RvInvalid = RvInvalid
     go RvUnset = RvUnset
 
@@ -860,20 +870,23 @@ evalRvalue' :: Bool -> Expr -> ExtractM Rvalue
 evalRvalue' flipSplit e = go e
   where
     go :: Expr -> ExtractM Rvalue
-    go (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
+    go (ELit _) = return $ RvComb "lit" []
     go (ERef name _) = do
         i <- nodeIdForSide (not flipSplit) <$> varNode name
         return $ RvExpr $ ConnExpr i S.empty
     go (EField e name _) = projectRvalue (PrField name) <$> go e
     -- TODO: gen combinational logic nodes for EIndex
-    go (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
+    go (EIndex e idx _) = do
+        e' <- go e
+        idx' <- go idx
+        return $ RvComb "idx" [e', idx']
     go (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> go e
     go (EMux cond then_ else_ _) =
         RvMux <$> go cond <*> go then_ <*> go else_
     go (EValidIf cond then_ _) =
         RvMux <$> go cond <*> go then_ <*> pure RvInvalid
     -- TODO: gen combinational logic nodes for EPrim
-    go (EPrim op args _ ty) = return $ RvExpr $ ConnExpr ("<" <> op <> ">") S.empty
+    go (EPrim op args _ ty) = RvComb op <$> mapM go args
 
 
 -- Expand a (possibly) aggregate-typed assignment into a list of ground-typed
@@ -1469,6 +1482,13 @@ makeConnection dest ty (RvIndexMux ie _ic t e) = do
     makeConnection tNet ty t
     makeConnection eNet ty e
     void $ buildLogic (A.LkMux ("val" <| S.empty) 2) [ieNet, tNet, eNet] [dest]
+makeConnection dest ty (RvComb _op args) = do
+    -- TODO: compute actual types of args
+    argNets <- forM (zip [0 ..] args) $ \(i, arg) -> do
+        n <- buildNet ("<comb-" <> T.pack (show i) <> ">") 0 TUnknown
+        makeConnection n TUnknown arg
+        return n
+    void $ buildLogic (A.LkExpr) argNets [dest]
 -- For `RvInvalid`, leave the destination net unconnected.  The destination net
 -- should then disappear from the visualization when `draw-onesided-nets` is
 -- false (the default).
