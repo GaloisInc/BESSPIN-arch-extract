@@ -442,6 +442,26 @@ data ModInfo = ModInfo
     , miModId :: A.ModId
     }
 
+data MemoryDef = MemoryDef
+    { mdTy :: Ty
+    , mdDepth :: Int
+    , mdPorts :: Seq MemPort
+    }
+    deriving (Show)
+
+data MemPort = MemPort
+    { mpAddrNet :: A.NetId
+    -- Net IDs to connect to the LkRam's ports.  These are on the "inside" of
+    -- each wire.
+    , mpReadNet :: A.NetId
+    , mpWriteNet :: A.NetId
+    -- Node IDs on the "outside" of the two wires.  We look at these nodes to
+    -- check if the read or write side is used.
+    , mpReadNode :: NodeId
+    , mpWriteNode :: NodeId
+    }
+    deriving (Show)
+
 data ResolvedNode =
     -- Use `.0` as the node's ID in all contexts.
       RnSingle NodeId
@@ -460,6 +480,7 @@ data ExtractState = ExtractState
     -- node.  The other nodes' IDs are derived by applying a transformation to
     -- the ID, depending on the kind of def.
     , esDefs :: Seq (Def, ResolvedNode)
+    , esMems :: Map Text MemoryDef
     -- Set of "split nodes".  A reference to a node `n` in this set gets turned
     -- into a reference to either the "left" or "right" variant of `n`,
     -- depending on whether the reference is in an lvalue or rvalue position.
@@ -470,6 +491,8 @@ data ExtractState = ExtractState
     }
 
 makeLenses' ''ModInfo
+makeLenses' ''MemoryDef
+makeLenses' ''MemPort
 makeLenses' ''ExtractState
 
 type ExtractM a = State ExtractState a
@@ -539,6 +562,7 @@ extractDesign cfg circ = evalState (extractDesign' cfg circ) initState
         , esLocalScope = M.empty
         , esNodeTy = M.empty
         , esDefs = S.empty
+        , esMems = mempty
         , esSplitNodes = Set.empty
         , esNetMap = M.empty
         }
@@ -556,28 +580,7 @@ extractModule cfg m = do
 
         portConns <- foldl' connTreeAppend M.empty <$> mapM evalExtPort (modulePorts m)
 
--- TODO: ports
-{-
-        (v, ins, outs) <- buildIfcNets "" ifc (moduleSig $ modulePorts m)
-        ins' <- mapM buildPort ins
-        outs' <- mapM buildPort outs
-        _esCurModule . A._moduleInputs .= S.fromList ins'
-        _esCurModule . A._moduleOutputs .= S.fromList outs'
-
-        forM_ (modulePorts m) $ \p -> do
-            bindDef (portName p) (portTy p)
--}
-
         withScope $ do
-        {-
-            let vars = case v of
-                    VBundle fs -> M.toList fs
-                    _ -> traceShow ("impossible: module buildIfcNets produced non-bundle?",
-                        moduleName m, v) []
-
-            forM_ vars $ \(name, (val, _)) -> bindLocal name val
--}
-
             case moduleKind m of
                 MkNormal body -> do
                     let bbox = Set.member (moduleName m) (Config.chiselBlackboxModules cfg)
@@ -591,7 +594,6 @@ extractModule cfg m = do
 
                         void $ buildNodes conns''
                         void $ makeConnections conns''
-                        -- TODO
 
                 MkExtern _ -> return ()
 
@@ -702,28 +704,21 @@ evalDef d@(DInst name modName) = use (_esModMap . at modName) >>= \x -> case x o
     Nothing ->
         traceShow ("instantiation of unknown module", name, modName) $ return M.empty
     Just mi -> evalInst name (miModId mi) (moduleSig $ miPorts mi)
--- TODO: memory
-evalDef d@(DMemory name ty depth rds wrs rdwrs) = return M.empty
-{-
-    forM_ rds $ \rd -> bindDef rd d ty
-    forM_ wrs $ \wr -> bindDef wr d ty
-    forM_ rdwrs $ \rdwr -> bindSplitDef rdwr d ty
--}
+evalDef d@(DMemory name ty depth rds wrs rdwrs) = do
+    traceShowM ("monolithic DMemory NYI", name)
+    return M.empty
 evalDef d@(DNode name expr) = do
     bindSplitDef name d =<< exprTy expr
     evalStmt $ SConnect mempty (ERef name TUnknown) expr
--- TODO: memory
-evalDef d@(DCMem name ty depth isSync) = return M.empty
-evalDef d@(DCMemPort name ty memName args dir) = return M.empty
-{-
-  | [addr, _clk] <- args = use (_esLocalScope . at memName) >>= \x -> case x of
-    Just (VRam idx ty') -> do
-        bindDef name ty'
-        when (dir `elem` [MpdInfer, MpdReadWrite]) $ splitDef name
-    Just v -> traceShowM ("port references non-memory", memName, name, v)
-    Nothing -> traceShowM ("unknown local memory", memName, name)
-  | otherwise = traceShowM ("bad arg count for CMemPort", name, memName, args)
--}
+evalDef d@(DCMem name ty depth _isSync) = do
+    traceShowM ("handle mem def", name, ty, depth)
+    _esMems %= M.insert name (MemoryDef ty depth S.empty)
+    return M.empty
+evalDef d@(DCMemPort name ty memName args dir)
+  | [addr, _clk] <- args = evalMemPort name memName addr
+  | otherwise = do
+    traceShowM ("bad arg count for CMemPort", name, memName, args)
+    return M.empty
 
 -- Compute the set of net connections made by a `Stmt`.  (A statement can also
 -- disconnect nets, represented as connecting the net to `Nothing`.)  Statement
@@ -1088,14 +1083,10 @@ connectLeaves prefix ty flipped wireExpr act =
                 (if not $ S.null ps then "." <> pathName ps else "")
         let f = flipped /= flipped'
 
-        -- Architecture net + port
-        net <- buildNet name 10 ty
+        -- Architecture net + port; leaf `NodeId` + `esNetMap` entry
+        (pi, net) <- buildArchNode name 10 ty
         act net f
-
-        -- Leaf `NodeId` + `esNetMap` entry
-        pi <- addNode name ty
         let pe = ConnExpr pi S.empty
-        _esNetMap %= M.insert pe net
 
         -- Connection from leaf node to wire
         let we = projectConnExpr' ps wireExpr
@@ -1103,6 +1094,70 @@ connectLeaves prefix ty flipped wireExpr act =
 
         ct <- ensureNode (connExprNode wireExpr) M.empty >>= ensureNode pi
         return $ connTreeInsertRvalue l (RvExpr r) ct
+
+
+-- Build an "arch node", used to bridge the `ConnTree` with `Architecture`
+-- nets.  The dummy node has a `NodeId`, so it can appear in the `ConnTree`,
+-- but it also has a `NetId` directly assigned to it, which can be used for
+-- special connection types, such as connecting to module ports.  The new node
+-- does not appear in `esLocalScope`, and does not have an associated `Def`.
+buildArchNode :: Text -> Int -> Ty -> ExtractM (NodeId, A.NetId)
+buildArchNode name prio ty = do
+    net <- buildNet name 10 ty
+    pi <- addNode name ty
+    _esNetMap %= M.insert (ConnExpr pi S.empty) net
+    return (pi, net)
+
+-- Handle a memory port.  This adds a new entry to `esMems . mdPorts`
+--
+--  1. Build a new arch node.  Connect the address argument to it.  Store its
+--     `NetId` as `mpAddrNet`.
+--  2. Build new wires for the read and write ports.  Connect the "inner" sides
+--     of the wires to new arch nodes (`mpReadNet` + `mpWriteNet`).
+--  3. Combine the "outer" sides of the wires into a single split node, and add
+--     it to `esLocalScope` under the port's name.
+--
+-- We always generate both read and write sides, regardless of the port's
+-- declared direction.  The final step of building the `LkRam` element checks
+-- which sides are connected for each port.
+evalMemPort :: Text -> Text -> Expr -> ExtractM ConnTree
+evalMemPort name memName addrExpr = do
+    addrTy <- exprTy addrExpr
+    addrRvalue <- evalRvalue addrExpr
+    (addrNode, addrNet) <- buildArchNode (name <> ".addr") 10 addrTy
+
+    ty <- preuse (_esMems . ix memName . _mdTy) >>= \x -> case x of
+        Just x -> return x
+        Nothing -> traceShow ("failed to resolve memory for port", memName, name) $
+            return TUnknown
+    let readName = name <> ".read"
+    let writeName = name <> ".write"
+    (readLeft, readRight) <- bindSplitDef readName (DWire readName ty) ty
+    (writeLeft, writeRight) <- bindSplitDef writeName (DWire writeName ty) ty
+    _esLocalScope %= M.insert name (RnSplit writeLeft readRight)
+
+    (readNode, readNet) <- buildArchNode readName 10 ty
+    (writeNode, writeNet) <- buildArchNode writeName 10 ty
+
+    _esMems . ix memName . _mdPorts %=
+        (|> MemPort addrNet readNet writeNet readRight writeLeft)
+
+    let mkLv i = ConnExpr i S.empty
+    let mkRv i = RvExpr $ mkLv i
+
+    return $
+        connTreeInsertRvalue (mkLv readLeft) (mkRv readNode) $
+        connTreeInsertRvalue (mkLv writeNode) (mkRv writeRight) $
+        connTreeInsertNode readLeft ty $
+        --connTreeInsertNode readRight ty $
+        --connTreeInsertNode readNode ty $
+        --connTreeInsertNode writeLeft ty $
+        --connTreeInsertNode writeRight ty $
+        connTreeInsertNode writeNode ty $
+        connTreeInsertRvalue (mkLv addrNode) addrRvalue $
+        connTreeInsertNode addrNode addrTy $
+        M.empty
+
 
 
 moduleSig :: [Port] -> Ty
@@ -1284,11 +1339,15 @@ buildWireRepack name flds = void $ do
 buildNodes :: ConnTree -> ExtractM ()
 buildNodes ct = do
     defs <- use _esDefs
-    liftM mconcat $ forM (toList defs) $ \(def, rn) -> case def of
+    forM_ (toList defs) $ \(def, rn) -> case def of
         DWire _ _ -> goWire rn
         DReg _ _ _ _ _ -> goReg rn
         DNode _ _ -> goWire rn
         _ -> return ()
+
+    mems <- use _esMems
+    forM_ (M.toList mems) $ \(name, mem) -> goMem name mem
+
   where
     allExprs = treeConnExprs ct
 
@@ -1330,6 +1389,9 @@ buildNodes ct = do
                 name <- exprName $ ConnExpr l ps
                 buildWireRepack name flds
 
+    shortcutWire (PtNode True _) (PtNode True _) = True
+    shortcutWire _ _ = False
+
     goReg (RnSingle i) = traceShowM ("don't know how to handle RnSingle DReg", i)
     goReg (RnSplit l r) = do
         let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
@@ -1345,9 +1407,28 @@ buildNodes ct = do
             name <- exprName $ ConnExpr l ps
             buildLogic (A.LkDFlipFlop name 0) [inNet] [outNet]
 
+    goMem name md = do
+        (rdAddrs, rdDatas) <- liftM mconcat $ forM (toList $ mdPorts md) $ \port -> do
+            let rds = multiMapGet (mpReadNode port) allExprs
+            if Set.null rds then
+                return ([], [])
+            else
+                return ([mpAddrNet port], [mpReadNet port])
 
-    shortcutWire (PtNode True _) (PtNode True _) = True
-    shortcutWire _ _ = False
+        wrNets <- liftM mconcat $ forM (toList $ mdPorts md) $ \port -> do
+            let wrs = multiMapGet (mpWriteNode port) allExprs
+            if Set.null wrs then
+                return []
+            else do
+                constNet <- buildDummyNet "<const>"
+                return [mpAddrNet port, mpWriteNet port, constNet]
+
+        let lk = A.LkRam name (A.EIntLit A.dummySpan $ mdDepth md) 0
+                (length rdAddrs) (length wrNets `div` 3)
+        ramNet <- buildDummyNet "<ram>"
+        ramNet' <- buildDummyNet "<ram>"
+        clkNet <- buildDummyNet "<clk>"
+        buildLogic lk (ramNet : clkNet : rdAddrs ++ wrNets) (ramNet' : rdDatas)
 
 
 
