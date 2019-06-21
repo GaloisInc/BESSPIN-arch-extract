@@ -442,16 +442,24 @@ data ModInfo = ModInfo
     , miModId :: A.ModId
     }
 
+data ResolvedNode =
+    -- Use `.0` as the node's ID in all contexts.
+      RnSingle NodeId
+    -- Use `.0` when the node appears in lvalue position and `.1` when it
+    -- appears in rvalue position.
+    | RnSplit NodeId NodeId
+    deriving (Show, Eq)
+
 data ExtractState = ExtractState
     { esCurModule :: A.Module ()
     , esModMap :: Map Text ModInfo
-    , esLocalScope :: Map Text NodeId
+    , esLocalScope :: Map Text ResolvedNode
     , esNodeTy :: Map NodeId Ty
     -- List of all defs in the current module.  Hack: for defs that produce
     -- multiple nodes, such as `DWire`, the `NodeId` is the ID of the first
     -- node.  The other nodes' IDs are derived by applying a transformation to
     -- the ID, depending on the kind of def.
-    , esDefs :: Seq (Def, NodeId)
+    , esDefs :: Seq (Def, ResolvedNode)
     -- Set of "split nodes".  A reference to a node `n` in this set gets turned
     -- into a reference to either the "left" or "right" variant of `n`,
     -- depending on whether the reference is in an lvalue or rvalue position.
@@ -494,26 +502,23 @@ addNode name ty = do
     _esNodeTy %= M.insert i ty
     return i
 
-bindDef' :: Text -> Def -> Ty -> Int -> ExtractM NodeId
-bindDef' name def ty _count = do
-    i <- return name    -- TODO: switch to numeric ids
-    _esDefs %= (|> (def, i))
-    _esNodeTy %= M.insert i ty
-    _esLocalScope %= M.insert name i
-    return i
-
 bindDef :: Text -> Def -> Ty -> ExtractM NodeId
-bindDef name def ty = bindDef' name def ty 1
-
-bindSplitDef :: Text -> Def -> Ty -> ExtractM NodeId
-bindSplitDef name def ty = do
-    i <- bindDef' name def ty 2
-    _esSplitNodes %= Set.insert i
-    -- TODO: generalize this
-    -- Types are needed for ensureNode
-    _esNodeTy %= M.insert (splitLeftId i) ty
-    _esNodeTy %= M.insert (splitRightId i) ty
+bindDef name def ty = do
+    i <- return name    -- TODO: switch to numeric ids
+    _esDefs %= (|> (def, RnSingle i))
+    _esNodeTy %= M.insert i ty
+    _esLocalScope %= M.insert name (RnSingle i)
     return i
+
+bindSplitDef :: Text -> Def -> Ty -> ExtractM (NodeId, NodeId)
+bindSplitDef name def ty = do
+    il <- return $ name <> ".L"    -- TODO: switch to numeric ids
+    ir <- return $ name <> ".R"    -- TODO: switch to numeric ids
+    _esDefs %= (|> (def, RnSplit il ir))
+    _esNodeTy %= M.insert il ty
+    _esNodeTy %= M.insert ir ty
+    _esLocalScope %= M.insert name (RnSplit il ir)
+    return (il, ir)
 
 
 extractDesign :: Config.Chisel -> Circuit -> A.Design ()
@@ -683,22 +688,9 @@ buildDummyNet :: Text -> ExtractM A.NetId
 buildDummyNet name = buildNet name (-10) TUnknown
 
 
-splitLeftId :: NodeId -> NodeId
-splitLeftId base = base <> ".L"
-
-splitRightId :: NodeId -> NodeId
-splitRightId base = base <> ".R"
-
-nodeIdForSide :: NodeId -> Bool -> ExtractM NodeId
-nodeIdForSide base right = do
-    isSplit <- Set.member base <$> use _esSplitNodes
-    if isSplit then
-        if right then
-            return $ splitRightId base
-        else
-            return $ splitLeftId base
-    else
-        return base
+nodeIdForSide :: Bool -> ResolvedNode -> NodeId
+nodeIdForSide _ (RnSingle i) = i
+nodeIdForSide right (RnSplit l r) = if right then r else l
 
 -- Process a `Def`.  This updates `esDefs` and so on, but can also produce
 -- connections in some cases, like the implicit connection on the RHS of a
@@ -769,13 +761,16 @@ nodeTy i = use (_esNodeTy . at i) >>= \x -> case x of
     Nothing -> traceShow ("no type for node", i) $ return TUnknown
     Just x -> return x
 
-varNode :: Text -> ExtractM NodeId
+varNode :: Text -> ExtractM ResolvedNode
 varNode name = use (_esLocalScope . at name) >>= \x -> case x of
-    Nothing -> traceShow ("failed to resolve var", name) $ return $ "<" <> name <> ">"
+    Nothing -> traceShow ("failed to resolve var", name) $ return $ RnSingle $ "<" <> name <> ">"
     Just i -> return i
 
 varTy :: Text -> ExtractM Ty
-varTy name = varNode name >>= nodeTy
+varTy name = varNode name >>= \rn -> case rn of
+    RnSingle i -> nodeTy i
+    -- Split nodes should have the same type for both left and right halves.
+    RnSplit l r -> nodeTy l
 
 exprTy :: Expr -> ExtractM Ty
 exprTy (ELit (LUInt _ w)) = return $ TUInt w
@@ -872,9 +867,8 @@ evalRvalue' flipSplit e = go e
     go :: Expr -> ExtractM Rvalue
     go (ELit _) = return $ RvExpr $ ConnExpr "<lit>" S.empty
     go (ERef name _) = do
-        i <- varNode name
-        i' <- nodeIdForSide i (not flipSplit)
-        return $ RvExpr $ ConnExpr i' S.empty
+        i <- nodeIdForSide (not flipSplit) <$> varNode name
+        return $ RvExpr $ ConnExpr i S.empty
     go (EField e name _) = projectRvalue (PrField name) <$> go e
     -- TODO: gen combinational logic nodes for EIndex
     go (EIndex e idx _) = return $ RvExpr $ ConnExpr "<idx>" S.empty
@@ -938,10 +932,9 @@ evalLvalue :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
 evalLvalue flipSplit e = go e
   where
     go (ERef name _) = do
-        i <- varNode name
-        i' <- nodeIdForSide i flipSplit
+        i <- nodeIdForSide flipSplit <$> varNode name
         ty <- nodeTy i
-        return (ty, [(ConnExpr i' S.empty, id)])
+        return (ty, [(ConnExpr i S.empty, id)])
     go (EField e name _) = do
         (ty, lvs) <- go e
         let ty' = bundleFieldTy name ty
@@ -1050,10 +1043,11 @@ evalExtPort :: Port -> ExtractM ConnTree
 evalExtPort p = do
     -- DWire node
     ct <- evalDef $ DWire (portName p) (portTy p)
-    wi <- varNode $ portName p
+    wrn <- varNode $ portName p
 
     let output = portDir p == Output
-    let we = ConnExpr (if not output then splitLeftId wi else splitRightId wi) S.empty
+    let wi = nodeIdForSide output wrn
+    let we = ConnExpr wi S.empty
 
     connectLeaves ("." <> portName p) (portTy p) output we $ \net f ->
         buildPort net f
@@ -1065,13 +1059,13 @@ evalExtPort p = do
 -- instance.
 evalInst :: Text -> Int -> Ty -> ExtractM ConnTree
 evalInst name modId sig = do
-    nodeId <- bindSplitDef name (DWire name sig) sig
-    _esLocalScope %= M.insert name (splitRightId nodeId)
+    (leftId, rightId) <- bindSplitDef name (DWire name sig) sig
+    _esLocalScope %= M.insert name (RnSingle rightId)
 
     let inst = A.Inst modId name S.empty
     instId <- buildLogic (A.LkInst inst) [] []
 
-    connectLeaves name sig False (ConnExpr (splitLeftId nodeId) S.empty) $ \net f -> do
+    connectLeaves name sig False (ConnExpr leftId S.empty) $ \net f -> do
         let output = not f
         ty <- use $ _esCurModule . A._moduleNet net . A._netTy
         zoom (_esCurModule . A._moduleLogic instId) $ do
@@ -1290,17 +1284,16 @@ buildWireRepack name flds = void $ do
 buildNodes :: ConnTree -> ExtractM ()
 buildNodes ct = do
     defs <- use _esDefs
-    liftM mconcat $ forM (toList defs) $ \(def, nodeId) -> case def of
-        DWire _ _ -> goWire nodeId
-        DReg _ _ _ _ _ -> goReg nodeId
-        DNode _ _ -> goWire nodeId
+    liftM mconcat $ forM (toList defs) $ \(def, rn) -> case def of
+        DWire _ _ -> goWire rn
+        DReg _ _ _ _ _ -> goReg rn
+        DNode _ _ -> goWire rn
         _ -> return ()
   where
     allExprs = treeConnExprs ct
 
-    goWire nodeId = do
-        let l = splitLeftId nodeId
-        let r = splitRightId nodeId
+    goWire (RnSingle i) = traceShowM ("don't know how to handle RnSingle DWire", i)
+    goWire (RnSplit l r) = do
         let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
         let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
         ty <- nodeTy l
@@ -1334,12 +1327,11 @@ buildNodes ct = do
                     i <- buildProjTrieNet (ConnExpr n' (ps <> ps')) ty'' f t'
                     return (i, f, pathName ps')
 
-                name <- exprName $ ConnExpr nodeId ps
+                name <- exprName $ ConnExpr l ps
                 buildWireRepack name flds
 
-    goReg nodeId = do
-        let l = splitLeftId nodeId
-        let r = splitRightId nodeId
+    goReg (RnSingle i) = traceShowM ("don't know how to handle RnSingle DReg", i)
+    goReg (RnSplit l r) = do
         let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
         let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
         ty <- nodeTy l
@@ -1350,7 +1342,7 @@ buildNodes ct = do
             lnet <- buildProjTrieNet (ConnExpr l ps) ty' flipped lt
             rnet <- buildProjTrieNet (ConnExpr r ps) ty' (not flipped) rt
             let (inNet, outNet) = if not flipped then (lnet, rnet) else (rnet, lnet)
-            name <- exprName $ ConnExpr nodeId ps
+            name <- exprName $ ConnExpr l ps
             buildLogic (A.LkDFlipFlop name 0) [inNet] [outNet]
 
 
