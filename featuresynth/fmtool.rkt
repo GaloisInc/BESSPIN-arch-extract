@@ -8,6 +8,7 @@
 (require "eval.rkt")
 (require "fmjson.rkt")
 (require "sample.rkt")
+(require "simplify.rkt")
 
 (define args (current-command-line-arguments))
 
@@ -68,6 +69,15 @@
   (define j (call-with-input-file* path read-json))
   (display (fmjson->clafer j)))
 
+(define (do-simplify path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (define fm2 (simplify fm))
+  ; TODO - would be nice to preserve group names, but it's tricky because
+  ; groups may be removed or modified during simplification.
+  (define names2 (struct-copy name-list names [groups #f]))
+  (define j (feature-model->fmjson names2 fm2))
+  (write-json j))
+
 (define (do-test-roundtrip-fmjson path)
   (define j (call-with-input-file* path read-json))
   (define-values (fm names) (fmjson->feature-model j))
@@ -98,6 +108,10 @@
   [`#("print-clafer" ,path)
     (do-print-clafer path)]
   [`#("print-clafer" _ ...) (usage "<path>")]
+
+  [`#("simplify" ,path)
+    (do-simplify path)]
+  [`#("simplify" _ ...) (usage "<path>")]
 
   [`#("test-roundtrip-fmjson" ,path)
     (do-test-roundtrip-fmjson path)]

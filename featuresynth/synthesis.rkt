@@ -6,6 +6,8 @@
   (struct-out dependency)
   (struct-out feature-model)
   ?* ?*feature-model ?*config
+  ?*feature ?*group ?*dependency
+  feature-model->symbolic
   oracle-guided-synthesis
   oracle-guided-synthesis+
   minimize-tests
@@ -53,16 +55,18 @@
 (define (?*config num-features)
   (build-vector num-features (lambda (i) (?*bool))))
 
-(define (clone-symbolic-feature-model fm)
+(define (feature-model->symbolic fm)
   (?*feature-model
     (vector-length (feature-model-features fm))
     (vector-length (feature-model-groups fm))
-    (vector-length (feature-model-dependencies fm))))
+    (vector-length (feature-model-dependencies fm))
+    (feature-model-constraint fm)))
 
 (define (convert-constraint-wildcards c)
   (define loop convert-constraint-wildcards)
   (match c
     ['_ (?*feature-id)]
+    [(? term?) (?*feature-id)]
     [(? integer?) c]
     [(? boolean?) c]
     [(cons '&& args) (cons '&& (map loop args))]

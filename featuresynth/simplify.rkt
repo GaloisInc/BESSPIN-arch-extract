@@ -1,7 +1,7 @@
 #lang rosette
 
 (provide
-  simplify-feature-model
+  simplify
   )
 
 (require racket/random)
@@ -10,226 +10,167 @@
 (require "util.rkt")
 (require "eval.rkt")
 (require "synthesis.rkt")
+(require "eval.rkt")
 
 
-(define (make-worker symbolic-fm concrete-fm [tests-raw '()])
-  ; symbolic-fm already defined as arg
+; Filter out items of `xs` that are implied by the other `xs`.  Calls `imp`
+; with two arguments: the `x` being checked, and a list of remaining
+; non-implied `xs`.
+(define (filter-implied imp xs)
+  (eprintf "items: ~a~n" xs)
+  (define implied (make-vector (sequence-length xs) #f))
+  (define (non-implied-xs)
+    (for/list ([x xs] [imp implied] #:when (not imp)) x))
+  (for ([(x i) (in-indexed xs)])
+    (vector-set! implied i #t)
+    (if (not (imp x (non-implied-xs)))
+      (vector-set! implied i #f)
+      (eprintf "discard redundant item ~a: ~a~n" i x)))
+  (non-implied-xs))
+
+(define (simple-solver)
+  (define solver (z3))
+  (lambda args
+    (match args
+      [`(assert ,@cs) (solver-assert solver (flatten cs))]
+      [`(check) (solver-check solver)]
+      [`(check ,@cs)
+        (solver-push solver)
+        (solver-assert solver (flatten cs))
+        (begin0
+          (solver-check solver)
+          (solver-pop solver))]
+      )))
+
+; Remove clauses from (feature-model-constraint fm) that are implied by the
+; rest of the model.  Returns an updated feature model.
+(define (fast-simplify-constraint concrete-fm)
+  (define solver (simple-solver))
+  (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
+
+  (match-define (feature-model fs gs ds c) concrete-fm)
+  (define concrete-fm-unconstrained (feature-model fs gs ds #t))
+
+  (solver 'assert (eval-feature-model concrete-fm-unconstrained symbolic-config))
+
+  (define (check-imp c cs)
+    (unsat?
+      (solver 'check
+        (eval-constraint (cons '&& cs) symbolic-config)
+        (eval-constraint `(! ,c) symbolic-config))))
+
+  (define kept (filter-implied check-imp (constraint-clauses c)))
+  (struct-copy feature-model concrete-fm
+    [constraint (cons '&& kept)]))
+
+; Remove dependencies from concrete-fm that are implied by the rest of the
+; model.  Returns an updated feature model.
+(define (fast-simplify-dependencies concrete-fm)
+  (define solver (simple-solver))
+  (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
+
+  (match-define (feature-model fs gs ds c) concrete-fm)
+  (define concrete-fm-unconstrained (feature-model fs gs #() c))
+
+  (solver 'assert (eval-feature-model concrete-fm-unconstrained symbolic-config))
+
+  (define (eval-dep d)
+    (eval-dependency concrete-fm-unconstrained d symbolic-config))
+  (define (check-imp d ds)
+    (unsat?
+      (solver 'check
+        (! (eval-dep d))
+        (map eval-dep ds))))
+
+  (define kept (filter-implied check-imp ds))
+  (struct-copy feature-model concrete-fm
+    [dependencies (list->vector kept)]))
+
+(define (accumulator)
+  (define xs '())
+  (match-lambda*
+    [`(add ,x) (set! xs (cons x xs))]
+    [`(get) xs]
+    ))
+
+(define (make-worker2 symbolic-fm concrete-fm [test-acc #f])
+  (define synth (oracle-guided-synthesis+ symbolic-fm))
+  (when (not test-acc) (set! test-acc (accumulator)))
+
+  (for ([t (test-acc 'get)])
+    (synth 'test t))
+
   (define expr #t)
-  (define tests
-    (for/list ([(inp out meta) (test-parts tests-raw)])
-      (cons inp out)))
 
-  (define (find-equiv symbolic-fm expr)
-    (define synth (oracle-guided-synthesis+ symbolic-fm))
-    (for ([t tests]) (synth 'test t))
+  (define (find-equiv expr)
     (let loop ()
       (match (synth 'synthesize-with expr)
         [(? feature-model? fm) fm]
         [(? vector? new-inp)
          (define t (cons new-inp (eval-feature-model concrete-fm new-inp)))
          (synth 'test t)
-         (set! tests (cons t tests))
+         (test-acc 'add t)
          (loop)]
         [#f #f])))
 
   (match-lambda*
-    [`(get-symbolic-fm) symbolic-fm]
-    [`(set-symbolic-fm ,fm) (set! symbolic-fm fm)]
-    ; Return a feature model or #f, indicating whether or not `fm` captures a
-    ; feature model equivalent to `concrete-fm`.
-    [`(check-symbolic-fm ,fm)
-      (find-equiv fm expr)]
-    ; `check-symbolic-fm`, then `set-symbolic-fm` if it succeeds.
-    [`(try-symbolic-fm ,fm)
-      (define ok (find-equiv fm expr))
-      (when ok (set! symbolic-fm fm))
-      ok]
-
     [`(get-expr) expr]
     [`(add-clause ,e) (set! expr (&& expr e))]
     ; Check whether the current feature model and expr, plus additional
     ; constraint `e`, captures a feature model equivalent to `concrete-fm`.
     [`(check-clause ,e)
-      (find-equiv symbolic-fm (&& expr e))]
+      (find-equiv (&& expr e))]
     ; `check-symbolic-fm`, then `set-symbolic-fm` if it succeeds.
     [`(try-clause ,e)
       (define new-expr (&& expr e))
-      (define ok (find-equiv symbolic-fm new-expr))
+      (define ok (find-equiv new-expr))
       (when ok (set! expr new-expr))
       ok]
 
-    [`(check ,fm ,e)
-      (find-equiv fm e)]
-    [`(try ,fm ,e)
-      (define new-expr (&& expr e))
-      (define ok (find-equiv fm new-expr))
-      (when ok
-        (set! symbolic-fm fm)
-        (set! expr new-expr))
-      ok]
-
-    [`(get-concrete-fm) concrete-fm]
-    [`(get-new-concrete-fm)
-      (find-equiv symbolic-fm expr)]
+    [`(synthesize) (find-equiv expr)]
     ))
 
+; Remove clauses from `(feature-model-constraint symbolic-fm)` that can be
+; replicated using other, non-constraint parts of the model.
+(define (simplify-constraint symbolic-fm concrete-fm test-acc)
+  (define (check-imp c cs)
+    (define symbolic-fm*
+      (struct-copy feature-model symbolic-fm [constraint (cons '&& cs)]))
+    (define synth (make-worker2 symbolic-fm* concrete-fm test-acc))
+    (synth 'synthesize))
 
-; Given a symbolic feature model and a concrete instantiation, synthesize an
-; equivalent concrete model from increasingly restricted variants of the
-; symbolc model.  Essentially, we start from the given concrete feature model,
-; then try to synthesize an equivalent model with one less constraint, one less
-; dependency, etc.
-;
-; Simplification is another oracle-guided synthesis process, using the previous
-; concrete model as the oracle.  We use the provided `tests` to initialize the
-; synthesis procedure, so it doesn't need to start from scratch.
-(define (simplify-feature-model symbolic-fm concrete-fm tests)
-  (define worker (make-worker symbolic-fm concrete-fm tests))
+  (define c (feature-model-constraint symbolic-fm))
+  (define kept (filter-implied check-imp (constraint-clauses c)))
+  (struct-copy feature-model symbolic-fm
+    [constraint (cons '&& kept)]))
 
-  (eprintf "identifying forced features...~n")
-  (force-features worker)
-  (eprintf "simplifying constraints...~n")
-  (simplify-constraint worker)
-  (eprintf "removing dependencies...~n")
-  (remove-deps worker)
-  (eprintf "flattening tree...~n")
-  (raise-features worker)
-  (eprintf "removing groups...~n")
-  (remove-groups worker)
+; Remove dependencies from symbolic-fm that can be replicated using other parts
+; of the model.
+(define (simplify-dependencies symbolic-fm concrete-fm test-acc)
+  (define (check-imp d ds)
+    (define symbolic-fm*
+      (struct-copy feature-model symbolic-fm [dependencies (list->vector ds)]))
+    (define synth (make-worker2 symbolic-fm* concrete-fm test-acc))
+    (synth 'synthesize))
 
-  (worker 'get-new-concrete-fm))
+  (define ds (feature-model-dependencies symbolic-fm))
+  (define kept (filter-implied check-imp ds))
+  (struct-copy feature-model symbolic-fm
+    [dependencies (list->vector kept)]))
 
+; Remove groups from symbolic-fm that can be replicated using other parts of
+; the model.
+(define (simplify-groups symbolic-fm concrete-fm test-acc)
+  (define (check-imp g gs)
+    (define symbolic-fm*
+      (struct-copy feature-model symbolic-fm [groups (list->vector gs)]))
+    (define synth (make-worker2 symbolic-fm* concrete-fm test-acc))
+    (synth 'synthesize))
 
-; Set as many `feature-force-on`/`off` flags as possible.
-(define (force-features worker)
-  (define synth (oracle-guided-synthesis+ (worker 'get-concrete-fm)))
-
-  (for ([(f i) (in-indexed (feature-model-features (worker 'get-symbolic-fm)))])
-    (when (synth 'prove-fixed i #t)
-      (eprintf "simplify: proved feature ~a is always on~n" i)
-      (worker 'add-clause (feature-force-on f)))
-    (when (synth 'prove-fixed i #f)
-      (eprintf "simplify: proved feature ~a is always off~n" i)
-      (worker 'add-clause (feature-force-off f)))
-  ))
-
-; Try removing each clause of `symbolic-fm`'s explicit constraint.  The result
-; is a new symbolic feature model that captures at least one concrete feature
-; model equivalent to `concrete-fm`.
-(define (simplify-constraint worker)
-  (match-define (feature-model fs gs ds c) (worker 'get-symbolic-fm))
-  (define clauses (constraint-clauses c))
-  (define removed-clauses (make-vector (length clauses) #f))
-  (define (new-constraint)
-    (cons '&&
-      (for/list ([c clauses] [rem removed-clauses] #:when (not rem)) c)))
-  (define (new-symbolic-fm) (feature-model fs gs ds (new-constraint)))
-
-  (define (suggested-constraint c)
-    (match c
-      [(? integer? i) (feature-force-on (vector-ref fs i))]
-      [`(! ,(? integer? i)) (feature-force-off (vector-ref fs i))]
-      [else #t]
-      ))
-
-  (for ([(c i) (in-indexed clauses)])
-    (vector-set! removed-clauses i #t)
-    (if (worker 'try (new-symbolic-fm) (suggested-constraint c))
-      (eprintf "simplify: removed clause ~a~n" i)
-      (vector-set! removed-clauses i #f)))
-
-  ; Last successful `try-symbolic-fm` is kept in `worker` automatically.
-  )
-
-(define (remove-deps worker)
-  (match-define (feature-model fs gs ds c) (worker 'get-symbolic-fm))
-  (define (new-symbolic-fm n)
-    (feature-model fs gs (vector-take ds n) c))
-
-  (let loop ([n (- (vector-length ds) 1)])
-    (eprintf "trying with ~a explicit deps~n" n)
-    (define ok (worker 'try-symbolic-fm (new-symbolic-fm n)))
-    (when (and ok (> n 0))
-      (loop (- n 1)))))
-
-(define (raise-features worker)
-  (define symbolic-fs (feature-model-features (worker 'get-symbolic-fm)))
-  (define concrete-depth
-    (for/vector ([f (feature-model-features (worker 'get-new-concrete-fm))])
-      (feature-depth f)))
-
-  (for ([(f i) (in-indexed symbolic-fs)] [d concrete-depth])
-    (let loop ([d d])
-      (when (> d 0)
-        (eprintf "trying with feature ~a at depth < ~a~n" i d)
-        (define fm (worker 'check-clause (< (feature-depth f) d)))
-        (if fm
-          (loop (feature-depth (feature-model-feature fm i)))
-          (worker 'add-clause (<= (feature-depth f) d)))))
-  ))
-
-(define (remove-groups worker)
-  (match-define (feature-model fs gs ds c) (worker 'get-symbolic-fm))
-  (define (new-symbolic-fm n)
-    (feature-model fs (vector-take gs n) ds c))
-
-  (let loop ([n (- (vector-length gs) 1)])
-    (eprintf "trying with ~a groups~n" n)
-    (define ok (worker 'try-symbolic-fm (new-symbolic-fm n)))
-    (when (and ok (> n 0))
-      (loop (- n 1)))))
-
-; Return a vector of booleans of size `(length cs)`, where each position is
-; `#t` if the corresponding clause in `cs` is implied by the non-`#t` clauses.
-(define (find-implied-clauses concrete-fm)
-  (define solver (z3))
-  (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
-
-  (match-define (feature-model fs gs ds c) concrete-fm)
-  (define concrete-fm-unconstrained (feature-model fs gs ds #t))
-  (define cs (constraint-clauses c))
-  (eprintf "clauses: ~a~n" cs)
-
-  (solver-assert
-    solver
-    (list (eval-feature-model concrete-fm-unconstrained symbolic-config)))
-
-  (define implied (make-vector (length cs) #f))
-  (define (non-implied-clauses)
-    (for/list ([c cs] [imp implied] #:when (not imp)) c))
-  (define (model-implies-clause c)
-    (solver-push solver)
-    (solver-assert solver
-      (list
-        (eval-constraint (cons '&& (non-implied-clauses)) symbolic-config)
-        (eval-constraint `(! ,c) symbolic-config)))
-    (begin0
-      (unsat? (solver-check solver))
-      (solver-pop solver)))
-
-  (for ([(c i) (in-indexed cs)])
-    (vector-set! implied i #t)
-    (if (not (model-implies-clause c))
-      (vector-set! implied i #f)
-      (eprintf "disproved clause ~a: ~a~n" i c)))
-
-  implied)
-
-; Fast pass for removing unneeded constraints.  This requires `concrete-fm` to
-; be an instantiation of exactly `symbolic-fm`.
-(define (fast-simplify-constraint symbolic-fm concrete-fm)
-  (define implied (find-implied-clauses concrete-fm))
-  (define (filter-constraint fm)
-    (match-define (feature-model fs gs ds c) fm)
-    (define reduced-c
-      (cons '&&
-        (for/list ([(c i) (in-indexed (constraint-clauses c))]
-                   [imp implied]
-                   #:when (not imp)) c)))
-    (feature-model fs gs ds reduced-c))
-  (values
-    (filter-constraint symbolic-fm)
-    (filter-constraint concrete-fm)))
+  (define gs (feature-model-groups symbolic-fm))
+  (define kept (filter-implied check-imp gs))
+  (struct-copy feature-model symbolic-fm
+    [groups (list->vector kept)]))
 
 
 ; Find an instance of `symbolic-fm` that is equivalent to `concrete-fm`, using
@@ -246,3 +187,78 @@
        (synth 'test (cons new-inp (eval-feature-model concrete-fm new-inp)))
        (loop)]
       [#f #f])))
+
+; Identify forced-on/forced-off features, and set the appropriate
+; force-on/force-off flags in the feature model.
+(define (force-fixed-features concrete-fm)
+  (define conc-synth (oracle-guided-synthesis+ concrete-fm))
+
+  (define features
+    (for/vector ([(f i) (in-indexed (feature-model-features concrete-fm))])
+      (cond
+        [(conc-synth 'prove-fixed i #t)
+         (struct-copy feature f [force-on #t])]
+        [(conc-synth 'prove-fixed i #f)
+         (struct-copy feature f [force-off #t])]
+        [else f])))
+
+  (struct-copy feature-model concrete-fm [features features]))
+
+; Copy force-on/force-off flags from `fm1` to `fm2`.  Also sets parent and
+; group IDs to -1 for features that have either flag set.
+(define (copy-force-flags fm1 fm2)
+  (define (copy f1 f2)
+    (define on (feature-force-on f1))
+    (define off (feature-force-off f1))
+    (if (or on off)
+      (struct-copy feature f2
+        [force-on on] [force-off off]
+        [parent-id -1] [group-id -1])
+      (struct-copy feature f2 [force-on on] [force-off off])))
+  (define new-features
+    (for/vector ([f1 (feature-model-features fm1)]
+                 [f2 (feature-model-features fm2)])
+      (copy f1 f2)))
+  (struct-copy feature-model fm2 [features new-features]))
+
+(define (simplify concrete-fm)
+  (define orig-concrete-fm concrete-fm)
+
+
+  ; Concrete-only simplification.  These are fast to compute, and make life
+  ; easier for the solver once we get into the symbolic cases.
+
+  ; Set force-on/force-off for any features detected to be unconfigurable.
+  (set! concrete-fm (force-fixed-features concrete-fm))
+
+  ; Remove any clauses or dependencies that are obviously redundant.
+  (set! concrete-fm (fast-simplify-constraint concrete-fm))
+  (set! concrete-fm (fast-simplify-dependencies concrete-fm))
+
+
+  (define symbolic-fm (feature-model->symbolic concrete-fm))
+  ; Tset accumulator.  This lets us share test results across multiple
+  ; `make-worker` calls.
+  (define test-acc (accumulator))
+
+  ; Add some extra groups and dependencies for the solver to work with.
+  (set! symbolic-fm 
+    (struct-copy feature-model symbolic-fm
+      [dependencies (vector-append (feature-model-dependencies symbolic-fm)
+                                   (build-vector 2 (lambda (_) (?*dependency))))]
+      [groups (vector-append (feature-model-groups symbolic-fm)
+                             (build-vector 2 (lambda (_) (?*group))))]
+      ))
+
+  ; Make force-on/force-off concrete.
+  (set! symbolic-fm (copy-force-flags concrete-fm symbolic-fm))
+
+  ; Remove unnecessary constraints, dependencies, and groups from symbolic-fm.
+  ; Order matters: removing a constraint may add a new group or dependency, if
+  ; one is available.
+  (set! symbolic-fm (simplify-constraint symbolic-fm orig-concrete-fm test-acc))
+  (set! symbolic-fm (simplify-dependencies symbolic-fm orig-concrete-fm test-acc))
+  (set! symbolic-fm (simplify-groups symbolic-fm orig-concrete-fm test-acc))
+
+
+  ((make-worker2 symbolic-fm orig-concrete-fm test-acc) 'synthesize))

@@ -2,6 +2,7 @@
 
 (provide
   eval-feature-model
+  eval-dependency
   eval-constraint
   constraint-clauses
 

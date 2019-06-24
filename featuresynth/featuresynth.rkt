@@ -12,7 +12,6 @@
 (require "config.rkt")
 (require "build.rkt")
 (require "unsatcore.rkt")
-(require "simplify.rkt")
 (require "fmjson.rkt")
 (require "ftree.rkt")
 (current-bitwidth #f)
@@ -190,47 +189,10 @@
   (for ([t resume-tests])
     (displayln (test-features t))))
 
-(define (do-simplify path)
-  (define j (call-with-input-file* path read-json))
-  (define-values (fm0 names0) (fmjson->feature-model j))
-
-  ; Reorder the loaded feature model so its features line up with those in the
-  ; symbolic fm.
-  (define fm0-idx
-    (for/hash ([k (name-list-order names0)])
-      (match k
-        [`(feature ,i)
-          (values
-            (name-str (vector-ref (name-list-features names0) i))
-            i)]
-        [`(group ,j)
-          (values
-            (name-str (vector-ref (name-list-groups names0) j))
-            (group-parent-id (feature-model-group fm0 j)))]
-        )))
-  (define feature-perm
-    (for/hash ([(name j) (in-indexed (name-list-features names0))])
-      (values (hash-ref fm0-idx (name-str name)) j)))
-  (define fm (feature-model-permute-features feature-perm fm0))
-  (define names (struct-copy name-list names0 [features feature-names]))
-
-  (define fm2
-    (simplify-feature-model
-      (make-symbolic-fm)
-      fm
-      resume-tests))
-
-  ; TODO - would be nice to preserve group names, but it's tricky because
-  ; groups may be removed or modified during simplification.
-  (define names2 (struct-copy name-list names [groups #f]))
-  (define j2 (feature-model->fmjson names2 fm2))
-  (write-json j2))
-
 
 (match subcommand
   ['() (do-synthesize)]
   ['("synthesize") (do-synthesize)]
   ['("unsat-core") (do-unsat-core)]
   ['("render-tests") (do-render-tests)]
-  [`("simplify" ,path) (do-simplify path)]
   )
