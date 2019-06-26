@@ -15,7 +15,6 @@
 )
 
 (require racket/random)
-(require rosette/solver/smt/z3)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
@@ -109,7 +108,7 @@
                                   #:unsat-cores [unsat-cores #f])
   (define opts
     (if unsat-cores (hash ':produce-unsat-cores 'true) (hash)))
-  (define solver (z3 #:options opts))
+  (define solver (z3-named* #:options opts))
   (define symbolic-config (?*config (feature-model-num-features symbolic-fm)))
   (define tests '())
 
@@ -316,7 +315,7 @@
     t))
 
 (define (minimize-tests symbolic-fm concrete-fm tests)
-  (minimize-tests* tests (check-unique (z3) symbolic-fm concrete-fm tests)))
+  (minimize-tests* tests (check-unique (z3-named*) symbolic-fm concrete-fm tests)))
 
 (define (minimize-counterexample symbolic-fm tests)
-  (minimize-tests* tests (check-unsynthesizable (z3) symbolic-fm tests)))
+  (minimize-tests* tests (check-unsynthesizable (z3-named*) symbolic-fm tests)))

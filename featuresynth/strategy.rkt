@@ -26,6 +26,7 @@
 
 
 (define (strategy-bitflip chan)
+  (thread-name "bitflip")
   (printf "strategy-bitflip running~n")
   (place-channel-put chan `(property reactive #t))
   (for ([msg (in-place-channel chan)])
@@ -41,6 +42,7 @@
       )))
 
 (define (strategy-distinguish symbolic-fm chan)
+  (thread-name "distinguish")
   (printf "strategy-distinguish running~n")
   (define started #f)
   (define failed (fail-flag chan))
@@ -74,6 +76,7 @@
          (failed 'set)]))))
 
 (define (strategy-disprove symbolic-fm chan)
+  (thread-name "disprove")
   (printf "strategy-disprove running~n")
   (define started #f)
   (define failed (fail-flag chan))
@@ -114,6 +117,7 @@
 ; `claim-fixed` claims hasn't decreased in a while (controlled by `threshold`),
 ; we assume the remaining claims are all true, and assert them for all threads.
 (define (strategy-boredom threshold symbolic-fm chan)
+  (thread-name "boredom")
   (printf "strategy-boredom running~n")
   (place-channel-put chan `(property reactive #t))
   (place-channel-put chan `(property has-recovery #t))
@@ -181,6 +185,7 @@
 ; the same feature shows up enough times as the sole reason for failure, then
 ; we assert its `claim-fixed`.
 (define (strategy-reason threshold symbolic-fm chan)
+  (thread-name "reason")
   (printf "strategy-reason running~n")
   (place-channel-put chan `(property reactive #t))
   (define cset (make-claim-set (all-claims symbolic-fm)
@@ -219,6 +224,7 @@
 ; forced off by a constraint can appear anywhere in the feature model, whereas
 ; a feature with `feature-force-off` set must appear at top level.
 (define (strategy-find-fixed start-tests step-tests symbolic-fm chan)
+  (thread-name "find-fixed")
   (printf "strategy-find-fixed running~n")
   (define started #f)
   (define synth (oracle-guided-synthesis+ symbolic-fm))

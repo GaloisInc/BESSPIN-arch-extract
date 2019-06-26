@@ -19,6 +19,7 @@
 
 (define (run-manager strategy-specs oracle-spec oracle-args init-inputs init-tests
                      [test-record-port #f])
+  (thread-name "manager")
   (define strategy-chans
     (for/vector ([strat strategy-specs])
       (unless (place-message-allowed? strat) (raise "bad strategy"))

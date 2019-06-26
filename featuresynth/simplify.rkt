@@ -5,7 +5,6 @@
   )
 
 (require racket/random)
-(require rosette/solver/smt/z3)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
@@ -29,7 +28,7 @@
   (non-implied-xs))
 
 (define (simple-solver)
-  (define solver (z3))
+  (define solver (z3-named*))
   (lambda args
     (match args
       [`(assert ,@cs) (solver-assert solver (flatten cs))]

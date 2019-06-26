@@ -29,6 +29,7 @@
     (place-channel-put chan `(,inp ,out ,meta))))
 
 (define (oracle-command cmd feature-names constraint args chan)
+  (thread-name "oracle")
   (define exp-cmd (expand-command cmd args))
   (for ([msg (in-place-channel chan)])
     (match-define `(,inp ,meta) msg)
@@ -43,6 +44,7 @@
     (place-channel-put chan `(,inp ,out ,new-meta))))
 
 (define (oracle-multi-cached num-threads cache-file oracle-spec args chan)
+  (thread-name "oracle-multi")
   (define cache
     (make-hash
       (if (and cache-file (file-exists? cache-file))
@@ -118,9 +120,9 @@
 (define (run-oracle spec args chan)
   (match spec
     [`(eval-fm ,fm)
-     (oracle-eval-fm (vector->feature-model fm) chan)]
+      (oracle-eval-fm (vector->feature-model fm) chan)]
     [`(command ,cmd ,feature-names ,constraint)
-     (oracle-command cmd feature-names constraint args chan)]
+      (oracle-command cmd feature-names constraint args chan)]
     [`(multi-cached ,num-threads ,cache-file ,oracle-spec)
       (oracle-multi-cached num-threads cache-file oracle-spec args chan)]
     ))
