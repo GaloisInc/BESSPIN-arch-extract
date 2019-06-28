@@ -186,7 +186,10 @@
     (vector-ref feature-names i)))
 
 (define (do-render-tests)
-  (for ([t resume-tests])
+  (define tests
+    (call-with-default-reading-parameterization
+      (lambda () (read-many-from-port (current-input-port)))))
+  (for ([t tests])
     (displayln (test-features t))))
 
 
