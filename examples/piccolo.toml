@@ -83,5 +83,25 @@ hard-constraints = [
     "(! SV39)",
     "(! Sv32)",
 
+    # When running on Piccolo c47d309, we got the following unsat core:
+    #
+    # Relevant features:
+    #   ISA_A
+    #   ISA_M
+    #   ISA_PRIV_S
+    #   MULT_SERIAL
+    #
+    # No valid feature model exists for the combination of the following tests:
+    #   ok:  (ISA_PRIV_S)
+    #   ok:  (ISA_A ISA_M)
+    #   ok:  (ISA_A)
+    #   bad: (ISA_M ISA_PRIV_S)
+    #   ok:  (ISA_M MULT_SERIAL)
+    #   ok:  (ISA_A ISA_M ISA_PRIV_S MULT_SERIAL)
+    #
+    # The current oracle erroneously accepts configurations with ISA_M but
+    # neithen of the MULT implementations enabled.  This constraint rules out
+    # those configs (and in particular, the "bad" config in the unsat core):
+    "(=> ISA_M (|| MULT_SERIAL MULT_SYNTH))",
 ]
 
