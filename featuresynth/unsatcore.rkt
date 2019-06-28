@@ -19,7 +19,7 @@
 
 ; Given a list of inputs `inp`, find a 1-minimal sublist that still satisfies
 ; `check`.
-(define (delta-minimize inp check)
+(define (delta-minimize inp check [init-chunk-size #f])
   ; Divide `inp` into chunks of size `chunk-size`, and try deleting each one.
   ; Returns a sublist of `inp` that passes `check`.
   (define (go chunk-size inp)
@@ -35,7 +35,9 @@
         (vector-set! active i #t)))
     (build-input))
 
-  (let loop ([chunk-size (quotient (add1 (length inp)) 2)] [inp inp])
+  (define chunk-size
+    (or init-chunk-size (quotient (add1 (length inp)) 2)))
+  (let loop ([chunk-size chunk-size] [inp inp])
     (let
       ([inp* (go chunk-size inp)])
       (if (> chunk-size 1)

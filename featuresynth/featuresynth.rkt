@@ -179,6 +179,34 @@
 (define (do-unsat-core)
   (output-unsat (apply ?*feature-model symbolic-fm-args) resume-tests))
 
+; TODO handle tests in sections:
+; - non-bitflip positive tests
+; - positive tests that disprove claims
+; - negative tests with single failure reasons
+; - other negative tests, from delta-minimize
+; This will produce a set of tests sufficient to trigger the reason-threshold
+; for unconfigurable features.
+(define (do-minimize-tests path)
+  (define tests
+    (call-with-default-reading-parameterization
+      (lambda () (read-many-from-file path))))
+  (define symbolic-fm (apply ?*feature-model symbolic-fm-args))
+  (define (check ts)
+    (define synth (oracle-guided-synthesis+ symbolic-fm))
+    (for ([(inp out meta) (test-parts ts)])
+      (synth 'test (cons inp out)))
+    (define result (synth 'synthesize))
+    (eprintf "  result = ~a~n" result)
+    (feature-model? result))
+  (when (not (check tests))
+    (eprintf "error: provided tests are not sufficient to synthesize a feature model~n")
+    (eprintf "  (under the current configuration)~n")
+    (exit 1))
+  (define min-tests
+    (delta-minimize (shuffle tests) check))
+  (for ([t min-tests]) (writeln t))
+  )
+
 ; Get the names of all features enabled in the input for test `t`.
 (define (test-features t [vs #f])
   (match-define `(,inp ,out ,meta) t)
@@ -197,5 +225,6 @@
   ['() (do-synthesize)]
   ['("synthesize") (do-synthesize)]
   ['("unsat-core") (do-unsat-core)]
+  [`("minimize-tests" ,path) (do-minimize-tests path)]
   ['("render-tests") (do-render-tests)]
   )
