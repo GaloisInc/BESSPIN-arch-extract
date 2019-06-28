@@ -71,7 +71,15 @@
 
 ; Claims
 
-; A "claim" is a property that might be true of a feature model.
+; A "claim" is a property that might be true of all configurations satisfying a
+; particular feature model.  A claim can be disproved by observing a passing
+; test whose configuration violates the claim.
+
+; It's important that the set of claims be complete: every possible reason for
+; a test failure should be expressible as a violation of a a claim.  This lets
+; us prove claims by process of elimination: if a test fails, and only violates
+; one claim, then that claim must be true - otherwise the test would have
+; passed.
 
 ; Feature `a` always has value `val`.
 (struct claim-fixed (a val) #:transparent)
@@ -81,13 +89,29 @@
 ; Feature `a` depends on the absence of feature `b`, either through an explicit
 ; antidependency or membership in a common xor group.
 (struct claim-antidep (a b) #:transparent)
-; Feature `a` depends on at least one of its children being enabled.  In other
-; words, `a` contains an `or` or `xor` group.
+; Feature `a` depends on a particular subset of its children being enabled.
+; This is used to capture the "at least one" aspect of `or` and `xor` groups.
 ;
-; This one's a bit tricky to define and evaluate, since the actual children of
-; `a` are not known until synthesis is complete.  So we overapproximate: this
-; claim means that `a` depends on some `b` for which `(claim-dep b a)` has not
-; been disproven.
+; The specific meaning of `(claim-needs-child a)` is: there exist some nonempty
+; subsets `S1...Sn` of the children of `a` such that, for all valid
+; configurations where `a` is enabled, there exists an `i` such that all
+; features in `Si` are enabled.
+;
+; From this, we can derive a properties important for (somewhat) efficient
+; evaluation: if a valid configuration has `a` and subset `S` of `a`'s children
+; enabled, and a candidate configuration has `a` and a superset of `S` enabled,
+; then `(claim-needs-child a)` holds on the candidate configuration.  The
+; converse, proving that `(claim-needs-child a)` does not hold, is trickier,
+; since we can only look at invalid configurations where the
+; `claim-needs-child` was the only reason for failure.  The other, simpler way
+; of disproving `(claim-needs-child a)` are to find a valid configuration where
+; `a` is enabled and none of its children are, and to discover that `a` in fact
+; has no children.
+;
+; Another aspect that makes this claim difficult to evaluate is that we don't
+; discover the precise child set of `a` until synthesis is finished.  So we
+; overapproximate: for evaluation purposes, a "child" is any `b` for which
+; `(claim-dep a b)` has not been disproved.
 (struct claim-needs-child (a) #:transparent)
 
 
@@ -222,7 +246,9 @@
   (for/list ([i (in-range (feature-model-num-features fm))]
              #:when #t
              [j (in-range (feature-model-num-features fm))]
-             #:when (not (= i j)))
+             ; No sense generating both `(antidep a b)` and `(antidep b a)` -
+             ; the meaning of the claim is `(not (and a b))`.
+             #:when (< i j))
     (claim-antidep i j)))
 
 (define (all-claims-needs-child fm)

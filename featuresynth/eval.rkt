@@ -75,26 +75,28 @@
 (struct claim-set (
   ; Set of claims that are not yet disproved
   claims
-  ; Lookup table for potential children of a feature.  For each
-  ; `(claim-needs-child a)` in `claims`, `child-map` has an entry for `a`,
-  ; containing the set of all `b`s for which there is a `(claim-dep b a)` in
-  ; `claims`.  This is used for efficient evaluation of `claim-needs-child`
+  ; Cache of potential children of a feature.  For each parent feature `a`, we
+  ; keep a list of potential child features `b` for which `(claim-dep b a)` is
+  ; in `claims`.  This is used for efficient evaluation of `claim-needs-child`
   ; claims.
+  ;
+  ; A feature `a` is a key in this map only when `(claim-needs-child a)` is
+  ; present in `claims`.
   child-map
-  ; List of observed passing tests.  `test-child-counts` indexes into this
-  ; vector.
-  [passing-tests #:mutable]
-  ; Hash that maps features with `claim-needs-child` to lists of passing tests
-  ; where that feature is enabled.  When a `claim-dep` is disproved (so the set
-  ; of potential children shrinks), we re-scan the previous tests to check if
-  ; the `claim-needs-child` has been disproved.
-  needs-child-tests
-  ; A BDD that maps each known passing test to `#t`, and all other tests to
-  ; `#f`.
-  [passing-bdd #:mutable]
+  ; Hash mapping parent features to sets of bit masks.  Each mask represents a
+  ; valid subset of the feature's children.  For example, if `#b101` is in the
+  ; set, it means that (1) features 0 and 2 are children of the parent feature
+  ; and (2) we have seen a passing test where the parent is enabled and the
+  ; only enabled children were 0 and 2.
+  ;
+  ; If 0 ever appears as a bit mask, it means the parent was enabled but no
+  ; children were, and thus the `claim-needs-child` is disproved.  The
+  ; operations that manipulate mask sets check for this and call
+  ; `claim-set-remove-parent!` when appropriate.
+  valid-child-masks
 ) #:transparent)
 
-(define (make-claim-set claims num-features)
+(define (make-claim-set claims)
   (define cs (for/mutable-set ([c claims]) c))
 
   (define child-map (make-hash))
@@ -105,16 +107,14 @@
     (when-let ([children (hash-ref child-map parent #f)])
       (set-add! children child)))
 
-  (define needs-child-tests (make-hash))
+  (define valid-child-masks (make-hash))
   (for ([parent (in-hash-keys child-map)])
-    (hash-set! needs-child-tests parent '()))
+    (hash-set! valid-child-masks parent (set)))
 
   (claim-set
     cs
     child-map
-    '()
-    needs-child-tests
-    (init-bdd num-features)
+    valid-child-masks
     ))
 
 (define (claim-set-count cset)
@@ -123,35 +123,101 @@
 (define (claim-set-member? cset c)
   (set-member? (claim-set-claims cset) c))
 
-(define (update-claim-set-passing-tests! cset upd)
-  (set-claim-set-passing-tests! cset (upd (claim-set-passing-tests cset))))
+; Update caches, based on the newly discovered fact that `child` is not a child
+; of `parent`.
+(define (claim-set-remove-child! cset parent child)
+  (when-let ([children (hash-ref (claim-set-child-map cset) parent #f)])
+    (set-remove! children child))
+  (claim-set-update-valid-child-masks! cset parent (mask-set-clear-bit child))
+  )
 
-(define (update-claim-set-passing-bdd! cset upd)
-  (set-claim-set-passing-bdd! cset (upd (claim-set-passing-bdd cset))))
+(define (claim-set-remove-parent! cset parent)
+  (set-remove! (claim-set-claims cset) (claim-needs-child parent))
+  (hash-remove! (claim-set-child-map cset) parent)
+  (hash-remove! (claim-set-valid-child-masks cset) parent))
 
-; Remove each claim in `cs` from `cset`.  Returns a set of features for which
-; `claim-needs-child` need to be rechecked (because the set of children has
-; changed).
-(define (claim-set-remove-many! cset cs)
-  (match-define (claim-set claims child-map _ needs-child-tests _) cset)
-  (define recheck (mutable-set))
+; Apply `f` to compute new `valid-child-masks` for `parent`.
+;
+; If the new set of masks contains 0, then the `claim-needs-child` is
+; disproved, and this funciton calls `claim-set-remove-parent!`.
+(define (claim-set-update-valid-child-masks! cset parent f)
+  (when-let ([masks (hash-ref (claim-set-valid-child-masks cset) parent #f)])
+    (define new-masks (f masks))
+    (if (set-member? new-masks 0)
+      (claim-set-remove-parent! cset parent)
+      (hash-set! (claim-set-valid-child-masks cset) parent new-masks)
+    )))
 
-  (for ([c cs] #:when (set-member? claims c))
-    (set-remove! claims c)
+(define (mask-set-clear-bit b)
+  (define not-bit (bitwise-not (arithmetic-shift 1 b)))
+  (lambda (masks)
+    (for/set ([m masks]) (bitwise-and m not-bit))))
+
+(define (mask-set-has-subset? masks m)
+  (for/or ([m0 masks])
+    ; Is `m0` a subset of `m`?
+    (= m0 (bitwise-and m m0))))
+
+(define (mask-set-add m)
+  (lambda (masks)
+    (if (not (mask-set-has-subset? masks m))
+      (set-add masks m)
+      masks)))
+
+; Filter out claims for which `(f claim)` returns `#f`.
+;
+; When `claim-dep`s are filtered out, `child-map` and `valid-child-masks` are
+; updated, and it's possible for a `claim-needs-child` to be disproved.
+(define (claim-set-filter! cset f)
+  (define removed
+    (for/list ([c (claim-set-claims cset)] #:when (not (f c))) c))
+  (define recheck-parents (mutable-set))
+  ; All claims in `removed` are in `claims` as of the start of the loop, but
+  ; it's possible for `claim-set-remove-child!` -> `claim-set-remove-parent!`
+  ; to delete a claim during iteration.  This is why we need the `#:when`.
+  (for ([c removed] #:when (set-member? (claim-set-claims cset) c))
+    (set-remove! (claim-set-claims cset) c)
     (match c
       [(claim-dep child parent)
-       (when-let ([children (hash-ref child-map parent #f)])
-         (set-remove! children child)
-         ; Parent has fewer children, so an old test might now be able to
-         ; disprove `claim-needs-child parent`.
-         (set-add! recheck parent))]
+       (when-let ([children (hash-ref (claim-set-child-map cset) parent #f)])
+         (when (set-member? children child)
+           (claim-set-remove-child! cset parent child)))]
       [(claim-needs-child parent)
-       (hash-remove! child-map parent)
-       (hash-remove! needs-child-tests parent)]
+       (claim-set-remove-parent! cset parent)]
       [else (void)]
-    ))
+      )))
 
-  recheck)
+; Record a new passing test in `claim-set-valid-child-masks`.
+;
+; This can result in a `claim-needs-child` being disproved, if the new test
+; shows that the parent is enabled but no child is.
+(define (claim-set-add-passing-test! cset inp)
+  (for ([(parent children) (claim-set-child-map cset)]
+        #:when (vector-ref inp parent))
+    (define inp-mask (claim-set-child-mask cset parent inp))
+    (claim-set-update-valid-child-masks! cset parent (mask-set-add inp-mask)))
+  )
+
+(define (claim-set-update! cset inp)
+  (claim-set-filter! cset (lambda (c) (claim-set-eval-claim cset c inp)))
+  (claim-set-add-passing-test! cset inp)
+  )
+
+; Compute a bit mask showing the children of `parent` that are enabled in
+; `inp`.
+(define (claim-set-child-mask cset parent inp)
+  (for/fold ([mask 0]) ([child (hash-ref (claim-set-child-map cset) parent '())]
+                        #:when (vector-ref inp child))
+    (bitwise-ior mask (arithmetic-shift 1 child))))
+
+; Check if the set of children of `parent` that are enabled in `inp` is known
+; to be sufficient to satisfy `(claim-needs-child parent)`.  In other words,
+; has any subset of those children resulted in a passing test?
+(define (claim-set-valid-children-enabled? cset parent inp)
+  (define m (claim-set-child-mask cset parent inp))
+  (if-let ([masks (hash-ref (claim-set-valid-child-masks cset) parent)])
+    (mask-set-has-subset? masks m)
+    (raise (format "tried to check child validity, but ~a has no children~n" parent))))
 
 ; Evaluate `c` (which should be present in `cset`) on `cfg`.  Returns `#t` if
 ; the claim is possibly satisfied by `cfg`, and `#f` if it is definitely
@@ -179,18 +245,6 @@
     (for/list ([c (claim-set-claims cset)])
       (claim-set-eval-claim cset c cfg))))
 
-(define (bdd-has-sat? bdd nvars)
-  (> (robdd-sat-count bdd nvars) 0))
-
-(define (bdd-restrict-multi bdd ts fs)
-  (define bdd1
-    (for/fold ([bdd bdd]) ([i ts])
-      (robdd-restrict bdd i #t)))
-  (define bdd2
-    (for/fold ([bdd bdd1]) ([i fs])
-      (robdd-restrict bdd i #f)))
-  bdd2)
-
 ; Evaluate `c` (which should be present in `cset`) on `cfg`.  Returns `#t` if
 ; the claim is definitely satisfied by `cfg`, and `#f` if it is definitely
 ; unsatisfied, and `'unknown` otherwise.
@@ -205,85 +259,20 @@
        ; If `a` is disabled, we don't care about its children.
        [(not (vector-ref cfg a)) #t]
        ; If all children are disabled, definitely fail.
-       [(apply &&
-          (for/list ([child (hash-ref (claim-set-child-map cset) a '())])
-            (not (vector-ref cfg child))))
+       [(for/and ([child (hash-ref (claim-set-child-map cset) a)])
+          (not (vector-ref cfg child)))
         #f]
        ; If a previous passing test revealed that `a` needs only a subset of
        ; the currently enabled children, definitely pass.
-       [(bdd-has-sat?
-          (robdd-and
-            (claim-set-passing-bdd cset)
-            (make-filter-bdd
-              (list a)
-              (for/list ([child (hash-ref (claim-set-child-map cset) a '())]
-                         #:when (not (vector-ref cfg child))) child)
-              (vector-length cfg)))
-          (vector-length cfg))
-        #t]
+       [(claim-set-valid-children-enabled? cset a cfg) #t]
        [else 'unknown])]
     ; All other claims are evaluated precisely by ordinary `eval-claim`.
     [_ (claim-set-eval-claim cset c cfg)]
   ))
 
-(define (claim-set-recheck-needs-child cset claim)
-  (match-define (claim-needs-child parent) claim)
-  (for/and ([cfg (hash-ref (claim-set-needs-child-tests cset) parent)])
-    (claim-set-eval-claim cset claim cfg)))
-
-(define (init-bdd num-features)
-  (make-robdd
-    #f
-    (for/list ([i (in-range num-features)])
-      (string->symbol (format "f~a" i)))))
-
-(define (config->bdd cfg)
-  (make-robdd
-    (cons 'and
-      (for/list ([(v i) (in-indexed cfg)])
-        (define sym (string->symbol (format "f~a" i)))
-        (if v sym `(not ,sym))))
-    (for/list ([i (in-range (vector-length cfg))])
-      (string->symbol (format "f~a" i)))))
-
-(define (make-filter-bdd ts fs num-features)
-  (make-robdd
-    (cons 'and
-      (append
-        (for/list ([i ts]) (string->symbol (format "f~a" i)))
-        (for/list ([i fs]) `(not ,(string->symbol (format "f~a" i))))))
-    (for/list ([i (in-range num-features)])
-      (string->symbol (format "f~a" i)))))
-
+; TODO - deprecated - use `(when out (claim-set-update! cset inp))` instead
 (define (claim-set-update cset inp out)
-  (when out
-    (claim-set-filter! cset (lambda (c) (claim-set-eval-claim cset c inp)))
-
-    (define (add-inp ts) (cons inp ts))
-    (define (add-inp-bdd bdd) (robdd-or bdd (config->bdd inp)))
-    (update-claim-set-passing-tests! cset add-inp)
-    (update-claim-set-passing-bdd! cset add-inp-bdd)
-    (for ([parent (in-hash-keys (claim-set-child-map cset))]
-          #:when (vector-ref inp parent))
-      (hash-update! (claim-set-needs-child-tests cset) parent add-inp))
-    ))
-
-(define (claim-set-filter! cset f)
-  (define disproved1
-    (for/list ([c (claim-set-claims cset)] #:when (not (f c))) c))
-  (define recheck1 (claim-set-remove-many! cset disproved1))
-
-  (when (not (set-empty? recheck1))
-    (define disproved2
-      (for/list ([parent recheck1]
-                 #:when (hash-has-key? (claim-set-child-map cset) parent)
-                 [claim (in-value (claim-needs-child parent))]
-                 #:when (not (claim-set-recheck-needs-child cset claim)))
-        claim))
-    (define recheck2 (claim-set-remove-many! cset disproved2))
-
-    (when (not (set-empty? recheck2))
-      (raise "impossible: got rechecks when processing only needs-child claims?"))))
+  (when out (claim-set-update! cset inp)))
 
 (define (claim-uses i c)
   (match c

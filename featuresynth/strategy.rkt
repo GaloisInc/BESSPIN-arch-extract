@@ -81,8 +81,7 @@
   (define started #f)
   (define failed (fail-flag chan))
   (define synth (oracle-guided-synthesis+ symbolic-fm))
-  (define cset (make-claim-set (all-claims symbolic-fm)
-                               (feature-model-num-features symbolic-fm)))
+  (define cset (make-claim-set (all-claims symbolic-fm)))
   (printf "disprove: begin with ~a claims~n" (claim-set-count cset))
   (define num-claims (claim-set-count cset))
   (for ([msgs (in-place-channel-chunks chan)])
@@ -121,8 +120,7 @@
   (printf "strategy-boredom running~n")
   (place-channel-put chan `(property reactive #t))
   (place-channel-put chan `(property has-recovery #t))
-  (define cset (make-claim-set (all-fixed-claims symbolic-fm)
-                               (feature-model-num-features symbolic-fm)))
+  (define cset (make-claim-set (all-fixed-claims symbolic-fm)))
   (define prev-count (claim-set-count cset))
   (define counter threshold)
   (define done #f)
@@ -188,10 +186,8 @@
   (thread-name "reason")
   (printf "strategy-reason running~n")
   (place-channel-put chan `(property reactive #t))
-  (define cset (make-claim-set (all-claims symbolic-fm)
-                               (feature-model-num-features symbolic-fm)))
+  (define cset (make-claim-set (all-claims symbolic-fm)))
   (define counters (make-hash))
-  (define done #f)
 
   ; "Test failed because feature `i` had value `val`"
   (define (failed-because i val)
@@ -201,6 +197,11 @@
     (hash-set! counters i next)
     (when (>= next threshold)
       (printf "reason: BROADCAST: fix ~a as ~a~n" i (not val))
+      ; Note: removing features is actually a bit questionable and can result
+      ; in failed tests having zero violated claims, because the only claims
+      ; they violated are ones we removed.  It's okay for now because we never
+      ; actually count failure reasons - we only check if a bit-flipped input
+      ; would satisfy all remaining claims.
       (claim-set-remove-feature! cset i)
       (place-channel-put chan `(fix-feature ,i ,(not val)))))
 

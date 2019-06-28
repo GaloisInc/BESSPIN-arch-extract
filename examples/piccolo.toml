@@ -44,6 +44,7 @@ resume-tests-file = "examples/piccolo/resume-tests.rktd"
 max-groups = 3
 max-dependencies = 3
 out-file = "piccolo.fm.json"
+reason-threshold = 5
 
 hard-constraints = [
     "(! CSR_REGFILE_MIN)",
