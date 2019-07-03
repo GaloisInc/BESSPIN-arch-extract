@@ -35,6 +35,8 @@ import System.IO
 import System.IO.Temp
 import System.Process
 
+import Debug.FilterTrace
+
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Verilog.Raw (FileInfo(..))
 import qualified BESSPIN.ArchExtract.Config as Config
@@ -48,6 +50,8 @@ import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Eval as VPP
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer as VPP
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Parser as VPP
 
+
+TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "BSV"
 
 
 -- Fill in `bsvInternalAstDir` using either `bsvAstDir` or a temporary
@@ -365,15 +369,26 @@ annotateNodes m x = everywhere (mkT goStmts `extT` goExpr) x
 -- preprocessor flags that were used during the build.  Throws an exception if
 -- the build fails under the given configuration.
 checkConfig :: Config.BSV -> [Text] -> IO (Set Text)
-checkConfig cfg flags = do
-    let bscConfigFlags = concatMap (\f -> ["-D", f]) flags
+checkConfig cfg initFlags = do
+    let bscConfigFlags = concatMap (\f -> ["-D", f]) initFlags
     srcsUsed <- withTempAstDir cfg $ \cfg ->
         withCustomBscConfigFlags cfg bscConfigFlags $ \cfg -> runLoadM' $ do
             updateAstFiles cfg
             listSourcesUsedFromCache cfg
 
-    usedFlagSets <- forM srcsUsed $ \src -> do
-        evts <- VPP.readEvents src
-        return $ VPP.evalPpUsed (Set.fromList flags) evts
+    allSrcs <- listSources cfg
+    -- Map filename to full path.
+    -- TODO: handle include search paths properly.  For now, we just look for a
+    -- known file of the appropriate name, ignoring directories.
+    let srcMap = M.fromList [(takeFileName path, path) | path <- allSrcs]
+    evtMap <- mapM VPP.readEvents srcMap
+    let getInc path = fromMaybe [] $ M.lookup path evtMap
 
+    let usedFlagSets = map (\src ->
+            VPP.evalPpUsed initFlagSet getInc $
+            fromMaybe (error $ "impossible: " ++ show src ++
+                " is in srcsUsed but not in allSrcs?") $
+            M.lookup (takeFileName src) evtMap) srcsUsed
     return $ Set.unions usedFlagSets
+  where
+    initFlagSet = Set.fromList initFlags

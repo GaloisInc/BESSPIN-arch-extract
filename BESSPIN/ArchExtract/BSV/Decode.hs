@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings, ViewPatterns, PatternSynonyms,
    StandaloneDeriving #-}
-module BESSPIN.ArchExtract.BSV.Decode where
+module BESSPIN.ArchExtract.BSV.Decode
+( deserialize
+) where
 
 import Prelude hiding (span)
 import Control.Monad

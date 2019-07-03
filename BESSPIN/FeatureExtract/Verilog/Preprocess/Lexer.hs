@@ -57,7 +57,10 @@ strChar = choice
         ]
     ]
 
-strLit = (StrLit . fst) <$> match ("\"" >> strChar `manyTill` "\"")
+strLit = do
+    rawStr <- fst <$> match ("\"" >> strChar `manyTill` "\"")
+    -- TODO: process escape sequences
+    return $ StrLit $ T.drop 1 $ T.dropEnd 1 $ rawStr
 
 tickWord = "`" >> TickWord <$> takeWhile1 (inClass "a-zA-Z0-9_$")
 

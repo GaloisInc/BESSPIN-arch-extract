@@ -26,18 +26,20 @@ import BESSPIN.ArchExtract.Lens
 data S = S
     { sCurDefs :: Set Text
     , sUsed :: Set Text
+    , sIncluded :: Set Text
     }
 
 makeLenses' ''S
 
-evalPp :: Set Text -> [Event] -> S
-evalPp initDefs evts = execState (mapM_ go evts) (S initDefs Set.empty)
+evalPp :: Set Text -> (FilePath -> [Event]) -> [Event] -> S
+evalPp initDefs getInc evts = execState (mapM_ go evts) (S initDefs Set.empty Set.empty)
   where
     go :: Event -> State S ()
     go evt = case evt of
         TickRef d -> _sUsed %= Set.insert d
         Cond bs e -> doCond bs e
         Define d _ -> _sCurDefs %= Set.insert d
+        Include p -> do _sIncluded %= Set.insert p; mapM_ go $ getInc $ T.unpack p
         OtherDirective _ -> return ()
 
     doCond :: [Branch] -> Maybe [Event] -> State S ()
@@ -51,5 +53,5 @@ evalPp initDefs evts = execState (mapM_ go evts) (S initDefs Set.empty)
     doCond [] (Just evts) = mapM_ go evts
     doCond [] Nothing = return ()
 
-evalPpUsed :: Set Text -> [Event] -> Set Text
-evalPpUsed initDefs evts = sUsed $ evalPp initDefs evts
+evalPpUsed :: Set Text -> (FilePath -> [Event]) -> [Event] -> Set Text
+evalPpUsed initDefs getInc evts = sUsed $ evalPp initDefs getInc evts

@@ -1,6 +1,10 @@
 {-# LANGUAGE OverloadedStrings, TemplateHaskell, RankNTypes,
    DeriveGeneric, DeriveAnyClass #-}
-module BESSPIN.ArchExtract.BSV.Extract where
+module BESSPIN.ArchExtract.BSV.Extract
+( extractDesign
+, extractDesign'
+, ExtractResult(..)
+) where
 
 import Control.Applicative
 import Control.DeepSeq (deepseq, NFData)

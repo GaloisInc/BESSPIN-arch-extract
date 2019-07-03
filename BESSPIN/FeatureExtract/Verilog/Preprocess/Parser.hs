@@ -33,6 +33,7 @@ data Event =
       TickRef Text
     | Cond [Branch] (Maybe [Event])
     | Define Text [Token]
+    | Include Text
     | OtherDirective Text
     deriving (Show, Data)
 
@@ -46,6 +47,8 @@ tickWord = matchToken (\t -> case t of TickWord w -> Just w; _ -> Nothing)
     <?> "tickword"
 word = matchToken (\t -> case t of Word w -> Just w; _ -> Nothing)
     <?> "word"
+strLit = matchToken (\t -> case t of StrLit s -> Just s; _ -> Nothing)
+    <?> "string literal"
 eol = matchToken (\t -> case t of Eol -> Just (); _ -> Nothing)
     <?> "end of line"
 
@@ -69,6 +72,7 @@ event = do
     choice
         [ condEvent
         , defineEvent
+        , includeEvent
         , otherDirective
         , TickRef <$> tickWord
         ]
@@ -78,6 +82,11 @@ defineEvent = do
     name <- word
     body <- restOfLine
     return $ Define name body
+
+includeEvent = do
+    exactTickWord "include"
+    path <- strLit
+    return $ Include path
 
 otherDirective :: EventP Event
 otherDirective = matchToken $ \t -> case t of

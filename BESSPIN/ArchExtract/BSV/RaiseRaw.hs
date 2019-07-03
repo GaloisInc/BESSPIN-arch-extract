@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
-module BESSPIN.ArchExtract.BSV.RaiseRaw where
+module BESSPIN.ArchExtract.BSV.RaiseRaw
+( raiseRaw
+) where
 
 import Control.Monad
 import Control.Monad.State
