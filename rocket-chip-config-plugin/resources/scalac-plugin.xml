@@ -1,0 +1,4 @@
+<plugin>
+  <name>rocket-chip-config-plugin</name>
+  <classname>com.galois.besspin.RocketChipConfigPlugin</classname>
+</plugin>
