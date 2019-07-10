@@ -152,6 +152,10 @@
       #:exists 'truncate
       (lambda (f) (write-json j f)))))
 
+(define (read-tests path)
+  (call-with-default-reading-parameterization
+    (lambda () (read-many-from-file path))))
+
 (define (output-unsat symbolic-fm tests)
   (printf "Minimizing failing input...~n")
   (define min-tests
@@ -176,8 +180,9 @@
   )
 
 
-(define (do-unsat-core)
-  (output-unsat (apply ?*feature-model symbolic-fm-args) resume-tests))
+(define (do-unsat-core path)
+  (define tests (read-tests path))
+  (output-unsat (apply ?*feature-model symbolic-fm-args) tests))
 
 ; TODO handle tests in sections:
 ; - non-bitflip positive tests
@@ -187,9 +192,7 @@
 ; This will produce a set of tests sufficient to trigger the reason-threshold
 ; for unconfigurable features.
 (define (do-minimize-tests path)
-  (define tests
-    (call-with-default-reading-parameterization
-      (lambda () (read-many-from-file path))))
+  (define tests (read-tests path))
   (define symbolic-fm (apply ?*feature-model symbolic-fm-args))
   (define (check ts)
     (define synth (oracle-guided-synthesis+ symbolic-fm))
@@ -222,9 +225,9 @@
 
 
 (match subcommand
-  ['() (do-synthesize)]
-  ['("synthesize") (do-synthesize)]
-  ['("unsat-core") (do-unsat-core)]
+  [`() (do-synthesize)]
+  [`("synthesize") (do-synthesize)]
+  [`("unsat-core" ,path) (do-unsat-core path)]
   [`("minimize-tests" ,path) (do-minimize-tests path)]
   ['("render-tests") (do-render-tests)]
   )
