@@ -1,0 +1,33 @@
+[src.rocket]
+type = "chisel"
+ast-file = "p1.cbor"
+
+blackbox-modules = [ "TLDebugModuleInner" ]
+
+#[design]
+#root-module = "Top_HW_Side.mkTop_HW_Side"
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
+
+# Feature-model synthesis configuration
+[featuresynth]
+list-features-command = "python3 rocket-chip-check-config/check.py list"
+oracle-command = "examples/rocket-p1/check-config.sh"
+#oracle-cache-file = "examples/rocket-p1/oracle.cache"
+init-tests-file = "examples/rocket-p1/init-tests.rktd"
+resume-tests-file = "examples/rocket-p1/resume-tests.rktd"
+max-groups = 3
+max-dependencies = 3
+out-file = "rocket-p1.fm.json"
+reason-threshold = 5
+
+hard-constraints = [
+]
