@@ -11,22 +11,26 @@ object CheckConfig {
   // `configParts: Array[Parameters]`
 //CONFIG_PARTS
 
-  def buildConfig(): Parameters = {
+  def buildConfig(): Parameters = buildConfig(baseConfig)
+
+  def buildConfig(base: Parameters): Parameters = {
     var acc = Parameters.empty
     for (part <- configParts) {
       acc = acc ++ part
     }
-    acc ++ baseConfig
+    acc ++ base
   }
 
-  def buildConfigWithout(skip: Int): Parameters = {
+  def buildConfigWithout(skip: Int): Parameters = buildConfigWithout(baseConfig, skip)
+
+  def buildConfigWithout(base: Parameters, skip: Int): Parameters = {
     var acc = Parameters.empty
     for ((part, i) <- configParts.zipWithIndex) {
       if (i != skip) {
         acc = acc ++ part
       }
     }
-    acc ++ baseConfig
+    acc ++ base
   }
 
   def main(args: Array[String]) = {
@@ -48,3 +52,18 @@ object CheckConfig {
 }
 
 class TheConfig extends Config(CheckConfig.buildConfig)
+
+object DumpConfig {
+  // `def dumpConfig(a: Parameters)`
+//DUMP_CONFIG
+
+  def main(args: Array[String]) = {
+    dumpConfig(CheckConfig.buildConfig())
+  }
+}
+
+object DumpConfigDelta {
+  def main(args: Array[String]) = {
+    DumpConfig.dumpConfig(CheckConfig.buildConfig(Parameters.empty))
+  }
+}

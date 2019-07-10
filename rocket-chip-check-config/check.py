@@ -32,6 +32,17 @@ def gen_configs_equal(fields):
         }
     ''') % textwrap.indent(checks, '  ')
 
+def gen_dump_config(fields):
+    prints = ''
+    for f in sorted(fields):
+        prints += 'println(s"%s: ${cfg.lift(%s)}")\n' % (f, f)
+
+    return textwrap.dedent('''
+        def dumpConfig(cfg: Parameters) {
+        %s
+        }
+    ''') % textwrap.indent(prints, '  ')
+
 def gen_config_parts(configs):
     parts = ',\n'.join('new %s' % c for c in sorted(configs))
 
@@ -43,12 +54,14 @@ def gen_config_parts(configs):
 
 def gen_checkconfig_scala(configs, fields):
     configs_equal = gen_configs_equal(fields)
+    dump_config = gen_dump_config(fields)
     config_parts = gen_config_parts(configs)
 
     template = open_rel('checkconfig.scala.tmpl').read()
     return template \
             .replace('//CONFIGS_EQUAL', textwrap.indent(configs_equal, '  ')) \
-            .replace('//CONFIG_PARTS', textwrap.indent(config_parts, '  '))
+            .replace('//CONFIG_PARTS', textwrap.indent(config_parts, '  ')) \
+            .replace('//DUMP_CONFIG', textwrap.indent(dump_config, '  '))
 
 def list_configs():
     configs = set(l.strip() for l in open(query('configs')).readlines())
@@ -59,7 +72,7 @@ def list_configs():
             continue
         print(c)
 
-def check_config(enabled_configs):
+def init_project(enabled_configs, build_dir):
     all_configs = set(l.strip() for l in open(query('configs')).readlines())
     fields = set(l.strip() for l in open(query('fields')).readlines())
 
@@ -71,14 +84,16 @@ def check_config(enabled_configs):
     if not ok:
         sys.exit(1)
 
+    with open(os.path.join(build_dir, 'checkconfig.scala'), 'w') as f:
+        f.write(gen_checkconfig_scala(enabled_configs, fields))
+    # TODO: get package name and version via `query`
+    shutil.copy(os.path.join(ABS_DIR, 'build.sbt'),
+            os.path.join(build_dir, 'build.sbt'))
+    os.mkdir(os.path.join(build_dir, 'project'))
+
+def check_config(enabled_configs):
     with tempfile.TemporaryDirectory() as build_dir:
-        with open(os.path.join(build_dir, 'checkconfig.scala'), 'w') as f:
-            f.write(gen_checkconfig_scala(enabled_configs, fields))
-        print(gen_checkconfig_scala(enabled_configs, fields))
-        # TODO: get package name and version via `query`
-        shutil.copy(os.path.join(ABS_DIR, 'build.sbt'),
-                os.path.join(build_dir, 'build.sbt'))
-        os.mkdir(os.path.join(build_dir, 'project'))
+        init_project(enabled_configs, build_dir)
 
         run_sbt(('runMain checkconfig.CheckConfig',), cwd=build_dir)
 
@@ -86,6 +101,16 @@ def check_config(enabled_configs):
         os.mkdir(os.path.join(build_dir, 'build'))
         run_sbt(('runMain galois.system.Generator build '
             'galois.system TestHarness checkconfig TheConfig',), cwd=build_dir)
+
+def dump_config(enabled_configs):
+    with tempfile.TemporaryDirectory() as build_dir:
+        init_project(enabled_configs, build_dir)
+        run_sbt(('runMain checkconfig.DumpConfig',), cwd=build_dir)
+
+def dump_config_delta(enabled_configs):
+    with tempfile.TemporaryDirectory() as build_dir:
+        init_project(enabled_configs, build_dir)
+        run_sbt(('runMain checkconfig.DumpConfigDelta',), cwd=build_dir)
 
 
 def usage():
@@ -103,5 +128,9 @@ if __name__ == '__main__':
         list_configs()
     elif cmd == 'check':
         check_config(args)
+    elif cmd == 'dump':
+        dump_config(args)
+    elif cmd == 'dump-delta':
+        dump_config_delta(args)
     else:
         usage()
