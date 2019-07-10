@@ -1,0 +1,50 @@
+package checkconfig
+
+import freechips.rocketchip.config.{Parameters, Config}
+
+object CheckConfig {
+  // `def configsEqual(a: Parameters, b: Parameters): Boolean`
+//CONFIGS_EQUAL
+
+  val baseConfig = new galois.system.P1Config
+
+  // `configParts: Array[Parameters]`
+//CONFIG_PARTS
+
+  def buildConfig(): Parameters = {
+    var acc = Parameters.empty
+    for (part <- configParts) {
+      acc = acc ++ part
+    }
+    acc ++ baseConfig
+  }
+
+  def buildConfigWithout(skip: Int): Parameters = {
+    var acc = Parameters.empty
+    for ((part, i) <- configParts.zipWithIndex) {
+      if (i != skip) {
+        acc = acc ++ part
+      }
+    }
+    acc ++ baseConfig
+  }
+
+  def main(args: Array[String]) = {
+    val config = buildConfig()
+
+    // Config validity: are any of the elements in `configParts` being ignored?
+    var ok = true
+    for (i <- 0 until configParts.length) {
+      if (configsEqual(config, buildConfigWithout(i))) {
+        println(s"error: config part ${i} (${configParts(i)}) is unused")
+        ok = false
+      }
+    }
+
+    if (!ok) {
+      System.exit(1)
+    }
+  }
+}
+
+class TheConfig extends Config(CheckConfig.buildConfig)
