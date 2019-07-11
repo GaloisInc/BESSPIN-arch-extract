@@ -83,6 +83,10 @@
   (for/list ([c config-hard-constraints])
     (resolve-constraint name-map c)))
 
+(define extra-constraints
+  (for/list ([c config-extra-constraints])
+    (resolve-constraint name-map c)))
+
 (define resume-tests
   (filter
     (match-lambda
@@ -101,7 +105,7 @@
     (vector-length feature-names)
     config-max-groups
     config-max-dependencies
-    (cons '&& hard-constraints)))
+    (cons '&& (append hard-constraints extra-constraints))))
 
 (define (make-symbolic-fm)
   (apply ?*feature-model symbolic-fm-args))

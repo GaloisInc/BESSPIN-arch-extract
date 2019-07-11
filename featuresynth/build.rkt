@@ -66,6 +66,7 @@
 (define (map-constraint func c)
   (define (loop want c)
     (match c
+      ['_ '_]
       [(? boolean?) c]
       [(cons '&& args) (cons '&& (map (lambda (c) (loop want c)) args))]
       [(cons '|| args) (cons '|| (map (lambda (c) (loop want c)) args))]

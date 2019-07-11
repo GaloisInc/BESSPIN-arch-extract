@@ -10,6 +10,7 @@
   config-max-dependencies
   config-boredom-threshold
   config-reason-threshold
+  config-extra-constraints
   config-hard-constraints
   config-out-file
   read-config-file
@@ -31,6 +32,7 @@
 (define config-max-dependencies 0)
 (define config-boredom-threshold 1000)
 (define config-reason-threshold 15)
+(define config-extra-constraints '())
 (define config-hard-constraints '())
 (define config-out-file #f)
 
@@ -82,6 +84,9 @@
 
   (when-let ([x (get-typed c 'reason-threshold exact-nonnegative-integer?)])
     (set! config-reason-threshold x))
+
+  (when-let ([x (get-constraint-list c 'extra-constraints)])
+    (set! config-extra-constraints x))
 
   (when-let ([x (get-constraint-list c 'hard-constraints)])
     (set! config-hard-constraints x))
