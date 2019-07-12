@@ -24,10 +24,11 @@ oracle-command = "examples/rocket-p1/check-config.sh"
 #oracle-cache-file = "examples/rocket-p1/oracle.cache"
 init-tests-file = "examples/rocket-p1/init-tests.rktd"
 resume-tests-file = "examples/rocket-p1/resume-tests.rktd"
-max-groups = 3
-max-dependencies = 3
+max-groups = 4
+max-dependencies = 6
 out-file = "rocket-p1.fm.json"
-reason-threshold = 5
+reason-threshold = 10
 
 hard-constraints = [
+    "galois.subsystem.WithRV32",
 ]
