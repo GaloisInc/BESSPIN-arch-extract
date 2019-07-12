@@ -1,46 +1,60 @@
 package checkconfig
 
+
 import freechips.rocketchip.config.{Parameters, Config}
+import scala.reflect.runtime.universe._
 
 object CheckConfig {
   // `def configsEqual(a: Parameters, b: Parameters): Boolean`
 //CONFIGS_EQUAL
 
-  val baseConfig = new galois.system.P1Config
+  def makeConfigPart(name: String): Parameters = {
+    val mirror = runtimeMirror(getClass.getClassLoader)
+    val clazz = mirror.staticClass(name)
+    val ctor = clazz.info.member(termNames.CONSTRUCTOR).asMethod
+    val clazzM = mirror.reflectClass(clazz)
+    val ctorM = clazzM.reflectConstructor(ctor)
+    ctorM.apply().asInstanceOf[Parameters]
+  }
 
-  // `configParts: Array[Parameters]`
+  // `baseConfigParts: Array[Parameters]`
 //CONFIG_PARTS
 
-  def buildConfig(): Parameters = buildConfig(baseConfig)
-
-  def buildConfig(base: Parameters): Parameters = {
+  def buildConfig(names: Array[String]): Parameters = {
     var acc = Parameters.empty
-    for (part <- configParts) {
+    for (partName <- names) {
+      acc = acc ++ makeConfigPart(partName)
+    }
+    for (part <- baseConfigParts) {
       acc = acc ++ part
     }
-    acc ++ base
+    acc
   }
 
-  def buildConfigWithout(skip: Int): Parameters = buildConfigWithout(baseConfig, skip)
-
-  def buildConfigWithout(base: Parameters, skip: Int): Parameters = {
+  def buildConfigWithout(names: Array[String], skip: Int): Parameters = {
     var acc = Parameters.empty
-    for ((part, i) <- configParts.zipWithIndex) {
+    for ((partName, i) <- names.zipWithIndex) {
       if (i != skip) {
-        acc = acc ++ part
+        acc = acc ++ makeConfigPart(partName)
       }
     }
-    acc ++ base
+    for (part <- baseConfigParts) {
+      acc = acc ++ part
+    }
+    acc
   }
 
+  var currentConfig = Parameters.empty
+
   def main(args: Array[String]) = {
-    val config = buildConfig()
+    val names = args
+    val config = buildConfig(names)
 
     // Config validity: are any of the elements in `configParts` being ignored?
     var ok = true
-    for (i <- 0 until configParts.length) {
-      if (configsEqual(config, buildConfigWithout(i))) {
-        println(s"error: config part ${i} (${configParts(i)}) is unused")
+    for (i <- 0 until names.length) {
+      if (configsEqual(config, buildConfigWithout(names, i))) {
+        println(s"error: config part ${i} (${names(i)}) is unused")
         ok = false
       }
     }
@@ -48,22 +62,26 @@ object CheckConfig {
     if (!ok) {
       System.exit(1)
     }
+
+    // Build FIRRTL for current configuration
+    currentConfig = config
+    galois.system.Generator.main(Array(
+      "build",
+      "galois.system",
+      "TestHarness",
+      "checkconfig",
+      "TheConfig",
+    ))
   }
 }
 
-class TheConfig extends Config(CheckConfig.buildConfig)
+class TheConfig extends Config(CheckConfig.currentConfig)
 
 object DumpConfig {
   // `def dumpConfig(a: Parameters)`
 //DUMP_CONFIG
 
   def main(args: Array[String]) = {
-    dumpConfig(CheckConfig.buildConfig())
-  }
-}
-
-object DumpConfigDelta {
-  def main(args: Array[String]) = {
-    DumpConfig.dumpConfig(CheckConfig.buildConfig(Parameters.empty))
+    dumpConfig(CheckConfig.buildConfig(args))
   }
 }
