@@ -1,0 +1,46 @@
+[src.rocket]
+type = "chisel"
+ast-file = "p2.cbor"
+
+blackbox-modules = [ "TLDebugModuleInner" ]
+
+#[design]
+#root-module = "Top_HW_Side.mkTop_HW_Side"
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
+
+# Feature-model synthesis configuration
+[featuresynth]
+list-features-command = "python3 rocket-chip-check-config/check.py list"
+oracle-command = "examples/rocket-p2/check-config.sh"
+#oracle-cache-file = "examples/rocket-p2/oracle.cache"
+init-tests-file = "examples/rocket-p2/init-tests.rktd"
+#resume-tests-file = "examples/rocket-p2/resume-tests.rktd"
+#resume-tests-file = "./test-log-rocket-p2-bad2.rktd"
+max-groups = 4
+max-dependencies = 6
+out-file = "rocket-p2.fm.json"
+reason-threshold = 10
+boredom-threshold = 2000
+
+hard-constraints = [
+    "(! galois.subsystem.WithRV32)",
+    "(! galois.subsystem.With1TinyCore)",
+
+    "(! galois.subsystem.WithDefaultBtb)",
+    "(! galois.subsystem.WithFastMulDiv)",
+    "(! galois.subsystem.WithNoMMIOPort)",
+    "(! galois.subsystem.WithNoMemPort)",
+    "(! galois.subsystem.WithNoSlavePort)",
+    "(! galois.subsystem.WithScratchpadsOnly)",
+    "(! galois.subsystem.WithSynchronousRocketTiles)",
+    "(! galois.system.WithoutPLIC)",
+]
