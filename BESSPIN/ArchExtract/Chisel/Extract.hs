@@ -390,11 +390,7 @@ addRevConns :: BiConnTree -> BiConnTree
 addRevConns ct = mergeConnMap'
     (\_ rv ann -> (rv, ann))
     (\_ rv _ -> (rv, Rev))
-    (\_ rv ann rv' _ -> case rv of
-        -- TODO/HACK: fix IsInvalid handling to not assign RvInvalid to
-        -- non-assignable nodes, then remove this check
-        RvInvalid -> (rv', Rev)
-        _ -> traceShow ("addRevConns: duplicate entry", rv, rv') (rv, ann))
+    (\_ rv ann rv' _ ->  traceShow ("addRevConns: duplicate entry", rv, rv') (rv, ann))
     ct (buildFlippedConnMap ct)
 
 
@@ -442,11 +438,13 @@ data MemPort = MemPort
     deriving (Show)
 
 data ResolvedNode =
-    -- Use `.0` as the node's ID in all contexts.
-      RnSingle NodeId
-    -- Use `.0` when the node appears in lvalue position and `.1` when it
-    -- appears in rvalue position.
-    | RnSplit NodeId NodeId
+    -- Node's gender is male, and its ID is `.0`
+      RnMale NodeId
+    -- Node's gender is female, and its ID is `.0`
+    | RnFemale NodeId
+    -- Node's gender is bigender.  Its female/lvalue side has ID `.0`, and its
+    -- male/rvalue side has ID `.1`.
+    | RnBi NodeId NodeId
     deriving (Show, Eq)
 
 data ExtractState = ExtractState
@@ -504,22 +502,14 @@ addNode name ty = do
     _esNodeTy %= M.insert i ty
     return i
 
-bindDef :: Text -> Def -> Ty -> ExtractM NodeId
-bindDef name def ty = do
-    i <- return name    -- TODO: switch to numeric ids
-    _esDefs %= (|> (def, RnSingle i))
-    _esNodeTy %= M.insert i ty
-    _esLocalScope %= M.insert name (RnSingle i)
-    return i
-
 bindSplitDef :: Text -> Def -> Ty -> ExtractM (NodeId, NodeId)
 bindSplitDef name def ty = do
     il <- return $ name <> ".L"    -- TODO: switch to numeric ids
     ir <- return $ name <> ".R"    -- TODO: switch to numeric ids
-    _esDefs %= (|> (def, RnSplit il ir))
+    _esDefs %= (|> (def, RnBi il ir))
     _esNodeTy %= M.insert il ty
     _esNodeTy %= M.insert ir ty
-    _esLocalScope %= M.insert name (RnSplit il ir)
+    _esLocalScope %= M.insert name (RnBi il ir)
     return (il, ir)
 
 
@@ -631,8 +621,13 @@ convertTy :: Ty -> A.Ty
 convertTy _ = A.TUnknown
 
 nodeIdForSide :: Bool -> ResolvedNode -> NodeId
-nodeIdForSide _ (RnSingle i) = i
-nodeIdForSide right (RnSplit l r) = if right then r else l
+nodeIdForSide right (RnMale i)
+  | not right = traceShow ("asked for left/female NodeId of RnMale", i) i
+  | otherwise = i
+nodeIdForSide right (RnFemale i)
+  | right = traceShow ("asked for right/male NodeId of RnFemale", i) i
+  | otherwise = i
+nodeIdForSide right (RnBi l r) = if right then r else l
 
 
 -- Process a `Def`.  This updates `esDefs` and so on, but can also produce
@@ -699,14 +694,15 @@ nodeTy i = use (_esNodeTy . at i) >>= \x -> case x of
 
 varNode :: Text -> ExtractM ResolvedNode
 varNode name = use (_esLocalScope . at name) >>= \x -> case x of
-    Nothing -> traceShow ("failed to resolve var", name) $ return $ RnSingle $ "<" <> name <> ">"
+    Nothing -> traceShow ("failed to resolve var", name) $ return $ RnMale $ "<" <> name <> ">"
     Just i -> return i
 
 varTy :: Text -> ExtractM Ty
 varTy name = varNode name >>= \rn -> case rn of
-    RnSingle i -> nodeTy i
+    RnMale i -> nodeTy i
+    RnFemale i -> nodeTy i
     -- Split nodes should have the same type for both left and right halves.
-    RnSplit l r -> nodeTy l
+    RnBi l r -> nodeTy l
 
 exprTy :: Expr -> ExtractM Ty
 exprTy (ELit (LUInt _ w)) = return $ TUInt w
@@ -854,21 +850,23 @@ unrollAggregates lty l rty r = go lty l rty r False
     go lty _ rty _ _ =
         traceShow ("go: type mismatch", lty, rty) []
 
--- Expand a single aggregate-typed expression.
-unrollAggregate :: Ty -> Expr -> Bool -> [Expr]
-unrollAggregate ty e flipped = go ty e flipped
+-- One-sided version of `unrollAggregates`.
+unrollAggregate :: Ty -> Expr -> [(Expr, Bool)]
+unrollAggregate ty e = go ty e False
   where
-    go (TBundle fs) e flipped = do
+    go (TBundle fs) l flipped = do
         f <- fs
         let name = fieldName f
         let ty = fieldTy f
-        let flipped' = if fieldFlip f then not flipped else flipped
-        go ty (EField e name ty) flipped'
-    go (TVector ty len) e flipped = do
-        idx <- [0 .. len - 1]
-        go ty (EIndexC e idx ty) flipped
-    go _ e False = return e
-    go _ e True = []
+        if not $ fieldFlip f then
+            go ty (EField l name ty) flipped
+        else
+            go ty (EField l name ty) (not flipped)
+    go (TVector ty len) l flipped = do
+        idx <- [0 .. min len len - 1]
+        go ty (EIndexC l idx ty) flipped
+    go lty l flipped | isGroundTy lty = return (l, flipped)
+    go lty _ _ = traceShow ("go: unhandled type", lty) []
 
 -- Convert an lvalue `Expr` to a `ConnExpr`.  This can produce multiple
 -- `ConnExpr`s in some cases, and also sometimes generates a transformation to
@@ -933,17 +931,14 @@ unrollAssign l r = do
 
 unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollInvalidate l = do
-    assignsL <- unrollAggregate <$> exprTy l <*> pure l <*> pure False
-    ls <- liftM concat $ forM assignsL $ \(l') -> do
-        (ty, lfs'') <- evalLvalue False l'
+    (lty, lFlipped) <- exprTyFlip l
+    traceShowM ("etf", l, lty, lFlipped)
+    let assigns = unrollAggregate lty l
+    ls <- liftM concat $ forM assigns $ \(l', flipped) -> do
+        (ty, lfs'') <- evalLvalue (flipped /= lFlipped) l'
         return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
 
-    assignsR <- unrollAggregate <$> exprTy l <*> pure l <*> pure True
-    rs <- liftM concat $ forM assignsR $ \(l') -> do
-        (ty, lfs'') <- evalLvalue True l'
-        return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
-
-    return $ ls ++ rs
+    return $ ls
 
 
 
@@ -986,15 +981,20 @@ listLeafFields ty = go S.empty False ty
 -- should be consistent between different runs.
 evalExtPort :: Port -> ExtractM ConnTree
 evalExtPort p = do
-    -- DWire node
-    ct <- evalDef $ DWire (portName p) (portTy p)
-    wrn <- varNode $ portName p
-
+    let name = portName p
+    let ty = portTy p
     let output = portDir p == Output
-    let wi = nodeIdForSide output wrn
+
+    -- DWire node.  Only one side of the node is recorded in esLocalScope.
+    (leftId, rightId) <- bindSplitDef name (DWire name ty) ty
+    let wrn = if output then RnFemale leftId else RnMale rightId
+    _esLocalScope %= M.insert name wrn
+
+    -- Connect the opposite side of the node to the external port.
+    let wi = if output then rightId else leftId
     let we = ConnExpr wi S.empty
 
-    connectLeaves ("." <> portName p) (portTy p) output we $ \net f ->
+    connectLeaves ("." <> name) ty output we $ \net f ->
         buildPort net f
 
 -- Handle a module instance.
@@ -1005,7 +1005,7 @@ evalExtPort p = do
 evalInst :: Text -> Int -> Ty -> ExtractM ConnTree
 evalInst name modId sig = do
     (leftId, rightId) <- bindSplitDef name (DWire name sig) sig
-    _esLocalScope %= M.insert name (RnSingle rightId)
+    _esLocalScope %= M.insert name (RnMale rightId)
 
     let inst = A.Inst modId name S.empty
     instId <- buildLogic (A.LkInst inst) [] []
@@ -1084,7 +1084,7 @@ evalMemPort name memName addrExpr = do
     let writeName = name <> ".write"
     (readLeft, readRight) <- bindSplitDef readName (DWire readName ty) ty
     (writeLeft, writeRight) <- bindSplitDef writeName (DWire writeName ty) ty
-    _esLocalScope %= M.insert name (RnSplit writeLeft readRight)
+    _esLocalScope %= M.insert name (RnBi writeLeft readRight)
 
     (readNode, readNet) <- buildArchNode readName 10 ty
     (writeNode, writeNet) <- buildArchNode writeName 10 ty
@@ -1279,13 +1279,6 @@ buildWireRepack name flds = void $ do
             (S.fromList $ map (repackPortName . (^. _3)) outs)
     buildLogic lk (map (^. _1) ins) (map (^. _1) outs)
 
-{-
-    if shortcutWire ins outs then do
-        let inNet = head ins ^. _1
-        let outNet = head outs ^. _1
-        buildNetAlias inNet outNet
--}
-
 buildNodes :: ConnTree -> ExtractM ()
 buildNodes ct = do
     defs <- use _esDefs
@@ -1301,8 +1294,9 @@ buildNodes ct = do
   where
     allExprs = treeConnExprs ct
 
-    goWire (RnSingle i) = traceShowM ("don't know how to handle RnSingle DWire", i)
-    goWire (RnSplit l r) = do
+    goWire (RnMale i) = traceShowM ("don't know how to handle RnMale DWire", i)
+    goWire (RnFemale i) = traceShowM ("don't know how to handle RnFemale DWire", i)
+    goWire (RnBi l r) = do
         let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
         let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
         ty <- nodeTy l
@@ -1342,8 +1336,9 @@ buildNodes ct = do
     shortcutWire (PtNode True _) (PtNode True _) = True
     shortcutWire _ _ = False
 
-    goReg (RnSingle i) = traceShowM ("don't know how to handle RnSingle DReg", i)
-    goReg (RnSplit l r) = do
+    goReg (RnMale i) = traceShowM ("don't know how to handle RnMale DReg", i)
+    goReg (RnFemale i) = traceShowM ("don't know how to handle RnFemale DReg", i)
+    goReg (RnBi l r) = do
         let lpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet l allExprs
         let rpt = projTrieFromList $ map toList $ Set.toList $ multiMapGet r allExprs
         ty <- nodeTy l
