@@ -31,6 +31,13 @@ def query_file(what):
 
 # checkconfig.jar code generation & build process
 
+def gen_library_dependencies(names):
+    lines = []
+    for (org, name, ver) in names:
+        lines.append('libraryDependencies ++= Seq("{}" %% "{}" % "{}")\n'
+                .format(org, name, ver))
+    return ''.join(lines)
+
 def gen_configs_equal(fields):
     checks = ''
     for f in sorted(fields):
@@ -63,24 +70,43 @@ def gen_config_parts(base_configs):
         )
     ''') % (textwrap.indent(base_parts, '  '),)
 
+def gen_generator(gen_name):
+    return 'val generator = %s' % gen_name
+
+def gen_generator(gen_name):
+    return 'val generator = %s' % gen_name
+
 def gen_checkconfig_scala(base_configs, fields):
     configs_equal = gen_configs_equal(fields)
     dump_config = gen_dump_config(fields)
     config_parts = gen_config_parts(base_configs)
 
+    gen_name = query('generator')
+    top_module = query('top-module')
+    top_pkg, _, top_cls = top_module.rpartition('.')
+
     template = open_rel('checkconfig.scala.tmpl').read()
     return template \
             .replace('//CONFIGS_EQUAL', textwrap.indent(configs_equal, '  ')) \
             .replace('//CONFIG_PARTS', textwrap.indent(config_parts, '  ')) \
-            .replace('//DUMP_CONFIG', textwrap.indent(dump_config, '  '))
+            .replace('//DUMP_CONFIG', textwrap.indent(dump_config, '  ')) \
+            .replace('//GENERATOR', textwrap.indent(gen_generator(gen_name), ' ')) \
+            .replace('//TOP_MODULE_ARGS',
+                    textwrap.indent('"%s", "%s",' % (top_pkg, top_cls), '      '))
 
 def gen_checkconfig_jar(base_configs, fields, dest):
     with tempfile.TemporaryDirectory() as build_dir:
+        print('build dir: %s' % build_dir)
         with open(os.path.join(build_dir, 'checkconfig.scala'), 'w') as f:
             f.write(gen_checkconfig_scala(base_configs, fields))
-        # TODO: get package name and version via `query`
-        shutil.copy(os.path.join(ABS_DIR, 'build.sbt'),
-                os.path.join(build_dir, 'build.sbt'))
+
+        lib_name_strs = [l.strip() for l in query('libs').splitlines()]
+        lib_names = [tuple(s.split()) for s in lib_name_strs if len(s) > 0]
+        lib_deps = gen_library_dependencies(lib_names)
+        with open(os.path.join(build_dir, 'build.sbt'), 'w') as f:
+            f.write(open_rel('build.sbt').read() + '\n' + lib_deps)
+        print('library deps:\n' + lib_deps)
+
         os.mkdir(os.path.join(build_dir, 'project'))
         shutil.copy(os.path.join(ABS_DIR, 'project/plugins.sbt'),
                 os.path.join(build_dir, 'project/plugins.sbt'))
@@ -110,8 +136,6 @@ def ensure_cached(base_configs, fields):
     return path
 
 
-
-
 def split_configs(configs):
     try:
         idx = configs.index('--')
@@ -119,18 +143,16 @@ def split_configs(configs):
     except:
         return configs, []
 
-
 def jar_path(base_configs):
     fields = set(l.strip() for l in open(query('fields')).readlines())
     jar_path = ensure_cached(base_configs, fields)
     print(jar_path)
 
-def list_configs():
+def list_configs(prefixes):
+    assert(len(prefixes) > 0)
     configs = set(l.strip() for l in open(query('configs')).readlines())
     for c in sorted(configs):
-        if not c.startswith('galois'):
-            continue
-        if '.With' not in c:
+        if not any(c.startswith(p) for p in prefixes):
             continue
         print(c)
 
@@ -156,6 +178,13 @@ def check_config(enabled_configs):
     with tempfile.TemporaryDirectory() as run_dir:
         # Chisel elaboration writes output to ./build
         os.mkdir(os.path.join(run_dir, 'build'))
+
+        # Boom expects a bootrom image at rocket-chip/bootrom/bootrom.img
+        os.makedirs(os.path.join(run_dir, 'rocket-chip/bootrom'),
+                exist_ok=True)
+        with open(os.path.join(run_dir, 'rocket-chip/bootrom/bootrom.img'), 'w'):
+            pass
+
         subprocess.run(
                 ('java', '-cp', jar_path, 'checkconfig.CheckConfig') + tuple(chosen_configs),
                 cwd=run_dir, check=True)
@@ -176,9 +205,7 @@ if __name__ == '__main__':
 
     cmd, args = sys.argv[1], sys.argv[2:]
     if cmd == 'list':
-        if len(args) > 0:
-            usage()
-        list_configs()
+        list_configs(args)
     elif cmd == 'jar':
         jar_path(args)
     elif cmd == 'check':

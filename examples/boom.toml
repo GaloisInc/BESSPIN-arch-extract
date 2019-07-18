@@ -1,0 +1,56 @@
+[src.boom]
+type = "chisel"
+ast-file = "p3.cbor"
+
+blackbox-modules = [ "TLDebugModuleInner" ]
+
+#[design]
+#root-module = "Top_HW_Side.mkTop_HW_Side"
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
+
+# Feature-model synthesis configuration
+[featuresynth]
+list-features-command = "examples/boom/list-features.sh"
+oracle-command = "examples/boom/check-config.sh"
+#oracle-cache-file = "examples/boom/oracle.cache"
+init-tests-file = "examples/boom/init-tests.rktd"
+resume-tests-file = "examples/boom/resume-tests.rktd"
+max-groups = 3
+max-dependencies = 3
+out-file = "boom.fm.json"
+reason-threshold = 10
+boredom-threshold = 2000
+
+hard-constraints = [
+    "(! boom.common.WithBoomRV32)",
+    "(! freechips.rocketchip.subsystem.WithRV32)",
+    "(! freechips.rocketchip.subsystem.With1TinyCore)",
+    "(! boom.common.WithSmallBooms)",
+    "(! boom.common.WithMediumBooms)",
+    "(! boom.common.WithMegaBooms)",
+
+    # Previous synthesis runs reported that these features can't be enabled or
+    # have no effect.  We blacklist them in the config so that future synthesis
+    # runs don't have to re-discover this information.
+    "(! boom.common.WithUnifiedMemIntIQs)",
+    "(! freechips.rocketchip.subsystem.WithDefaultBtb)",
+    "(! freechips.rocketchip.subsystem.WithFPUWithoutDivSqrt)",
+    "(! freechips.rocketchip.subsystem.WithFastMulDiv)",
+    "(! freechips.rocketchip.subsystem.WithNoMMIOPort)",
+    "(! freechips.rocketchip.subsystem.WithNoMemPort)",
+    "(! freechips.rocketchip.subsystem.WithNoSlavePort)",
+    "(! freechips.rocketchip.subsystem.WithRoccExample)",
+    "(! freechips.rocketchip.subsystem.WithScratchpadsOnly)",
+    "(! freechips.rocketchip.subsystem.WithSynchronousRocketTiles)",
+    "(! freechips.rocketchip.subsystem.WithoutFPU)",
+    "(! freechips.rocketchip.subsystem.WithoutMulDiv)",
+]

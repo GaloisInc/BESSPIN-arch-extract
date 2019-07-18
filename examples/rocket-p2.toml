@@ -19,7 +19,7 @@ shorten-net-names = true
 
 # Feature-model synthesis configuration
 [featuresynth]
-list-features-command = "python3 rocket-chip-check-config/check.py list"
+list-features-command = "examples/rocket-p2/list-features.sh"
 oracle-command = "examples/rocket-p2/check-config.sh"
 #oracle-cache-file = "examples/rocket-p2/oracle.cache"
 init-tests-file = "examples/rocket-p2/init-tests.rktd"
@@ -35,6 +35,9 @@ hard-constraints = [
     "(! galois.subsystem.WithRV32)",
     "(! galois.subsystem.With1TinyCore)",
 
+    # Previous synthesis runs reported that these features can't be enabled or
+    # have no effect.  We blacklist them in the config so that future synthesis
+    # runs don't have to re-discover this information.
     "(! galois.subsystem.WithDefaultBtb)",
     "(! galois.subsystem.WithFastMulDiv)",
     "(! galois.subsystem.WithNoMMIOPort)",

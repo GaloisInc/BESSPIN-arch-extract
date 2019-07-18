@@ -46,6 +46,9 @@ object CheckConfig {
 
   var currentConfig = Parameters.empty
 
+  // `Generator` object, with a `main` method
+//GENERATOR
+
   def main(args: Array[String]) = {
     val names = args
     val config = buildConfig(names)
@@ -65,10 +68,9 @@ object CheckConfig {
 
     // Build FIRRTL for current configuration
     currentConfig = config
-    galois.system.Generator.main(Array(
+    generator.main(Array(
       "build",
-      "galois.system",
-      "TestHarness",
+//TOP_MODULE_ARGS
       "checkconfig",
       "TheConfig",
     ))
