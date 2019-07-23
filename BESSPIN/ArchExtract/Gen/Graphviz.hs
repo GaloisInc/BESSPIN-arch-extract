@@ -169,6 +169,11 @@ clearMuxPorts cfg f edges = foldMap go edges
             Sink | j `mod` (numChannels + 1) == 0 -> goSelect p i numChannels
             Sink | otherwise -> goData p i ((j `mod` (numChannels + 1)) - 1)
             Source -> goData p i (j `mod` numChannels)
+      | LkRuleMux _ names <- f i =
+        let numChannels = S.length names in
+        case side of
+            Sink -> goData p i (j `mod` numChannels)
+            Source -> goData p i (j `mod` numChannels)
     goNode p = S.singleton p
 
     goSelect p i numChannels =
@@ -307,9 +312,9 @@ drawLogicNode cfg logic =
         LkRam _ _ _ _ _ -> True
         LkMux _ _ -> cfgDrawMuxes cfg == Config.MdmFull
         LkPriorityMux _ _ -> cfgDrawMuxes cfg == Config.MdmFull
-        LkRuleMux _ _ -> True
-        LkMatch _ _ -> True
-        LkRuleEnable _ -> True
+        LkRuleMux _ _ -> cfgDrawMuxes cfg == Config.MdmFull
+        LkMatch _ _ -> False
+        LkRuleEnable _ -> False
         LkPack _ -> cfgDrawRepacks cfg == Config.RdmFull
         LkUnpack _ -> cfgDrawRepacks cfg == Config.RdmFull
         LkRepack _ _ _ -> cfgDrawRepacks cfg == Config.RdmFull
