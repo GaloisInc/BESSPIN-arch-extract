@@ -110,10 +110,14 @@ data Def =
 data MemPortDir = MpdInfer | MpdRead | MpdWrite | MpdReadWrite
     deriving (Show, Eq, Typeable, Data, Generic, NFData)
 
+-- `Just True` if this field access flips direction, `Just False` if it does
+-- not, `Nothing` if unknown
+type FieldFlip = Maybe Bool
+
 data Expr =
       ELit Lit
     | ERef Text Ty
-    | EField Expr Text Ty
+    | EField Expr Text FieldFlip Ty
     | EIndex Expr Expr Ty
     -- Index by a constant
     | EIndexC Expr Int Ty

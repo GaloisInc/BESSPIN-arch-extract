@@ -128,7 +128,7 @@ instance Pretty MemPortDir where
 instance Pretty Expr where
     pretty (ELit l) = pretty l
     pretty (ERef name _) = pretty name
-    pretty (EField e name _) = pretty e <> dot <> pretty name
+    pretty (EField e name _ _) = pretty e <> dot <> pretty name
     pretty (EIndex a i _) = pretty a <> brackets (pretty i)
     pretty (EIndexC a i _) = pretty a <> brackets (pretty i)
     pretty (EMux c t e _) = "mux" <> parens (hsep $ punctuate comma $ map pretty [c, t, e])

@@ -213,7 +213,7 @@ instance Get Expr where
     get (fir "Reference" -> [name, ty]) =
         ERef <$> get name <*> get ty
     get (fir "SubField" -> [expr, name, ty]) =
-        EField <$> get expr <*> get name <*> get ty
+        EField <$> get expr <*> get name <*> pure Nothing <*> get ty
     get (fir "SubIndex" -> [expr, idx, ty]) =
         EIndexC <$> get expr <*> get idx <*> get ty
     get (fir "SubAccess" -> [expr, idx, ty]) =

@@ -629,6 +629,23 @@ nodeIdForSide right (RnFemale i)
   | otherwise = i
 nodeIdForSide right (RnBi l r) = if right then r else l
 
+data Gender = GMale | GFemale | GBi
+    deriving (Show, Eq)
+
+rnGender :: ResolvedNode -> Gender
+rnGender (RnMale _) = GMale
+rnGender (RnFemale _) = GFemale
+rnGender (RnBi _ _) = GBi
+
+flipGender :: Gender -> Gender
+flipGender GMale = GFemale
+flipGender GFemale = GMale
+flipGender GBi = GBi
+
+flipGenderIf :: Bool -> Gender -> Gender
+flipGenderIf True g = flipGender g
+flipGenderIf False g = g
+
 
 -- Process a `Def`.  This updates `esDefs` and so on, but can also produce
 -- connections in some cases, like the implicit connection on the RHS of a
@@ -663,7 +680,7 @@ evalDef d@(DCMemPort name ty memName args dir)
 evalStmt :: Stmt -> ExtractM ConnTree
 evalStmt (SDef _ d) = evalDef d
 evalStmt (SCond _ cond then_ else_) = do
-    c <- evalRvalue cond
+    c <- evalRvalue =<< snd <$> annotateExpr cond
     t <- evalStmt then_
     e <- evalStmt else_
     return $ connTreeJoin c t e
@@ -692,6 +709,23 @@ nodeTy i = use (_esNodeTy . at i) >>= \x -> case x of
     Nothing -> traceShow ("no type for node", i) $ return TUnknown
     Just x -> return x
 
+rnTy :: ResolvedNode -> ExtractM Ty
+rnTy (RnMale i) = nodeTy i
+rnTy (RnFemale i) = nodeTy i
+-- Both sides of a bigender node should have the same type.
+rnTy (RnBi i _) = nodeTy i
+
+rnGenderedSide :: Gender -> ResolvedNode -> NodeId
+rnGenderedSide GBi _ = error "rnGenderedSide: expected GMale or GFemale, but got GBi"
+rnGenderedSide GMale (RnMale i) = i
+rnGenderedSide GFemale (RnMale i) =
+    traceShow ("error: tried to get female side of male node", i) i
+rnGenderedSide GFemale (RnFemale i) = i
+rnGenderedSide GMale (RnFemale i) =
+    traceShow ("error: tried to get male side of female node", i) i
+rnGenderedSide GMale (RnBi f m) = m
+rnGenderedSide GFemale (RnBi f m) = f
+
 varNode :: Text -> ExtractM ResolvedNode
 varNode name = use (_esLocalScope . at name) >>= \x -> case x of
     Nothing -> traceShow ("failed to resolve var", name) $ return $ RnMale $ "<" <> name <> ">"
@@ -709,7 +743,7 @@ exprTy (ELit (LUInt _ w)) = return $ TUInt w
 exprTy (ELit (LSInt _ w)) = return $ TSInt w
 exprTy (ELit (LFixed _ w p)) = return $ TFixed w p
 exprTy (ERef name _) = varTy name
-exprTy (EField e name _) = bundleFieldTy name <$> exprTy e
+exprTy (EField e name _ _) = bundleFieldTy name <$> exprTy e
 exprTy (EIndex e _ _) = vectorItemTy <$> exprTy e
 exprTy (EIndexC e _ _) = vectorItemTy <$> exprTy e
 exprTy (EMux _ t _ _) = exprTy t
@@ -722,13 +756,80 @@ exprTyFlip (ELit (LUInt _ w)) = return $ (TUInt w, False)
 exprTyFlip (ELit (LSInt _ w)) = return $ (TSInt w, False)
 exprTyFlip (ELit (LFixed _ w p)) = return $ (TFixed w p, False)
 exprTyFlip (ERef name _) = varTy name >>= \ty -> return (ty, False)
-exprTyFlip (EField e name _) = bundleFieldTyFlip name <$> exprTyFlip e
+exprTyFlip (EField e name _ _) = bundleFieldTyFlip' name <$> exprTyFlip e
 exprTyFlip (EIndex e _ _) = vectorItemTyFlip <$> exprTyFlip e
 exprTyFlip (EIndexC e _ _) = vectorItemTyFlip <$> exprTyFlip e
 exprTyFlip (EMux _ t _ _) = exprTyFlip t
 exprTyFlip (EValidIf _ t _) = exprTyFlip t
 -- TODO: EPrim ty is probably TUnknown in most case, just like the others
 exprTyFlip (EPrim _ _ _ ty) = return (ty, False)
+
+exprTyGender :: Expr -> ExtractM (Ty, Gender)
+-- Section 8 has explicit cases only for reference, field, and index
+-- expressions.  The rest fall into the catch-all case at the end.
+exprTyGender (ERef name _) = do
+    rn <- varNode name
+    ty <- rnTy rn
+    return (ty, rnGender rn)
+exprTyGender (EField e name _ _) = do
+    (bty, g) <- exprTyGender e
+    let (fty, flipped) = bundleFieldTyFlip name  bty
+    return (fty, flipGenderIf flipped g)
+exprTyGender (EIndex e _ _) = do
+    (vty, g) <- exprTyGender e
+    return (vectorItemTy vty, g)
+exprTyGender (EIndexC e _ _) = do
+    (vty, g) <- exprTyGender e
+    return (vectorItemTy vty, g)
+-- "The gender of all other expressions are male."
+exprTyGender e = do
+    ty <- exprTy e
+    return (ty, GMale)
+
+-- Compute the type of an expression, and annotate each `EField` with a flag
+-- indicating whether the field in question is flipped.  Also fills in proper
+-- Ty annotations for most Expr variants.
+annotateExpr :: Expr -> ExtractM (Ty, Expr)
+annotateExpr e@(ELit (LUInt _ w)) = return $ (TUInt w, e)
+annotateExpr e@(ELit (LSInt _ w)) = return $ (TSInt w, e)
+annotateExpr e@(ELit (LFixed _ w p)) = return $ (TFixed w p, e)
+annotateExpr e@(ERef name _) = varTy name >>= \ty -> return (ty, ERef name ty)
+annotateExpr (EField e name _ _) = do
+    (bty, e') <- annotateExpr e
+    let (fty, flipped) = bundleFieldTyFlip name bty
+    return (fty, EField e' name (Just flipped) fty)
+annotateExpr (EIndex ev ei _) = do
+    (vty, ev') <- annotateExpr ev
+    (_, ei') <- annotateExpr ei
+    let itemTy = vectorItemTy vty
+    return (itemTy, EIndex ev' ei' itemTy)
+annotateExpr (EIndexC ev c _) = do
+    (vty, ev') <- annotateExpr ev
+    let itemTy = vectorItemTy vty
+    return (itemTy, EIndexC ev' c itemTy)
+annotateExpr (EMux c t e _) = do
+    (cty, c') <- annotateExpr c
+    (tty, t') <- annotateExpr t
+    (ety, e') <- annotateExpr e
+    return (tty, EMux c' t' e' tty)
+annotateExpr (EValidIf c t _) = do
+    (cty, c') <- annotateExpr c
+    (tty, t') <- annotateExpr t
+    return (tty, EValidIf c' t' tty)
+-- TODO: shouldn't trust provided ty - it's probably TUnknown in most cases
+annotateExpr (EPrim name args consts ty) = do
+    args' <- mapM (liftM snd . annotateExpr) args
+    return (ty, EPrim name args' consts ty)
+
+-- Get the gender of an expression.  `EField`s in the input expression must be
+-- annotated with their flippedness.
+exprGender (ERef name _) = rnGender <$> varNode name
+exprGender (EField e _ (Just flipped) _) = flipGenderIf flipped <$> exprGender e
+exprGender (EField e name Nothing _) =
+    error $ show ("exprGender: missing orientation on EField", e, name)
+exprGender (EIndex e _ _) = exprGender e
+exprGender (EIndexC e _ _) = exprGender e
+exprGender _ = return GMale
 
 projectConnExpr p (ConnExpr n ps) = ConnExpr n (ps |> p)
 
@@ -776,12 +877,18 @@ bundleFieldTy name (TBundle fs)
   | Just f <- find (\f -> fieldName f == name) fs = fieldTy f
 bundleFieldTy name ty = traceShow ("bad projection: field not found", name, ty) TUnknown
 
-bundleFieldTyFlip :: Text -> (Ty, Bool) -> (Ty, Bool)
-bundleFieldTyFlip name (TBundle fs, flipped)
+bundleFieldTyFlip :: Text -> Ty -> (Ty, Bool)
+bundleFieldTyFlip name (TBundle fs)
   | Just f <- find (\f -> fieldName f == name) fs
-  = (fieldTy f, if fieldFlip f then not flipped else flipped)
-bundleFieldTyFlip name (ty, flipped) =
-    traceShow ("bad projection: field not found", name, ty) (TUnknown, flipped)
+  = (fieldTy f, fieldFlip f)
+bundleFieldTyFlip name ty =
+    traceShow ("bad projection: field not found", name, ty) (TUnknown, False)
+
+bundleFieldTyFlip' :: Text -> (Ty, Bool) -> (Ty, Bool)
+bundleFieldTyFlip' name (ty, flipped) =
+    (ty', if flipped' then not flipped else flipped)
+  where
+    (ty', flipped') = bundleFieldTyFlip name ty
 
 vectorItemTy :: Ty -> Ty
 vectorItemTy (TVector ty _) = ty
@@ -797,94 +904,96 @@ vectorLen (TVector _ len) = len
 vectorLen ty = traceShow ("can't get len of non-vector", ty) 0
 
 evalRvalue :: Expr -> ExtractM Rvalue
-evalRvalue e = evalRvalue' False e
+evalRvalue e = evalRvalue' GMale e
 
-evalRvalue' :: Bool -> Expr -> ExtractM Rvalue
-evalRvalue' flipSplit e = go e
+evalRvalue' :: Gender -> Expr -> ExtractM Rvalue
+evalRvalue' g e = traceShow ("evalRvalue'", g, e) $ go g e
   where
-    go :: Expr -> ExtractM Rvalue
-    go (ELit _) = return $ RvComb "lit" []
-    go (ERef name _) = do
-        i <- nodeIdForSide (not flipSplit) <$> varNode name
+    go :: Gender -> Expr -> ExtractM Rvalue
+    go _ (ELit _) = return $ RvComb "lit" []
+    go g (ERef name _) = do
+        i <- rnGenderedSide g <$> varNode name
         return $ RvExpr $ ConnExpr i S.empty
-    go (EField e name _) = projectRvalue (PrField name) <$> go e
-    -- TODO: gen combinational logic nodes for EIndex
-    go (EIndex e idx _) = do
-        e' <- go e
-        idx' <- go idx
+    go g (EField e name (Just flipped) _) =
+        projectRvalue (PrField name) <$> go (flipGenderIf flipped g) e
+    go g (EField e name Nothing _) =
+        error $ show ("evalRvalue': missing orientation on EField", e, name)
+    go g (EIndex e idx _) = do
+        e' <- go g e
+        idx' <- go GMale idx
         return $ RvComb "idx" [e', idx']
-    go (EIndexC e idx _) = projectRvalue (PrIndex idx) <$> go e
-    go (EMux cond then_ else_ _) =
-        RvMux <$> go cond <*> go then_ <*> go else_
-    go (EValidIf cond then_ _) =
-        RvMux <$> go cond <*> go then_ <*> pure RvInvalid
-    -- TODO: gen combinational logic nodes for EPrim
-    go (EPrim op args _ ty) = RvComb op <$> mapM go args
+    go g (EIndexC e idx _) =
+        projectRvalue (PrIndex idx) <$> go g e
+    go g (EMux cond then_ else_ _) =
+        RvMux <$> go GMale cond <*> go g then_ <*> go g else_
+    go g (EValidIf cond then_ _) =
+        RvMux <$> go GMale cond <*> go g then_ <*> pure RvInvalid
+    go _ (EPrim op args _ ty) = RvComb op <$> mapM (go GMale) args
 
 
 -- Expand a (possibly) aggregate-typed assignment into a list of ground-typed
--- assignments.  This is the part where we handle flipped connections inside of
--- bundles.
---
--- The `Bool` in each result indicates whether this part of the assignment was
--- flipped.  For two-sided nodes (wires and regs), this is used to determine
--- whether each expr was on the right or the left of the original assignment.
-unrollAggregates :: Ty -> Expr -> Ty -> Expr -> [(Expr, Expr, Bool)]
-unrollAggregates lty l rty r = go lty l rty r False
+-- assignments.  Flipped fields are handled by swapping the arguments, which
+-- means an aggregate assignment `L = R` can produce reversed subexpression
+-- assignments `R.foo = L.foo`.
+unrollAggregates :: Ty -> Expr -> Ty -> Expr -> [(Expr, Expr)]
+unrollAggregates lty l rty r = go lty l rty r
   where
-    go (TBundle fs) l (TBundle fs') r flipped = do
+    go (TBundle fs) l (TBundle fs') r = do
         let fsMap' = M.fromList [(fieldName f, f) | f <- fs']
         f <- fs
         Just f' <- return $ M.lookup (fieldName f) fsMap'
         let name = fieldName f
         let ty = fieldTy f
         let ty' = fieldTy f'
+        -- LHS and RHS types must be weakly equivalent, which requires that all
+        -- fieldsd match in orientation.
         if not $ fieldFlip f then
-            go ty (EField l name ty) ty' (EField r name ty) flipped
+            go ty (EField l name (Just False) ty) ty' (EField r name (Just False) ty')
         else
-            go ty (EField r name ty) ty' (EField l name ty) (not flipped)
-    go (TVector ty len) l (TVector ty' len') r flipped = do
+            go ty' (EField r name (Just True) ty') ty' (EField l name (Just True) ty)
+    go (TVector ty len) l (TVector ty' len') r = do
         idx <- [0 .. min len len' - 1]
-        go ty (EIndexC l idx ty) ty' (EIndexC r idx ty) flipped
-    go lty l rty r flipped | isGroundTy lty, isGroundTy rty = return (l, r, flipped)
-    go lty _ rty _ _ =
-        traceShow ("go: type mismatch", lty, rty) []
+        go ty (EIndexC l idx ty) ty' (EIndexC r idx ty')
+    go lty l rty r | isGroundTy lty, isGroundTy rty = return (l, r)
+    go lty _ rty _ = traceShow ("unrollAggregates: type mismatch", lty, rty) []
 
 -- One-sided version of `unrollAggregates`.
-unrollAggregate :: Ty -> Expr -> [(Expr, Bool)]
-unrollAggregate ty e = go ty e False
+unrollAggregate :: Ty -> Expr -> [Expr]
+unrollAggregate ty e = go ty e
   where
-    go (TBundle fs) l flipped = do
+    go (TBundle fs) l = do
         f <- fs
         let name = fieldName f
         let ty = fieldTy f
         if not $ fieldFlip f then
-            go ty (EField l name ty) flipped
+            go ty (EField l name (Just False) ty)
         else
-            go ty (EField l name ty) (not flipped)
-    go (TVector ty len) l flipped = do
+            go ty (EField l name (Just True) ty)
+    go (TVector ty len) l = do
         idx <- [0 .. min len len - 1]
-        go ty (EIndexC l idx ty) flipped
-    go lty l flipped | isGroundTy lty = return (l, flipped)
-    go lty _ _ = traceShow ("go: unhandled type", lty) []
+        go ty (EIndexC l idx ty)
+    go lty l | isGroundTy lty = return l
+    go lty _ = traceShow ("go: unhandled type", lty) []
 
 -- Convert an lvalue `Expr` to a `ConnExpr`.  This can produce multiple
 -- `ConnExpr`s in some cases, and also sometimes generates a transformation to
 -- apply to the `Rvalue` of the assignment.
-evalLvalue :: Bool -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
-evalLvalue flipSplit e = go e
+evalLvalue :: Gender -> Expr -> ExtractM (Ty, [(ConnExpr, Rvalue -> Rvalue)])
+evalLvalue g e = traceShow ("evalLvalue", g, e) $ go g e
   where
-    go (ERef name _) = do
-        i <- nodeIdForSide flipSplit <$> varNode name
+    go g (ERef name _) = do
+        i <- rnGenderedSide g <$> varNode name
         ty <- nodeTy i
         return (ty, [(ConnExpr i S.empty, id)])
-    go (EField e name _) = do
-        (ty, lvs) <- go e
+    go g (EField e name (Just flipped) _) = do
+        (ty, lvs) <- go (flipGenderIf flipped g) e
         let ty' = bundleFieldTy name ty
         let lvs' = [(projectConnExpr (PrField name) ce, f) | (ce, f) <- lvs]
         return (ty', lvs')
-    go (EIndex e idx _) = do
-        (ty, lvs) <- go e
+    go g (EField e name Nothing _) =
+        error $ show ("evalLvalue: missing orientation on EField", e, name)
+    go g (EIndex e idx _) = do
+        (ty, lvs) <- go g e
         idxRv <- evalRvalue idx
         let ty' = vectorItemTy ty
         let lvs' = do
@@ -893,49 +1002,48 @@ evalLvalue flipSplit e = go e
                 return (projectConnExpr (PrIndex i) ce,
                     \rv -> RvIndexMux idxRv i (f rv) RvUnset)
         return (ty', lvs')
-    go (EIndexC e idx _) = do
-        (ty, lvs) <- go e
+    go g (EIndexC e idx _) = do
+        (ty, lvs) <- go g e
         let ty' = vectorItemTy ty
         let lvs' = [(projectConnExpr (PrIndex idx) ce, f) | (ce, f) <- lvs]
         return (ty', lvs')
     -- c ? t : e <= r  -->  when c: t <= r; else: e <= r
-    go (EMux c t e _) = do
-        (ty1, lvs1) <- go t
-        (ty2, lvs2) <- go e
+    go g (EMux c t e _) = do
+        (ty1, lvs1) <- go g t
+        (ty2, lvs2) <- go g e
         condRv <- evalRvalue c
         let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs1]
                 ++ [(ce, \rv -> RvMux condRv RvUnset (f rv)) | (ce, f) <- lvs2]
         return (ty1, lvs')
     -- c ? t : undef <= r  -->  when c: t <= r
-    go (EValidIf c t _) = do
-        (ty, lvs) <- go t
+    go g (EValidIf c t _) = do
+        (ty, lvs) <- go g t
         condRv <- evalRvalue c
         let lvs' = [(ce, \rv -> RvMux condRv (f rv) RvUnset) | (ce, f) <- lvs]
         return (ty, lvs')
-    go e@(ELit _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
-    go e@(EPrim _ _ _ _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
+    go _ e@(ELit _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
+    go _ e@(EPrim _ _ _ _) = traceShow ("invalid lvalue", e) $ return (TUnknown, [])
 
 unrollAssign :: Expr -> Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollAssign l r = do
-    (lty, lFlipped) <- exprTyFlip l
-    (rty, rFlipped) <- exprTyFlip r
+    (lty, l) <- annotateExpr l
+    (rty, r) <- annotateExpr r
     let assigns = unrollAggregates lty l rty r
-    liftM concat $ forM assigns $ \(l', r', flipped) -> do
-        traceShowM ("unrolled assign", l', r')
-        let (lFlipped', rFlipped') =
-                if flipped then (rFlipped, lFlipped) else (lFlipped, rFlipped)
-        r'' <- evalRvalue' (flipped /= rFlipped') r'
-        (ty, lfs'') <- evalLvalue (flipped /= lFlipped') l'
-        traceShowM ("directions", l, r, lFlipped, rFlipped, flipped)
+    liftM concat $ forM assigns $ \(l', r') -> do
+        r'' <- evalRvalue' GMale r'
+        (ty, lfs'') <- evalLvalue GFemale l'
         return [(ty, l'', f r'') | (l'', f) <- lfs'']
 
 unrollInvalidate :: Expr -> ExtractM [(Ty, ConnExpr, Rvalue)]
 unrollInvalidate l = do
-    (lty, lFlipped) <- exprTyFlip l
-    traceShowM ("etf", l, lty, lFlipped)
+    (lty, l) <- annotateExpr l
     let assigns = unrollAggregate lty l
-    ls <- liftM concat $ forM assigns $ \(l', flipped) -> do
-        (ty, lfs'') <- evalLvalue (flipped /= lFlipped) l'
+    ls <- liftM concat $ forM assigns $ \l' -> do
+        g <- exprGender l'
+        -- 5.7.1 "The Invalidate Algorithm": Only female and bigender elements
+        -- can be invalidated.  On male elements, invalidate is a no-op.
+        if g == GMale then return [] else do
+        (ty, lfs'') <- evalLvalue GFemale l'
         return [(ty, l'', f RvInvalid) | (l'', f) <- lfs'']
 
     return $ ls
@@ -1072,7 +1180,7 @@ buildArchNode name prio ty = do
 -- which sides are connected for each port.
 evalMemPort :: Text -> Text -> Expr -> ExtractM ConnTree
 evalMemPort name memName addrExpr = do
-    addrTy <- exprTy addrExpr
+    (addrTy, addrExpr) <- annotateExpr addrExpr
     addrRvalue <- evalRvalue addrExpr
     (addrNode, addrNet) <- buildArchNode (name <> ".addr") 10 addrTy
 
