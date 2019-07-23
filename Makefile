@@ -5,7 +5,7 @@ CXXFLAGS = -O3 -std=c++11 -g
 LDFLAGS = -lz -ltinycbor \
 	-lverific_verilog -lverific_util -lverific_containers -lverific_database
 
-all:    export-verilog importer ppfeatures driver
+all:    export-verilog driver
 
 EXPORT_VERILOG_OBJS = export-verilog.o
 
