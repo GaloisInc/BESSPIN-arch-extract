@@ -45,6 +45,11 @@ data PortId =
     -- The single-port node representing a basic logic element, where the
     -- individual ports are not displayed.
     | PBasicLogic Int
+    -- Represents a subcomponent of a simplified logic element, such as a
+    -- single section of a multi-channel mux.  The first int is the logic
+    -- index, and the second is the index of the subcomponent.  These ports are
+    -- meant to be bypassed, so the subcomponent has no particular meaning.
+    | PBasicSubLogic Int Int
     -- The single-port node representing all external ports on the input/output
     -- side, where the individual ports are not displayed.
     | PBasicExt Side
@@ -112,21 +117,22 @@ bypassNodesWithDedup f edges = M.mapMaybeWithKey go edges
 
 logicShowsPorts :: Cfg -> Logic a -> Bool
 logicShowsPorts cfg l =
-    cfgDrawLogicPorts cfg &&
     case logicKind l of
-        LkInst _ -> True
-        LkRegister _ -> True
-        LkDFlipFlop _ _ -> True
-        LkRam _ _ _ _ _ -> True
-        LkMux _ _ -> True
-        LkPriorityMux _ _ -> True
-        LkRuleMux _ _ -> True
-        LkMatch _ _ -> True
+        LkInst _ -> fromCfg
+        LkRegister _ -> fromCfg
+        LkDFlipFlop _ _ -> fromCfg
+        LkRam _ _ _ _ _ -> fromCfg
+        LkMux _ _ -> fromCfg
+        LkPriorityMux _ _ -> fromCfg
+        LkRuleMux _ _ -> fromCfg
+        LkMatch _ _ -> fromCfg
         LkRuleEnable _ -> False
         LkPack _ -> True
         LkUnpack _ -> True
         LkRepack _ _ _ -> True
         _ -> False
+  where
+    fromCfg = cfgDrawLogicPorts cfg
 
 -- For all `PConn ... LogicPort` nodes where the logic index matches `f`,
 -- switch to a `PBasicLogic` `PortId`.  This is used to get proper
@@ -144,6 +150,81 @@ clearExtPorts f edges = fmap go edges
     go (a, b) = (goNode a, goNode b)
     goNode (PConn side (ExtPort _)) | f side = PBasicExt side
     goNode n = n
+
+clearMuxPorts :: Cfg -> (Int -> LogicKind) -> Seq (PortId, PortId) -> Seq (PortId, PortId)
+clearMuxPorts cfg f edges = foldMap go edges
+  where
+    go (a, b) = (\x y -> (x, y)) <$> goNode a <*> goNode b
+
+    goNode p@(PConn side (LogicPort i j))
+      | LkMux names _ <- f i =
+        let numChannels = S.length names in
+        case side of
+            Sink | j == 0 -> goSelect p i numChannels
+            Sink | otherwise -> goData p i ((j - 1) `mod` numChannels)
+            Source -> goData p i (j `mod` numChannels)
+      | LkPriorityMux names _ <- f i =
+        let numChannels = S.length names in
+        case side of
+            Sink | j `mod` (numChannels + 1) == 0 -> goSelect p i numChannels
+            Sink | otherwise -> goData p i ((j `mod` (numChannels + 1)) - 1)
+            Source -> goData p i (j `mod` numChannels)
+    goNode p = S.singleton p
+
+    goSelect p i numChannels =
+        case cfgDrawMuxes cfg of
+            Config.MdmFull -> S.singleton p
+            Config.MdmCollapse -> S.fromList [PBasicSubLogic i k | k <- [0 .. numChannels - 1]]
+            Config.MdmDataOnly -> S.empty
+
+    goData p i k =
+        case cfgDrawMuxes cfg of
+            Config.MdmFull -> S.singleton p
+            Config.MdmCollapse -> S.singleton $ PBasicSubLogic i k
+            Config.MdmDataOnly -> S.singleton $ PBasicSubLogic i k
+
+clearRepackPorts :: Cfg -> (Int -> LogicKind) -> Seq (PortId, PortId) -> Seq (PortId, PortId)
+clearRepackPorts cfg f edges = foldMap go edges
+  where
+    go (a, b) = do
+        (a, flipA) <- goNode a
+        (b, flipB) <- goNode b
+        return $ if flipA || flipB then (b, a) else (a, b)
+
+    goNode p@(PConn side (LogicPort i j))
+      | LkPack names <- f i = return (PBasicSubLogic i 0, False)
+      | LkUnpack names <- f i = return (PBasicSubLogic i 0, False)
+      | LkRepack _ inNames outNames <- f i = case side of
+        Sink | inNames `S.index` j == "(all)" -> goAll p i (S.length inNames == 1)
+        Source | outNames `S.index` j == "(all)" -> goAll p i (S.length outNames == 1)
+        _ -> case allSide i inNames outNames of
+            Just s | s /= side -> goField p i False
+            Just s | s == side -> goField p i True
+            _ -> S.empty
+    goNode p = return (p, False)
+
+    allSide i inNames outNames
+      | "(all)" `elem` inNames = Just Sink
+      | "(all)" `elem` outNames = Just Source
+      | otherwise = traceShow ("missing (all) in repack node", i) Nothing
+
+    goAll p i oneSided = case cfgDrawRepacks cfg of
+        Config.RdmFull -> return (p, False)
+        Config.RdmCollapse -> case oneSided of
+            True -> return (PBasicSubLogic i 0, False)
+            -- Subelement 0 is for normal connections.  Subelement 1 is for
+            -- flipped connections, where the field connection moves in the
+            -- opposite direction of the "(all)" bundle connection.
+            -- TODO: tracking bundles and flippedness in net types would let us
+            -- handle this more cleanly
+            False -> S.fromList [(PBasicSubLogic i 0, False), (PBasicSubLogic i 1, True)]
+        Config.RdmForwardOnly -> return (PBasicSubLogic i 0, False)
+
+    goField p i flipped = case cfgDrawRepacks cfg of
+        Config.RdmFull -> return (p, False)
+        Config.RdmCollapse -> return (PBasicSubLogic i (if flipped then 1 else 0), False)
+        Config.RdmForwardOnly | flipped -> S.empty
+        Config.RdmForwardOnly -> return (PBasicSubLogic i 0, False)
 
 dedupEdges m = fmap go m
   where
@@ -166,10 +247,13 @@ filterEdges cfg mod edges = edges'
     edgeMap = foldl (\m (s, t) -> M.insertWith (<>) s (S.singleton t) m) M.empty $
         clearLogicPorts (\idx -> not $ logicShowsPorts cfg $ mod `moduleLogic` idx) $
         clearExtPorts (\_ -> not $ cfgDrawExtPorts cfg) $
+        clearMuxPorts cfg (\idx -> logicKind $ mod `moduleLogic` idx) $
+        clearRepackPorts cfg (\idx -> logicKind $ mod `moduleLogic` idx) $
         edges
     bypass = if cfgDedupEdges cfg then bypassNodesWithDedup else bypassNodes
     edgeMap' = flip bypass edgeMap $ \n -> case n of
         PBasicLogic i -> not $ drawLogicNode cfg (mod `moduleLogic` i)
+        PBasicSubLogic _ _ -> True
         PNet i -> not $ drawNetNode cfg (mod `moduleNet` NetId i)
         _ -> False
     edges' = M.foldlWithKey (\es s ts -> es <> fmap (\t -> (s, t)) ts) S.empty edgeMap'
@@ -178,42 +262,32 @@ filterEdges cfg mod edges = edges'
 
 data Cfg = Cfg
     { cfgPrefix :: Text
-    , cfgDrawNets :: Bool
-    , cfgDrawOnesidedNets :: Bool
-    , cfgDrawLogics :: Bool
-    , cfgDrawLogicPorts :: Bool
-    , cfgDrawExtPorts :: Bool
     , cfgHideNamedNets :: Set Text
-    , cfgDedupEdges :: Bool
-    , cfgShortenNetNames :: Bool
-    , cfgPipelineStages :: Int
+    , cfgConfig :: Config.Graphviz
     }
+
+cfgDrawNets = Config.graphvizDrawNets . cfgConfig
+cfgDrawOnesidedNets = Config.graphvizDrawOnesidedNets . cfgConfig
+cfgDrawLogics = Config.graphvizDrawLogics . cfgConfig
+cfgDrawLogicPorts = Config.graphvizDrawLogicPorts . cfgConfig
+cfgDrawExtPorts = Config.graphvizDrawExtPorts . cfgConfig
+cfgDrawMuxes = Config.graphvizDrawMuxes . cfgConfig
+cfgDrawRepacks = Config.graphvizDrawRepacks . cfgConfig
+cfgDedupEdges = Config.graphvizDedupEdges . cfgConfig
+cfgShortenNetNames = Config.graphvizShortenNetNames . cfgConfig
+cfgPipelineStages = Config.graphvizNumPipelineStages . cfgConfig
 
 defaultCfg = Cfg
     { cfgPrefix = T.empty
-    , cfgDrawNets = True
-    , cfgDrawOnesidedNets = True
-    , cfgDrawLogics = True
-    , cfgDrawLogicPorts = True
-    , cfgDrawExtPorts = True
     , cfgHideNamedNets = Set.empty
-    , cfgDedupEdges = False
-    , cfgShortenNetNames = True
-    , cfgPipelineStages = 0
+    , cfgConfig = Config.defaultGraphviz
     }
 
 fromConfig :: Config.Graphviz -> Cfg
 fromConfig g = Cfg
     { cfgPrefix = T.empty
-    , cfgDrawNets = Config.graphvizDrawNets g
-    , cfgDrawOnesidedNets = Config.graphvizDrawOnesidedNets g
-    , cfgDrawLogics = Config.graphvizDrawLogics g
-    , cfgDrawLogicPorts = Config.graphvizDrawLogicPorts g
-    , cfgDrawExtPorts = Config.graphvizDrawExtPorts g
     , cfgHideNamedNets = Set.empty
-    , cfgDedupEdges = Config.graphvizDedupEdges g
-    , cfgShortenNetNames = Config.graphvizShortenNetNames g
-    , cfgPipelineStages = Config.graphvizNumPipelineStages g
+    , cfgConfig = g
     }
 
 drawNetNode cfg net =
@@ -231,14 +305,14 @@ drawLogicNode cfg logic =
         LkRegister _ -> True
         LkDFlipFlop _ _ -> True
         LkRam _ _ _ _ _ -> True
-        LkMux _ _ -> True
-        LkPriorityMux _ _ -> True
+        LkMux _ _ -> cfgDrawMuxes cfg == Config.MdmFull
+        LkPriorityMux _ _ -> cfgDrawMuxes cfg == Config.MdmFull
         LkRuleMux _ _ -> True
         LkMatch _ _ -> True
         LkRuleEnable _ -> True
-        LkPack _ -> True
-        LkUnpack _ -> True
-        LkRepack _ _ _ -> True
+        LkPack _ -> cfgDrawRepacks cfg == Config.RdmFull
+        LkUnpack _ -> cfgDrawRepacks cfg == Config.RdmFull
+        LkRepack _ _ _ -> cfgDrawRepacks cfg == Config.RdmFull
         _ -> False
 
 drawNetEdges cfg net =
@@ -457,6 +531,7 @@ printConstExpr printVar e = go e
         "(" <> T.unwords [go l, "`" <> T.pack (show op) <> "`", go r] <> ")"
     go (ERangeSize _ l r) =
         "(" <> T.unwords ["rangeSize", go l, go r] <> ")"
+    go e = T.pack $ show e
 
 printTy :: ([Int] -> Int -> Text) -> Ty -> Text
 printTy printVar t = go t
@@ -529,6 +604,7 @@ graphEdge cfg mod n1 n2 = DotEdge end1 end2 attrs
             Nothing,
             Just $ netTy $ mod `moduleNet` NetId idx)
     go (PBasicLogic idx) = (logicKey cfg idx, Nothing, Nothing)
+    go (PBasicSubLogic idx _) = (logicKey cfg idx, Nothing, Nothing)
     go (PBasicExt side) = (extKey cfg side 0, Nothing, Nothing)
 
     (end1, port1, ty1) = go n1

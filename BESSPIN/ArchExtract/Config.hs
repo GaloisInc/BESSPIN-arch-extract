@@ -258,12 +258,26 @@ defaultRewrite = Rewrite
     , rewriteRootModule = "top"
     }
 
+-- "full": Draw the full "(mux)" node
+-- "collapse": Hide the node, connecting all 3 inputs to the output
+-- "data-only": Hide the node, connecting only the 2 data inputs to the output
+data MuxDrawMode = MdmFull | MdmCollapse | MdmDataOnly
+    deriving (Show, Eq)
+
+-- "full": Draw the full "(repack)" node
+-- "collapse": Hide the node, generating both normal and flipped connections
+-- "fwd-only": Hide the node, generating only non-flipped connections
+data RepackDrawMode = RdmFull | RdmCollapse | RdmForwardOnly
+    deriving (Show, Eq)
+
 data Graphviz = Graphviz
     { graphvizDrawNets :: Bool
     , graphvizDrawOnesidedNets :: Bool
     , graphvizDrawLogics :: Bool
     , graphvizDrawLogicPorts :: Bool
     , graphvizDrawExtPorts :: Bool
+    , graphvizDrawMuxes :: MuxDrawMode
+    , graphvizDrawRepacks :: RepackDrawMode
     , graphvizDedupEdges :: Bool
     -- If `True`, names of merged nets will display as `foo (+2 more)` instead
     -- of listing the name of every net included in the merge.
@@ -283,6 +297,8 @@ defaultGraphviz = Graphviz
     , graphvizDrawLogics = True
     , graphvizDrawLogicPorts = True
     , graphvizDrawExtPorts = True
+    , graphvizDrawMuxes = MdmFull
+    , graphvizDrawRepacks = RdmFull
     , graphvizDedupEdges = False
     , graphvizShortenNetNames = False
     , graphvizNumPipelineStages = 0
@@ -383,6 +399,11 @@ int (TOML.Integer i)
         i <= toInteger (maxBound :: Int) = fromInteger i
     | otherwise = error $ "integer out of bounds: " ++ show i
 int x = error $ "expected integer, but got " ++ show x
+
+enum tbl (TOML.String s)
+  | Just val <- lookup s tbl = val
+enum tbl x = error $
+    "expected one of the strings " ++ show (map fst tbl) ++ ", but got " ++ show x
 
 tableKeys :: TOML.Value -> [Text]
 tableKeys (TOML.Table kvs) = map fst kvs
@@ -508,6 +529,20 @@ rewrite x = tableFold defaultRewrite x
     , ("root-module", \c x -> c { rewriteRootModule = str x })
     ]
 
+muxDrawMode :: TOML.Value -> MuxDrawMode
+muxDrawMode = enum
+    [ ("full", MdmFull)
+    , ("collapse", MdmCollapse)
+    , ("data-only", MdmDataOnly)
+    ]
+
+repackDrawMode :: TOML.Value -> RepackDrawMode
+repackDrawMode = enum
+    [ ("full", RdmFull)
+    , ("collapse", RdmCollapse)
+    , ("fwd-only", RdmForwardOnly)
+    ]
+
 graphviz :: TOML.Value -> Graphviz
 graphviz x = tableFold defaultGraphviz x
     [ ("draw-nets", \c x -> c { graphvizDrawNets = bool x })
@@ -515,6 +550,8 @@ graphviz x = tableFold defaultGraphviz x
     , ("draw-logics", \c x -> c { graphvizDrawLogics = bool x })
     , ("draw-logic-ports", \c x -> c { graphvizDrawLogicPorts = bool x })
     , ("draw-ext-ports", \c x -> c { graphvizDrawExtPorts = bool x })
+    , ("draw-muxes", \c x -> c { graphvizDrawMuxes = muxDrawMode x })
+    , ("draw-repacks", \c x -> c { graphvizDrawRepacks = repackDrawMode x })
     , ("dedup-edges", \c x -> c { graphvizDedupEdges = bool x })
     , ("shorten-net-names", \c x -> c { graphvizShortenNetNames = bool x })
     , ("num-pipeline-stages", \c x -> c { graphvizNumPipelineStages = int x })

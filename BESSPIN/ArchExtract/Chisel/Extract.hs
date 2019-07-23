@@ -25,7 +25,7 @@ import qualified BESSPIN.ArchExtract.Config as Config
 import BESSPIN.ArchExtract.Lens
 import qualified BESSPIN.ArchExtract.Architecture as A
 import BESSPIN.ArchExtract.Chisel.FIRRTL.AST
-import BESSPIN.ArchExtract.Simplify (reconnectNets, mergeAliasedNets)
+import BESSPIN.ArchExtract.Simplify (reconnectNets, mergeAliasedNets, disconnect)
 
 
 TraceAPI trace traceId traceShow traceShowId traceM traceShowM = mkTraceAPI "Chisel.Extract"
@@ -565,12 +565,20 @@ extractModule cfg m = do
                 MkExtern _ -> return ()
 
     return $
-        --mergeAliasedNets $
+        mergeAliasedNets $
+        -- Break up "uninteresting" nets early, before they can get merged with
+        -- other nets.
+        disconnect (\_ _ _ net ->
+            let baseNames = Set.fromList $ map (last . T.splitOn ".") $
+                    T.lines $ A.netName net in
+            Set.null $ Set.intersection baseNames dcNames) $
         reconnectNets $
         m'
   where
     initMod = A.Module (moduleName m) (convertModuleKind $ moduleKind m)
         S.empty S.empty S.empty S.empty S.empty S.empty
+    -- TODO: make dcNames configurable
+    dcNames = Set.fromList ["clock", "reset"]
 
 convertModuleKind (MkNormal _) = A.MkNormal
 convertModuleKind (MkExtern _) = A.MkExtern
