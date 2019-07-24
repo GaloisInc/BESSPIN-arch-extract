@@ -432,7 +432,7 @@ logicLabel (LkUnpack _) = "(unpack)"
 logicLabel (LkRepack (Just name) _ _) = "(repack " <> name <> ")"
 logicLabel (LkRepack Nothing _ _) = "(repack)"
 logicLabel LkNetAlias = T.pack "(net alias)"
-logicLabel (LkInst inst) = "(inst " <> instName inst <> ")"
+logicLabel (LkInst inst) = instName inst
 
 logicNode :: Design a -> Cfg -> Module b -> Int -> Logic Ann -> Maybe (DotNode Text)
 logicNode design cfg mod idx logic

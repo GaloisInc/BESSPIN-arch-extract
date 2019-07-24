@@ -25,6 +25,14 @@ bsc-config-flags = [
 root-module = "Top_HW_Side.mkTop_HW_Side"
 
 
+[name-map.entries]
+"inst *.stage1" = "Stage 1"
+"inst *.stage2" = "Stage 2"
+"inst *.stage3" = "Stage 3"
+"inst *.gpr_regfile" = "General-Purpose Register File"
+"inst *.csr_regfile" = "Configuration & Status Register File"
+
+
 [graphviz]
 draw-nets = false
 draw-logics = false

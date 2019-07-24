@@ -32,6 +32,7 @@ import qualified BESSPIN.ArchExtract.Chisel as Chisel
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Lexer as VPP
 import qualified BESSPIN.FeatureExtract.Verilog.Preprocess.Parser as VPP
 import qualified BESSPIN.ArchExtract.Gen.Graphviz as G
+import qualified BESSPIN.ArchExtract.NameMap as NM
 
 
 readConfig path = Config.parse <$> T.readFile path
@@ -75,12 +76,15 @@ doesFileUseAnyPpFlag flags file = do
     goE _ = False
 
 loadArchitecture :: Config.Config -> IO (Design (), [FileInfo])
-loadArchitecture cfg = case M.elems $ Config.configSrcs cfg of
-    [] -> error "expected at least one source section"
-    [Config.VerilogSrc vCfg] -> V.readAndExtract vCfg
-    [Config.BSVSrc bCfg] -> BSV.readAndExtract bCfg
-    [Config.ChiselSrc cCfg] -> Chisel.readAndExtract cCfg
-    (_ : _ : _) -> error "support for multiple source sections is NYI"
+loadArchitecture cfg = do
+    (a, fi) <- case M.elems $ Config.configSrcs cfg of
+        [] -> error "expected at least one source section"
+        [Config.VerilogSrc vCfg] -> V.readAndExtract vCfg
+        [Config.BSVSrc bCfg] -> BSV.readAndExtract bCfg
+        [Config.ChiselSrc cCfg] -> Chisel.readAndExtract cCfg
+        (_ : _ : _) -> error "support for multiple source sections is NYI"
+    nm <- NM.loadNameMap $ Config.configNameMap cfg
+    return (NM.applyNameMap nm a, fi)
 
 graphArchitecture :: Config.Graphviz -> Design () -> IO ()
 graphArchitecture gCfg arch = do

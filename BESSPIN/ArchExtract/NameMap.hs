@@ -11,10 +11,12 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Typeable
 import Lens.Micro.Platform
 
 import BESSPIN.ArchExtract.Architecture
+import qualified BESSPIN.ArchExtract.Config as Config
 
 
 data Filter = Filter
@@ -114,8 +116,6 @@ applyNameMap fs d = d
     & _designMods %~ fmap (applyNameMapToModule d fs)
 
 
-
-
 ident = P.takeWhile (\c -> isAlphaNum c || c == '_')
 whitespace = skipWhile isHorizontalSpace
 
@@ -191,3 +191,17 @@ parseFilter :: Text -> Filter
 parseFilter t = case parseFilter' t of
     Left e -> error $ T.unpack e
     Right x -> x
+
+
+loadNameMap :: Config.NameMap -> IO [(Filter, Text)]
+loadNameMap cfg = do
+    fromFile <- case Config.nameMapFile cfg of
+        Nothing -> return []
+        Just f -> do
+            t <- T.readFile $ T.unpack f
+            return $ parseNameMap t
+
+    let fromEntries = map (\(k,v) -> (parseFilter k, v)) $ Config.nameMapEntries cfg
+
+    -- Inline entries take precedence over ones read from the file.
+    return $ fromEntries ++ fromFile

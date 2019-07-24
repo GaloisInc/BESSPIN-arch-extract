@@ -57,18 +57,6 @@ netsNamed ns mod = S.foldMapWithIndex go (moduleNets mod)
     go i net = if not $ Set.null $ Set.intersection ns' (Set.fromList $ T.lines $ netName net)
         then Set.singleton $ NetId i else Set.empty
 
-loadNameMap nm = do
-    fromFile <- case Config.nameMapFile nm of
-        Nothing -> return []
-        Just f -> do
-            t <- T.readFile $ T.unpack f
-            return $ parseNameMap t
-
-    let fromEntries = map (\(k,v) -> (parseFilter k, v)) $ Config.nameMapEntries nm
-
-    -- Inline entries take precedence over ones read from the file.
-    return $ fromEntries ++ fromFile
-
 main = do
     args <- getArgs
     config <- case args of
