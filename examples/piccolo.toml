@@ -31,12 +31,15 @@ root-module = "Top_HW_Side.mkTop_HW_Side"
 "inst *.stage3" = "Stage 3"
 "inst *.gpr_regfile" = "General-Purpose Register File"
 "inst *.csr_regfile" = "Configuration & Status Register File"
+"inst *.near_mem" = "Near Memory"
+"inst *.imem" = "Instruction Memory"
+
 
 
 [graphviz]
 draw-nets = false
 draw-logics = false
-draw-ext-ports = true
+draw-ext-ports = false
 draw-logic-ports = false
 draw-muxes = "collapse"
 draw-repacks = "fwd-only"

@@ -11,7 +11,7 @@ blackbox-modules = [ "TLDebugModuleInner" ]
 [graphviz]
 draw-nets = false
 draw-logics = false
-draw-ext-ports = true
+draw-ext-ports = false
 draw-logic-ports = false
 draw-muxes = "collapse"
 draw-repacks = "fwd-only"

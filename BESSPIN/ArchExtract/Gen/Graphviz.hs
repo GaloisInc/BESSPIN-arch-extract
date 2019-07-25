@@ -807,7 +807,7 @@ moduleGraph design cfg mod =
     DotGraph False True (Just $ joinGraphId [cfgPrefix cfg])
         ( moduleGraph' design cfg mod
         |> labelStmt (moduleName mod)
-        |> GA (GraphAttrs [RankDir FromLeft, RankSep [1.5],
+        |> GA (GraphAttrs [RankDir FromLeft, RankSep [1.5], Concentrate True,
             customAttribute "newrank" "true"])
         )
 
