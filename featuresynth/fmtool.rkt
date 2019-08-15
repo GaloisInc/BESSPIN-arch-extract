@@ -30,8 +30,8 @@
 
 (define (config->json-string names cfg)
   (define parts
-    (for/list ([n names] [v cfg])
-      (format "  ~a: ~a~n" (jsexpr->string n) (if v "true" "false"))))
+    (for/list ([n (name-list-features names)] [v cfg])
+      (format "  ~a: ~a~n" (jsexpr->string (name-str n)) (if v "true" "false"))))
   (string-join
     parts
     ""
@@ -53,6 +53,16 @@
   (check-range "config index" idx 0 (robdd-sat-count bdd n))
   (robdd-nth-sat bdd n idx))
 
+(define (lone-config fm)
+  (define n (feature-model-num-features fm))
+  (define bdd (feature-model-bdd fm))
+  (define sat-count (robdd-sat-count bdd n))
+  (unless (= 1 sat-count)
+    (raise
+      (format "expected feature model to have exactly 1 configuration, but it has ~a"
+              sat-count)))
+  (robdd-nth-sat bdd n 0))
+
 (define (do-count-configs path)
   (define-values (fm names) (read-fmjson-from-file path))
   (displayln (count-configs fm)))
@@ -68,6 +78,12 @@
 (define (do-print-clafer path)
   (define j (call-with-input-file* path read-json))
   (display (fmjson->clafer j)))
+
+(define (do-list-enabled path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (define cfg (lone-config fm))
+  (for ([n (name-list-features names)] [v cfg] #:when v)
+    (printf "~a~n" (name-str n))))
 
 (define (do-simplify path)
   (define-values (fm names) (read-fmjson-from-file path))
@@ -108,6 +124,10 @@
   [`#("print-clafer" ,path)
     (do-print-clafer path)]
   [`#("print-clafer" _ ...) (usage "<path>")]
+
+  [`#("list-enabled" ,path)
+    (do-list-enabled path)]
+  [`#("list-enabled" _ ...) (usage "<path>")]
 
   [`#("simplify" ,path)
     (do-simplify path)]

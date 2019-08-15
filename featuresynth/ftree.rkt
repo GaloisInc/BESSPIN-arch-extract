@@ -9,6 +9,7 @@
   ftree-child-map
   ftree-non-group-feature-order
 
+  (struct-out name)
   (struct-out name-list)
   feature-name-list
 

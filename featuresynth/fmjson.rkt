@@ -1,6 +1,7 @@
 #lang racket
 
 (provide
+  (struct-out name)
   (struct-out name-list)
   feature-name-list
 
