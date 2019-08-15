@@ -1,0 +1,137 @@
+[src.flute]
+type = "bsv"
+src-files = [
+    "../gfe/bluespec-processors/P2/Flute/src_Core/*/*.bsv",
+    "../gfe/bluespec-processors/P2/Flute/src_Testbench/*/*.bsv",
+    "../gfe/bluespec-processors/P2/Flute/src_Testbench/*/*/*.bsv",
+]
+ast-dir = "flute/ast"
+
+bsc-config-flags = [
+    "-D", "RV64",
+    "-D", "ISA_PRIV_M",
+    "-D", "ISA_PRIV_U",
+    "-D", "ISA_PRIV_S",
+    "-D", "SV39",
+    "-D", "ISA_I",
+    "-D", "ISA_M",
+    "-D", "ISA_A",
+    "-D", "ISA_F",
+    "-D", "ISA_D",
+    "-D", "ISA_FD_DIV",
+    "-D", "ISA_C",
+    "-D", "SHIFT_BARREL",
+    "-D", "MULT_SYNTH",
+    "-D", "Near_Mem_Caches",
+    "-D", "FABRIC64",
+]
+
+[design]
+root-module = "Top_HW_Side.mkTop_HW_Side"
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = true
+shorten-net-names = true
+
+
+# Feature-model synthesis configuration
+[featuresynth]
+list-features-command = "besspin-arch-extract %c list-pp-flags"
+oracle-command = "flute/check-config.sh %c %i"
+init-tests-file = "flute/init-tests.rktd"
+max-groups = 3
+max-dependencies = 3
+out-file = "flute.fm.json"
+reason-threshold = 5
+
+hard-constraints = [
+    "(! CSR_REGFILE_MIN)",
+    "(! EXTERNAL_DEBUG_MODULE)",
+    "(! FABRIC32)",
+    "FABRIC64",
+    "(! HTIF_MEMORY)",
+    "(! INCLUDE_ACCEL0)",
+    "(! INCLUDE_CAMERA_MODEL)",
+    "(! INCLUDE_GDB_CONTROL)",
+    "(! INCLUDE_INITIAL_MEMZERO)",
+    "(! INCLUDE_TANDEM_VERIF)",
+#    "ISA_A",
+#    "ISA_C",
+#    "ISA_D",
+#    "ISA_F",
+    "(! ISA_FD)",
+#    "ISA_FD_DIV",
+    "(! ISA_F_OR_D)",
+#    "ISA_M",
+#    "(! ISA_N)",
+#    "ISA_PRIV_S",
+#    "ISA_PRIV_U",
+    "(! IVERILOG)",
+#    "(! MULT_SERIAL)",
+#    "MULT_SYNTH",
+    "Near_Mem_Caches",
+    "(! Near_Mem_TCM)",
+    "(! RV128)",
+    "(! RV32)",
+    "RV64",
+#    "SHIFT_BARREL",
+#    "(! SHIFT_MULT)",
+#    "(! SHIFT_SERIAL)",
+    "(! SV34)",
+#    "SV39",
+    "(! Sv32)",
+
+    "(! ISA_N)",
+    "(! MULT_SERIAL)",
+    "(! SHIFT_MULT)",
+
+    # When running on Piccolo c47d309, we got the following unsat core:
+    #
+    # Relevant features:
+    #   ISA_A
+    #   ISA_M
+    #   ISA_PRIV_S
+    #   MULT_SERIAL
+    #
+    # No valid feature model exists for the combination of the following tests:
+    #   ok:  (ISA_PRIV_S)
+    #   ok:  (ISA_A ISA_M)
+    #   ok:  (ISA_A)
+    #   bad: (ISA_M ISA_PRIV_S)
+    #   ok:  (ISA_M MULT_SERIAL)
+    #   ok:  (ISA_A ISA_M ISA_PRIV_S MULT_SERIAL)
+    #
+    # The current oracle erroneously accepts configurations with ISA_M but
+    # neithen of the MULT implementations enabled.  This constraint rules out
+    # those configs (and in particular, the "bad" config in the unsat core):
+    "(=> ISA_M (|| MULT_SERIAL MULT_SYNTH))",
+
+    # Relevant features:
+    #   ISA_PRIV_U
+    #   MULT_SERIAL
+    #   MULT_SYNTH
+    #   RV32
+    #   RV64
+    #   SHIFT_BARREL
+    #   SHIFT_SERIAL
+    #   SV39
+    #
+    # No valid feature model exists for the combination of the following tests:
+    #   ok:  (ISA_PRIV_U MULT_SERIAL RV64)
+    #   ok:  (RV32 SHIFT_BARREL SHIFT_SERIAL)
+    #   bad: (ISA_PRIV_U MULT_SYNTH SHIFT_BARREL)
+    #   ok:  (ISA_PRIV_U MULT_SYNTH RV32 SHIFT_BARREL)
+    #   ok:  (MULT_SERIAL RV64 SHIFT_SERIAL SV39)
+    #   ok:  (RV64 SHIFT_BARREL SV39)
+    #   bad: (MULT_SERIAL RV64 SHIFT_SERIAL)
+    #   ok:  (ISA_PRIV_U MULT_SYNTH RV64 SHIFT_BARREL SV39)
+    #   bad: (RV64 SHIFT_BARREL)
+    "(! (&& SHIFT_BARREL SHIFT_SERIAL))",
+
+]
+

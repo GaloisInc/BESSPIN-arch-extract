@@ -1,0 +1,43 @@
+[src.rocket]
+type = "chisel"
+ast-file = "p1.cbor"
+
+blackbox-modules = [ "TLDebugModuleInner" ]
+
+
+[graphviz]
+draw-nets = false
+draw-logics = false
+draw-ext-ports = false
+draw-logic-ports = false
+draw-muxes = "collapse"
+draw-repacks = "fwd-only"
+dedup-edges = true
+shorten-net-names = true
+draw-onesided-nets = false
+
+
+# Feature-model synthesis configuration
+[featuresynth]
+list-features-command = "rocket-p1/list-features.sh"
+oracle-command = "rocket-p1/check-config.sh"
+init-tests-file = "rocket-p1/init-tests.rktd"
+max-groups = 4
+max-dependencies = 6
+out-file = "rocket-p1.fm.json"
+reason-threshold = 10
+boredom-threshold = 2000
+
+hard-constraints = [
+    "galois.subsystem.WithRV32",
+
+    "(! galois.subsystem.With1TinyCore)",
+    "(! galois.subsystem.WithFPUWithoutDivSqrt)",
+    "(! galois.subsystem.WithNoMMIOPort)",
+    "(! galois.subsystem.WithNoMemPort)",
+    "(! galois.subsystem.WithNoSlavePort)",
+    "(! galois.subsystem.WithSynchronousRocketTiles)",
+    "(! galois.subsystem.WithoutFPU)",
+    "(! galois.subsystem.WithoutMulDiv)",
+    "(! galois.system.WithoutPLIC)",
+]
