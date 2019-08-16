@@ -25,14 +25,14 @@ bsc-config-flags = [
 root-module = "Top_HW_Side.mkTop_HW_Side"
 
 
-[name-map.entries]
-"inst *.stage1" = "Stage 1"
-"inst *.stage2" = "Stage 2"
-"inst *.stage3" = "Stage 3"
-"inst *.gpr_regfile" = "General-Purpose Register File"
-"inst *.csr_regfile" = "Configuration & Status Register File"
-"inst *.near_mem" = "Near Memory"
-"inst *.imem" = "Instruction Memory"
+#[name-map.entries]
+#"inst *.stage1" = "Stage 1"
+#"inst *.stage2" = "Stage 2"
+#"inst *.stage3" = "Stage 3"
+#"inst *.gpr_regfile" = "General-Purpose Register File"
+#"inst *.csr_regfile" = "Configuration & Status Register File"
+#"inst *.near_mem" = "Near Memory"
+#"inst *.imem" = "Instruction Memory"
 
 
 
@@ -54,7 +54,7 @@ list-features-command = "./driver %c list-pp-flags"
 oracle-command = "examples/piccolo/check-config.sh %c %i"
 #oracle-cache-file = "examples/piccolo/oracle.cache"
 init-tests-file = "examples/piccolo/init-tests.rktd"
-resume-tests-file = "examples/piccolo/resume-tests.rktd"
+#resume-tests-file = "examples/piccolo/resume-tests.rktd"
 max-groups = 3
 max-dependencies = 3
 out-file = "piccolo.fm.json"
@@ -96,6 +96,19 @@ hard-constraints = [
     "(! SV34)",
     "(! SV39)",
     "(! Sv32)",
+
+    # The following constraints are inferred by the synthesis algorithm.  We
+    # provide them explicitly to improve performance, but they can be omitted
+    # if desired.
+    "(! FABRIC32)",
+    "FABRIC64",
+    "ISA_C",
+    "ISA_M",
+    "(! ISA_N)",
+    "(! RV128)",
+    "RV32",
+    "(! RV64)",
+    "(! SHIFT_MULT)",
 
     # When running on Piccolo c47d309, we got the following unsat core:
     #

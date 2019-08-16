@@ -59,7 +59,7 @@ list-features-command = "./driver %c list-pp-flags"
 oracle-command = "examples/tuba/check-config.sh %c %i"
 #oracle-cache-file = "examples/tuba/oracle.cache"
 init-tests-file = "examples/tuba/init-tests.rktd"
-resume-tests-file = "examples/tuba/resume-tests.rktd"
+#resume-tests-file = "examples/tuba/resume-tests.rktd"
 max-groups = 3
 max-dependencies = 3
 out-file = "piccolo.fm.json"
@@ -120,7 +120,7 @@ hard-constraints = [
     "RV64",
     "(! SECURITY)",
     "(! SELF_INV_CACHE)",
-    "(! SIMULATION)",
+    #"(! SIMULATION)",
     "(! SIM_LLC_ARBITER_NUM)",
     "(! SIM_LOG_LLC_PARTITION_NUM)",
     "(! SV34)",

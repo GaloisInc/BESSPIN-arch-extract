@@ -88,6 +88,10 @@ hard-constraints = [
 #    "SV39",
     "(! Sv32)",
 
+    "(! ISA_N)",
+    "(! MULT_SERIAL)",
+    "(! SHIFT_MULT)",
+
     # When running on Piccolo c47d309, we got the following unsat core:
     #
     # Relevant features:

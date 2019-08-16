@@ -35,4 +35,14 @@ boredom-threshold = 2000
 
 hard-constraints = [
     "galois.subsystem.WithRV32",
+
+    "(! galois.subsystem.With1TinyCore)",
+    "(! galois.subsystem.WithFPUWithoutDivSqrt)",
+    "(! galois.subsystem.WithNoMMIOPort)",
+    "(! galois.subsystem.WithNoMemPort)",
+    "(! galois.subsystem.WithNoSlavePort)",
+    "(! galois.subsystem.WithSynchronousRocketTiles)",
+    "(! galois.subsystem.WithoutFPU)",
+    "(! galois.subsystem.WithoutMulDiv)",
+    "(! galois.system.WithoutPLIC)",
 ]
