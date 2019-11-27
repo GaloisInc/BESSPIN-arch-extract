@@ -178,10 +178,15 @@ updateAstFiles cfg = do
         lift $ createDirectoryIfMissing True (astDirPath cfg)
 
         allSources <- lift $ listSources cfg
+        when (null allSources) $ error $
+            "no source files found\nplease check that these files exist: " ++
+            show (Config.bsvSrcFiles cfg)
         let allSourceDirs = dedup $ map takeDirectory allSources
         let searchPath = intercalate ":" allSourceDirs ++ ":+"
         let pkgMap = buildPackageMap allSources
-        let rootSrc = pkgMap M.! bsvRootPackage cfg
+        let rootSrc = fromJust
+                (error $ "root module " ++ show (bsvRootPackage cfg) ++ " not found")
+                (M.lookup (bsvRootPackage cfg) pkgMap)
 
         -- Run the exporter to generate CBOR AST files for the design.  CBOR
         -- files will be placed in `astDirPath cfg`.
