@@ -184,7 +184,7 @@ updateAstFiles cfg = do
         let allSourceDirs = dedup $ map takeDirectory allSources
         let searchPath = intercalate ":" allSourceDirs ++ ":+"
         let pkgMap = buildPackageMap allSources
-        let rootSrc = fromJust
+        let rootSrc = fromMaybe
                 (error $ "root module " ++ show (bsvRootPackage cfg) ++ " not found")
                 (M.lookup (bsvRootPackage cfg) pkgMap)
 
