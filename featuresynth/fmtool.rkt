@@ -3,14 +3,13 @@
 (require json)
 (require threading)
 (require bdd/robdd)
+(require racket/random)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
 (require "fmjson.rkt")
 (require "sample.rkt")
 (require "simplify.rkt")
-
-(define args (current-command-line-arguments))
 
 (define (read-fmjson-from-file path)
   ; TODO run `clafer -m fmjson` if file extension is .cfr
@@ -75,6 +74,21 @@
   (define-values (fm names) (read-fmjson-from-file path))
   (display (config->json-string names (nth-config fm (random (count-configs fm))))))
 
+(define (do-n-random-configs path n)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (let ((idxs (random-sample (range (count-configs fm))
+                             n
+                             #:replacement? #t))
+        (nth-cfg (lambda (i) (config->json-string names (nth-config fm i)))))
+    (display
+     (string-join
+      (map nth-cfg idxs)
+      ",\n"
+      #:before-first "[\n"
+      #:after-last "]\n"))))
+
+
+
 (define (do-print-clafer path)
   (define j (call-with-input-file* path read-json))
   (display (fmjson->clafer j)))
@@ -100,44 +114,50 @@
   (define j2 (feature-model->fmjson names fm))
   (write-json j2))
 
-(define (usage desc)
+(define (usage args desc)
   (printf "usage: racket fmtool.rkt ~a ~a~n" (vector-ref args 0) desc)
   (exit 1))
 
-(match args
-  [`#("count-configs" ,path)
-    (do-count-configs path)]
-  [`#("count-configs" _ ...) (usage "<path>")]
-
-  [`#("nth-config" ,path ,idx)
-    (do-nth-config path (parse-int idx))]
-  [`#("nth-config" _ ...) (usage "<path> <index>")]
-
-  [`#("random-config" ,path)
-    (do-random-config path)]
-  [`#("random-config" _ ...) (usage "<path>")]
-
-  [`#("print" ,path)
-    (pretty-write (read-fmjson-from-file path))]
-  [`#("print" _ ...) (usage "<path>")]
-
-  [`#("print-clafer" ,path)
-    (do-print-clafer path)]
-  [`#("print-clafer" _ ...) (usage "<path>")]
-
-  [`#("list-enabled" ,path)
-    (do-list-enabled path)]
-  [`#("list-enabled" _ ...) (usage "<path>")]
-
-  [`#("simplify" ,path)
-    (do-simplify path)]
-  [`#("simplify" _ ...) (usage "<path>")]
-
-  [`#("test-roundtrip-fmjson" ,path)
-    (do-test-roundtrip-fmjson path)]
-  [`#("test-roundtrip-fmjson" _ ...) (usage "<path>")]
-
-  [else
-    (printf "usage: racket fmtool.rkt <subcommand...>~n")
-    (exit 1)]
+(module+ main
+  (let ((args (current-command-line-arguments)))
+  (match args
+    [`#("count-configs" ,path)
+      (do-count-configs path)]
+    [`#("count-configs" _ ...) (usage args "<path>")]
+  
+    [`#("nth-config" ,path ,idx)
+      (do-nth-config path (parse-int idx))]
+    [`#("nth-config" _ ...) (usage args "<path> <index>")]
+  
+    [`#("random-config" ,path)
+      (do-random-config path)]
+    [`#("random-config" ,path ,num)
+     (do-n-random-configs path (parse-int num))]
+    [`#("random-config" _ ...) (usage args "<path>")]
+  
+    [`#("print" ,path)
+      (pretty-write (read-fmjson-from-file path))]
+    [`#("print" _ ...) (usage args "<path>")]
+  
+    [`#("print-clafer" ,path)
+      (do-print-clafer path)]
+    [`#("print-clafer" _ ...) (usage args "<path>")]
+  
+    [`#("list-enabled" ,path)
+      (do-list-enabled path)]
+    [`#("list-enabled" _ ...) (usage args "<path>")]
+  
+    [`#("simplify" ,path)
+      (do-simplify path)]
+    [`#("simplify" _ ...) (usage args "<path>")]
+  
+    [`#("test-roundtrip-fmjson" ,path)
+      (do-test-roundtrip-fmjson path)]
+    [`#("test-roundtrip-fmjson" _ ...) (usage args "<path>")]
+  
+    [else
+      (printf "usage args: racket fmtool.rkt <subcommand...>~n")
+      (exit 1)
+    ]
+  ))
 )
