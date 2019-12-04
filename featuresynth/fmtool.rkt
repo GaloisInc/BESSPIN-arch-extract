@@ -31,12 +31,12 @@
 (define (config->json-string names cfg)
   (define parts
     (for/list ([n (name-list-features names)] [v cfg])
-      (format "  ~a: ~a~n" (jsexpr->string (name-str n)) (if v "true" "false"))))
+      (format "  ~a: ~a" (jsexpr->string (name-str n)) (if v "true" "false"))))
   (string-join
     parts
-    ""
+    ",\n"
     #:before-first "{\n"
-    #:after-last "}\n"))
+    #:after-last "\n}\n"))
 
 (define (config-map names cfg)
   (for/hash ([n names] [v cfg]) (values (string->symbol n) v)))
