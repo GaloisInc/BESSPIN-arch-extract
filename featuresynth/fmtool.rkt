@@ -74,20 +74,27 @@
   (define-values (fm names) (read-fmjson-from-file path))
   (display (config->json-string names (nth-config fm (random (count-configs fm))))))
 
+(define (list->json-list lst)
+  (string-join lst
+               ",\n"
+               #:before-first "[\n"
+               #:after-last "]\n"))
+
+(define (configs-by-idx-list fm names idxs)
+  (let ((nth-cfg (lambda (i) (config->json-string names (nth-config fm i)))))
+    (list->json-list (map nth-cfg idxs))))
+
 (define (do-n-random-configs path n)
   (define-values (fm names) (read-fmjson-from-file path))
   (let ((idxs (random-sample (range (count-configs fm))
                              n
-                             #:replacement? #t))
-        (nth-cfg (lambda (i) (config->json-string names (nth-config fm i)))))
-    (display
-     (string-join
-      (map nth-cfg idxs)
-      ",\n"
-      #:before-first "[\n"
-      #:after-last "]\n"))))
+                             #:replacement? #t)))
+    (display (configs-by-idx-list fm names idxs))))
 
-
+(define (do-all-configs path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (let ((idxs (range 0 (count-configs fm))))
+    (display (configs-by-idx-list fm names idxs))))
 
 (define (do-print-clafer path)
   (define j (call-with-input-file* path read-json))
@@ -124,6 +131,10 @@
     [`#("count-configs" ,path)
       (do-count-configs path)]
     [`#("count-configs" _ ...) (usage args "<path>")]
+
+    [`#("all-configs" ,path)
+     (do-all-configs path)]
+    [`#("all-configs" _ ...) (usage args "<path>")]
   
     [`#("nth-config" ,path ,idx)
       (do-nth-config path (parse-int idx))]
