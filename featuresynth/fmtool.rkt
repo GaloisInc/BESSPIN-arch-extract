@@ -4,6 +4,7 @@
 (require threading)
 (require bdd/robdd)
 (require racket/random)
+(require racket/random)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
@@ -87,8 +88,7 @@
 (define (do-n-random-configs path n)
   (define-values (fm names) (read-fmjson-from-file path))
   (let ((idxs (random-sample (range (count-configs fm))
-                             n
-                             #:replacement? #t)))
+                             n)))
     (display (configs-by-idx-list fm names idxs))))
 
 (define (do-all-configs path)
@@ -144,7 +144,7 @@
       (do-random-config path)]
     [`#("random-config" ,path ,num)
      (do-n-random-configs path (parse-int num))]
-    [`#("random-config" _ ...) (usage args "<path>")]
+    [`#("random-config" _ ...) (usage args "<path> [num]")]
   
     [`#("print" ,path)
       (pretty-write (read-fmjson-from-file path))]
