@@ -10,6 +10,7 @@
 (require "fmjson.rkt")
 (require "sample.rkt")
 (require "simplify.rkt")
+(require "check_sat.rkt")
 
 (define (collect-json-fm-values jss)
   (define (unzip-and-accum js fm-values)
@@ -76,6 +77,13 @@
   (define-values (fm names) (read-fmjson-from-file path))
   (displayln (count-configs fm)))
 
+(define (do-check-sat path)
+  (define-values (fm names) (read-fmjson-from-file path))
+  (let ((line (if (list? fm)
+                  (map check-sat fm)
+                  (check-sat fm))))
+    (displayln (jsexpr->string line))))
+
 (define (do-nth-config path idx)
   (define-values (fm names) (read-fmjson-from-file path))
   (display (config->json-string names (nth-config fm idx))))
@@ -140,6 +148,10 @@
     [`#("count-configs" ,path)
       (do-count-configs path)]
     [`#("count-configs" _ ...) (usage args "<path>")]
+
+    [`#("check-sat" ,path)
+     (do-check-sat path)]
+    [`#("check-sat" _ ...) (usage args "<path>")]
 
     [`#("all-configs" ,path)
      (do-all-configs path)]
