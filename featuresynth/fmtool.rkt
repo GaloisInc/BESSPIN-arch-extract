@@ -4,7 +4,6 @@
 (require threading)
 (require bdd/robdd)
 (require racket/random)
-(require racket/random)
 (require "types.rkt")
 (require "util.rkt")
 (require "eval.rkt")
@@ -12,10 +11,20 @@
 (require "sample.rkt")
 (require "simplify.rkt")
 
+(define (collect-json-fm-values jss)
+  (define (unzip-and-accum js fm-values)
+    (define-values (fm names) (fmjson->feature-model js))
+    (cons (cons fm    (car fm-values))
+          (cons names (cdr fm-values))))
+  (define fm-values (foldr unzip-and-accum (cons '() '()) jss))
+  (values (car fm-values) (cdr fm-values)))
+
 (define (read-fmjson-from-file path)
   ; TODO run `clafer -m fmjson` if file extension is .cfr
   (define j (call-with-input-file* path read-json))
-  (fmjson->feature-model j))
+  (if (list? j)
+      (collect-json-fm-values j)
+      (fmjson->feature-model j)))
 
 (define (parse-int s)
   (define n (string->number s))
