@@ -15,7 +15,7 @@
   (define solver (z3-named*))
   (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
   (solver-assert solver
-                 (flatten (eval-feature-model concrete-fm symbolic-config)))
+                 (list (eval-feature-model concrete-fm symbolic-config)))
   (sat? (solver-check solver)))
 
 (define (check-sat-must concrete-fm names features)
@@ -24,7 +24,7 @@
   (define (name->symb n)
     (vector-ref symbolic-config (vector-member (name n 0) (name-list-features names))))
   (solver-assert solver
-                 (flatten (eval-feature-model concrete-fm symbolic-config)))
+                 (list (eval-feature-model concrete-fm symbolic-config)))
   (for/list ([n features])
     (begin
       (solver-push solver)
