@@ -24,9 +24,14 @@
 (define (read-fmjson-from-file path)
   ; TODO run `clafer -m fmjson` if file extension is .cfr
   (define j (call-with-input-file* path read-json))
+  (fmjson->feature-model j))
+
+(define (read-fmjson-list-from-file path)
+  (define j (call-with-input-file* path read-json))
   (if (list? j)
       (collect-json-fm-values j)
-      (fmjson->feature-model j)))
+      (let-values ([(fm n) (fmjson->feature-model j)])
+        (values (list fm) (list n)))))
 
 (define (parse-int s)
   (define n (string->number s))
@@ -51,7 +56,6 @@
 
 (define (config-map names cfg)
   (for/hash ([n names] [v cfg]) (values (string->symbol n) v)))
-
 
 (define (count-configs fm)
   (define n (feature-model-num-features fm))
@@ -79,11 +83,8 @@
   (displayln (count-configs fm)))
 
 (define (do-check-sat path)
-  (define-values (fm names) (read-fmjson-from-file path))
-  (let ((line (if (list? fm)
-                  (map check-sat fm)
-                  (check-sat fm))))
-    (displayln (jsexpr->string line))))
+  (define-values (fms names) (read-fmjson-list-from-file path))
+  (displayln (jsexpr->string (map check-sat fms))))
 
 (define (do-check-req path fs)
   (define-values (fm names) (read-fmjson-from-file path))
