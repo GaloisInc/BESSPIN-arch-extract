@@ -13,12 +13,13 @@
 (require "check_sat.rkt")
 
 (define (collect-json-fm-values jss)
-  (define (unzip-and-accum js fm-values)
+  (define (unzip-and-accum js fms namess)
     (define-values (fm names) (fmjson->feature-model js))
-    (cons (cons fm    (car fm-values))
-          (cons names (cdr fm-values))))
-  (define fm-values (foldr unzip-and-accum (cons '() '()) jss))
-  (values (car fm-values) (cdr fm-values)))
+    (values (cons fm fms) (cons names namess)))
+  (define-values (rev-fms rev-namess)
+    (for/fold ([fms '()] [namess '()]) ([j jss])
+      (unzip-and-accum j fms namess)))
+  (values (reverse rev-fms) (reverse rev-namess)))
 
 (define (read-fmjson-from-file path)
   ; TODO run `clafer -m fmjson` if file extension is .cfr
