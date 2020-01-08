@@ -11,6 +11,7 @@
 (require "synthesis.rkt")
 (require "ftree.rkt")
 
+;; Check that concrete-fm is satisfiable
 (define (check-sat concrete-fm)
   (define solver (z3-named*))
   (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
@@ -18,17 +19,16 @@
                  (list (eval-feature-model concrete-fm symbolic-config)))
   (sat? (solver-check solver)))
 
-(define (check-sat-must concrete-fm names features)
+;; Given a list of feature indices, `features`, return a list E such that
+;; E[i] <=> concrete-fm implies feature `features`[i]
+(define (check-sat-must concrete-fm idxlist)
   (define solver (z3-named*))
   (define symbolic-config (?*config (feature-model-num-features concrete-fm)))
-  (define (name->symb n)
-    (vector-ref symbolic-config (vector-member (name n 0) (name-list-features names))))
   (solver-assert solver
                  (list (eval-feature-model concrete-fm symbolic-config)))
-  (for/list ([n features])
+  (for/list ([i idxlist])
     (begin
       (solver-push solver)
-      (solver-assert solver
-                     (list (not (name->symb n))))
+      (solver-assert solver (list (not (vector-ref symbolic-config i))))
       (define v (unsat? (solver-check solver)))
       (solver-pop solver 1) v)))

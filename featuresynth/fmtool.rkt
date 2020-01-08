@@ -86,7 +86,11 @@
 
 (define (do-check-req path fs)
   (define-values (fm names) (read-fmjson-from-file path))
-  (displayln (jsexpr->string (check-sat-must fm names fs))))
+  (define (name->idx n)
+    (vector-member (name n 0)
+                   (name-list-features names)))
+  (define idxlist (map name->idx fs))
+  (displayln (jsexpr->string (check-sat-must fm idxlist))))
 
 (define (do-nth-config path idx)
   (define-values (fm names) (read-fmjson-from-file path))
