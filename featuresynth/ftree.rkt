@@ -331,9 +331,11 @@
 ; Find features with both gcard != opt and card != on, and split them into two
 ; separate features, one with gcard != opt and a parent feature with card != on
 (define (ftree-split-opt-groups! ft)
-  (for ([(k fn) (ftree-features ft)]
-        #:when (and (fnode-is-group? fn)
-                    (not (eq? 'on (fnode-card fn)))))
+  (for ([(k-fn) (hash->list (ftree-features ft))]
+        #:when (and (fnode-is-group? (cdr k-fn))
+                    (not (eq? 'on (fnode-card (cdr k-fn))))))
+    (define k  (car k-fn))
+    (define fn (cdr k-fn))
     (define new-k
       (fresh-id
         (format "~a-parent" k)
