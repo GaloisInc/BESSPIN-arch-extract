@@ -192,7 +192,9 @@
 ; This can result in a `claim-needs-child` being disproved, if the new test
 ; shows that the parent is enabled but no child is.
 (define (claim-set-add-passing-test! cset inp)
-  (for ([(parent children) (claim-set-child-map cset)]
+  ; Copy the child-map to avoid concurrent modification, in the case where
+  ; `claim-set-update-valid-child-masks!` removes a parent from the child-map.
+  (for ([(parent children) (hash-copy (claim-set-child-map cset))]
         #:when (vector-ref inp parent))
     (define inp-mask (claim-set-child-mask cset parent inp))
     (claim-set-update-valid-child-masks! cset parent (mask-set-add inp-mask)))
