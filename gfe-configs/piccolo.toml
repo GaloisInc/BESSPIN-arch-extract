@@ -5,7 +5,7 @@ src-files = [
     "../gfe/bluespec-processors/P1/Piccolo/src_Testbench/*/*.bsv",
     "../gfe/bluespec-processors/P1/Piccolo/src_Testbench/*/*/*.bsv",
 ]
-ast-dir = "piccolo/ast"
+ast-dir = "gfe-configs/piccolo/ast"
 
 bsc-config-flags = [
     "-D", "RV32",

@@ -1,8 +1,9 @@
 [src.rocket]
 type = "chisel"
-ast-file = "p1.cbor"
+source-file = "../gfe/chisel_processors/rocket-chip/vsim/generated-src/galois.system.P1TVFPGAConfig.fir"
+ast-file = "gfe-configs/rocket-p1/ast.cbor"
 
-blackbox-modules = [ "TLDebugModuleInner" ]
+blackbox-modules = [ "TLDebugModuleInner", "TVEncoder" ]
 
 
 [graphviz]

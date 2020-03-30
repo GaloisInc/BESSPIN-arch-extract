@@ -12,7 +12,7 @@ src-files = [
     "../gfe/bluespec-processors/P3/Tuba/src_Testbench/*/*.bsv",
     "../gfe/bluespec-processors/P3/Tuba/src_Testbench/*/*/*.bsv",
 ]
-ast-dir = "tuba/ast"
+ast-dir = "gfe-configs/tuba/ast"
 
 bsc-flags = [
     "-D", "NUM_CORES=1",
@@ -38,7 +38,13 @@ bsc-config-flags = [
     "-D", "Near_Mem_Caches",
     "-D", "FABRIC64",
     "-D", "BSIM",
+
+    "-D", "CACHE_LARGE",
+    "-D", "CORE_SMALL",
+    "-D", "USE_XILINX_FPU",
+    "-D", "USE_BSV_BRAM_SYNC_FIFO",
 ]
+
 
 [design]
 root-module = "Top_HW_Side.mkTop_HW_Side"

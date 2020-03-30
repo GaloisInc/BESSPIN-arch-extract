@@ -130,13 +130,20 @@ defaultBSV = BSV
     }
 
 data Chisel = Chisel
-    { chiselAstFile :: Text
+    -- Path to the FIRRTL source file to process.  If this is set, the FIRRTL
+    -- source will be converted to CBOR and cached in the `ast-file`.
+    { chiselSourceFile :: Maybe Text
+    -- Path to the .cbor file containing the FIRRTL AST to process.  If
+    -- `source-file` is also set, the `ast-file` will be overwritten any time
+    -- the source changes.
+    , chiselAstFile :: Text
     , chiselBlackboxModules :: Set Text
     }
     deriving (Show)
 
 defaultChisel = Chisel
-    { chiselAstFile = ""
+    { chiselSourceFile = Nothing
+    , chiselAstFile = ""
     , chiselBlackboxModules = Set.empty
     }
 
@@ -491,6 +498,7 @@ bsv x = tableFold defaultBSV x
 chisel :: TOML.Value -> Chisel
 chisel x = tableFold defaultChisel x
     [ ("type", \c x -> c)
+    , ("source-file", \c x -> c { chiselSourceFile = Just $ str x })
     , ("ast-file", \c x -> c { chiselAstFile = str x })
     , ("blackbox-modules", \c x -> c { chiselBlackboxModules = setOf str x })
     ]
