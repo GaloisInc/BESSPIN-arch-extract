@@ -26,6 +26,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UnionFind.ST as UF
 import GHC.Generics
+import GHC.Stack (HasCallStack)
 import Lens.Micro.Platform
 import Text.Read (readMaybe)
 
@@ -1684,12 +1685,12 @@ buildIfcItemLogic qualName (IiMethod m) handler = do
 runAction :: Value -> ExtractM Value
 runAction c = runMonad handleAction c
 
-netPin :: A.NetId -> ExtractM A.Pin
+netPin :: HasCallStack => A.NetId -> ExtractM A.Pin
 netPin netId = zoom (_esCurModule . A._moduleNet netId) $ do
     ty <- use A._netTy
     return $ A.Pin netId ty
 
-netPort :: A.NetId -> ExtractM A.Port
+netPort :: HasCallStack => A.NetId -> ExtractM A.Port
 netPort netId = zoom (_esCurModule . A._moduleNet netId) $ do
     name <- use A._netName
     ty <- use A._netTy

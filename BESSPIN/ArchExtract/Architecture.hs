@@ -17,6 +17,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable
 import GHC.Generics (Generic)
+import GHC.Stack
 import Lens.Micro.Platform
 
 import BESSPIN.ArchExtract.Lens
@@ -499,32 +500,32 @@ makeLenses' ''Pin
 makeLenses' ''Ty
 makeLenses' ''Constraint
 
-_designMod :: Int -> Lens' (Design ann) (Module ann)
+_designMod :: HasCallStack => Int -> Lens' (Design ann) (Module ann)
 _designMod i = _designMods . singular (ix i)
 
-_moduleParam :: Int -> Lens' (Module ann) Param
+_moduleParam :: HasCallStack => Int -> Lens' (Module ann) Param
 _moduleParam i = _moduleParams . singular (ix i)
-_moduleInput :: Int -> Lens' (Module ann) Port
+_moduleInput :: HasCallStack => Int -> Lens' (Module ann) Port
 _moduleInput i = _moduleInputs . singular (ix i)
-_moduleOutput :: Int -> Lens' (Module ann) Port
+_moduleOutput :: HasCallStack => Int -> Lens' (Module ann) Port
 _moduleOutput i = _moduleOutputs . singular (ix i)
 _moduleSidePort Source i = _moduleInputs i
 _moduleSidePort Sink i = _moduleOutputs i
-_moduleLogic :: Int -> Lens' (Module ann) (Logic ann)
+_moduleLogic :: HasCallStack => Int -> Lens' (Module ann) (Logic ann)
 _moduleLogic i = _moduleLogics . singular (ix i)
-_moduleNet :: NetId -> Lens' (Module ann) (Net ann)
+_moduleNet :: HasCallStack => NetId -> Lens' (Module ann) (Net ann)
 _moduleNet i = _moduleNets . singular (ix $ unwrapNetId i)
 
-_logicInput :: Int -> Lens' (Logic ann) Pin
+_logicInput :: HasCallStack => Int -> Lens' (Logic ann) Pin
 _logicInput i = _logicInputs . singular (ix i)
-_logicOutput :: Int -> Lens' (Logic ann) Pin
+_logicOutput :: HasCallStack => Int -> Lens' (Logic ann) Pin
 _logicOutput i = _logicOutputs . singular (ix i)
 _logicSidePin Source i = _logicOutput i
 _logicSidePin Sink i = _logicInput i
 
-_netSource :: Int -> Lens' (Net ann) Conn
+_netSource :: HasCallStack => Int -> Lens' (Net ann) Conn
 _netSource i = _netSources . singular (ix i)
-_netSink :: Int -> Lens' (Net ann) Conn
+_netSink :: HasCallStack => Int -> Lens' (Net ann) Conn
 _netSink i = _netSinks . singular (ix i)
 _netSideConn Source i = _netSource i
 _netSideConn Sink i = _netSink i
