@@ -5,7 +5,7 @@ src-files = [
     "../gfe/bluespec-processors/P2/Flute/src_Testbench/*/*.bsv",
     "../gfe/bluespec-processors/P2/Flute/src_Testbench/*/*/*.bsv",
 ]
-ast-dir = "flute/ast"
+ast-dir = "gfe-configs/flute/ast"
 
 bsc-config-flags = [
     "-D", "RV64",

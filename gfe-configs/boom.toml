@@ -1,6 +1,7 @@
 [src.boom]
 type = "chisel"
-ast-file = "p3.cbor"
+source-file = "../gfe/chisel_processors/chipyard/sims/verilator/generated-src/example.TestHarnessGFE.BoomP3FPGAConfig/example.TestHarnessGFE.BoomP3FPGAConfig.top.fir"
+ast-file = "gfe-configs/boom/ast.cbor"
 
 blackbox-modules = [ "TLDebugModuleInner" ]
 
