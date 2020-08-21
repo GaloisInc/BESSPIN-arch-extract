@@ -1,3 +1,10 @@
+# The BESSPIN System Architecture and Feature Model Extraction Subsytems
+
+This project contains two subsystems, the BESSPIN systems architecture
+extraction tool and the BESSPIN feature model extraction tool.  Both
+tools are able to parse and reason about Bluespec SystemVerilog,
+Chisel, and SystemVerilog hardware design languages.
+
 # Building
 
 Open a Nix shell with all the dependencies:
