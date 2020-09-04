@@ -1,0 +1,20 @@
+# Architecture extraction config for freecores CAN bus
+# https://github.com/freecores/can
+
+[src.can]
+type = "verilog"
+src-files = [
+    "../freecores-can/rtl/verilog/*.v"
+]
+
+[design]
+root-module = "can_top.can_top"
+
+[graphviz]
+out-dir = "out"
+draw-nets = true
+draw-logics = true
+draw-ext-ports = true
+draw-logic-ports = true
+dedup-edges = false
+shorten-net-names = false
