@@ -7,7 +7,7 @@ Chisel, and SystemVerilog hardware design languages.
 
 # Building
 
-Open a Nix shell with all the dependencies:
+Open a Nix shell (see [BESSPIN-Environment](https://github.com/GaloisInc/BESSPIN-Environment))with all the dependencies:
 
     nix-shell --pure nix
 
